@@ -43,6 +43,25 @@ The optional TUI is designed for large captures too:
 - the selected packet is decoded in detail only when needed
 - the hex view reads directly from the mapped file
 
+## Claude Code / Copilot CLI plugin
+
+Install as a plugin via the marketplace to get the MCP server and the
+`analyze-packets` skill automatically:
+
+**Claude Code**
+
+```bash
+claude plugin marketplace add higebu/dsct
+claude plugin install dsct@dsct
+```
+
+**GitHub Copilot CLI**
+
+```bash
+copilot plugin marketplace add higebu/dsct
+copilot plugin install dsct@dsct
+```
+
 ## Installation
 
 CLI only:
