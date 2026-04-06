@@ -72,6 +72,9 @@ release version:
     set -euo pipefail
     cargo release version {{version}} --execute --no-confirm
     git-cliff --tag "v{{version}}" -o CHANGELOG.md
+    # Update version in plugin manifests
+    jq --arg v "{{version}}" '.version = $v' .claude-plugin/plugin.json > .claude-plugin/plugin.json.tmp && mv .claude-plugin/plugin.json.tmp .claude-plugin/plugin.json
+    jq --arg v "{{version}}" '.plugins[].version = $v' .claude-plugin/marketplace.json > .claude-plugin/marketplace.json.tmp && mv .claude-plugin/marketplace.json.tmp .claude-plugin/marketplace.json
     git add -A
     git commit -m "chore(release): v{{version}}"
     git tag -a "v{{version}}" -m "v{{version}}"
