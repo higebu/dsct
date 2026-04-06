@@ -8,7 +8,7 @@
       "name": "dsct",
       "source": "./",
       "description": "LLM-friendly packet dissector with MCP server for pcap/pcapng analysis",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "homepage": "https://github.com/higebu/dsct",
       "repository": "https://github.com/higebu/dsct",
       "license": "MIT OR Apache-2.0",
