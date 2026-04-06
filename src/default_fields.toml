@@ -1,0 +1,592 @@
+# Default field configuration for dsct.
+#
+# Controls which fields are shown in non-verbose (default) mode.
+# When --verbose is specified, all fields are shown regardless of this config.
+# Protocols not listed here show all fields by default.
+#
+# Each protocol section uses:
+#   fields = [...]   Include list: only fields matching these patterns are shown.
+#
+# Filtering is applied recursively. Use dot notation to target nested
+# sub-fields inside Array/Object containers:
+#   "answers"       Include the top-level container; when a container
+#                   is included but has NO dotted sub-field patterns,
+#                   all of its sub-fields are shown (e.g., SRv6
+#                   "segments_structure").
+#   "answers.name"  Include the "name" sub-field inside "answers"
+#   "answers.*"     Explicitly include all sub-fields inside "answers"
+#
+# Patterns (applied to the part after the last dot, or the whole name):
+#   "name"      Exact match
+#   "prefix_*"  Prefix match (e.g., "option_*" matches "option_overload")
+#   "*_suffix"  Suffix match (e.g., "*_port" matches "src_port")
+
+[Ethernet]
+fields = [
+  "dst",
+  "src",
+  "vlan_id",
+  "ethertype",
+  "ethertype_name",
+  "length",
+  "llc_dsap",
+  "llc_ssap",
+  "llc_control",
+]
+
+[STP]
+fields = [
+  "bpdu_type_name",
+  "flags",
+  "root_priority",
+  "root_mac",
+  "root_path_cost",
+  "bridge_priority",
+  "bridge_mac",
+  "port_id",
+  "message_age",
+  "max_age",
+  "hello_time",
+  "forward_delay",
+  "version1_length",
+]
+
+[ARP]
+fields = ["oper", "oper_name", "sha", "spa", "tha", "tpa"]
+
+[LLDP]
+fields = [
+  "tlvs",
+  "tlvs.type_name",
+  "tlvs.subtype_name",
+  "tlvs.id",
+  "tlvs.ttl",
+  "tlvs.value",
+  "tlvs.available_capabilities",
+  "tlvs.enabled_capabilities",
+  "tlvs.oui",
+  "tlvs.org_subtype",
+  "tlvs.info",
+]
+
+[IPv4]
+fields = ["ttl", "protocol", "src", "dst"]
+
+[IPv6]
+fields = ["next_header", "hop_limit", "src", "dst"]
+
+[TCP]
+fields = [
+  "src_port",
+  "dst_port",
+  "seq",
+  "ack",
+  "flags",
+  "flags_name",
+  "stream_id",
+  "reassembly_in_progress",
+  "segment_count",
+]
+
+[UDP]
+fields = ["src_port", "dst_port"]
+
+[ICMP]
+fields = [
+  "type",
+  "code",
+  "identifier",
+  "sequence_number",
+  "next_hop_mtu",
+  "length",
+  "num_addrs",
+  "addr_entry_size",
+  "lifetime",
+  "entries",
+  "invoking_packet",
+  "*_timestamp",
+  "address_mask",
+  "subtype",
+  "local",
+  "state",
+  "active",
+  "ipv4",
+  "ipv6",
+]
+
+[ICMPv6]
+fields = [
+  "type",
+  "code",
+  "identifier",
+  "sequence_number",
+  "length",
+  "max_response_delay",
+  "multicast_address",
+  "s_flag",
+  "qrv",
+  "qqic",
+  "num_sources",
+  "sources",
+  "cur_hop_limit",
+  "flags",
+  "router_lifetime",
+  "reachable_time",
+  "retrans_timer",
+  "target_address",
+  "destination_address",
+  "options",
+  "num_records",
+  "records",
+  "home_agent_addresses",
+  "query_interval",
+  "robustness_variable",
+  # NDP option sub-fields
+  "options.type",
+  "options.prefix_length",
+  "options.prefix",
+  "options.valid_lifetime",
+  "options.preferred_lifetime",
+  "options.link_layer_address",
+  "options.mtu",
+]
+
+[DNS]
+fields = [
+  # Top-level header fields
+  "id",
+  "qr",
+  "opcode",
+  "rcode",
+  # Record groups
+  "questions",
+  "answers",
+  # Sub-fields inside question records
+  "questions.name",
+  "questions.type",
+  "questions.class",
+  # Sub-fields inside answer records (rdlength omitted)
+  "answers.name",
+  "answers.type",
+  "answers.class",
+  "answers.ttl",
+  "answers.rdata",
+  "answers.rdata_*",
+  # TCP reassembly status (present on intermediate segments)
+  "reassembly_in_progress",
+  "segment_count",
+]
+
+[mDNS]
+fields = [
+  # Top-level header fields
+  "id",
+  "qr",
+  "opcode",
+  "rcode",
+  # Record groups
+  "questions",
+  "answers",
+  # Sub-fields inside question records
+  "questions.name",
+  "questions.type",
+  "questions.class",
+  # Sub-fields inside answer records (rdlength omitted)
+  "answers.name",
+  "answers.type",
+  "answers.class",
+  "answers.ttl",
+  "answers.rdata",
+  "answers.rdata_*",
+]
+
+[DHCP]
+fields = [
+  "xid",
+  "yiaddr",
+  "chaddr",
+  "dhcp_message_type",
+  "server_identifier",
+  "requested_ip",
+  "hostname",
+  "domain_name",
+  "subnet_mask",
+  "router",
+  "dns_server",
+  "lease_time",
+  "renewal_time",
+  "rebinding_time",
+]
+
+[DHCPv6]
+fields = ["msg_type", "transaction_id", "options"]
+
+[VRRP]
+fields = [
+  "version",
+  "type",
+  "type_name",
+  "vrid",
+  "priority",
+  "priority_name",
+  "addr_count",
+  "max_advert_int",
+  "addresses",
+  "addresses.address",
+]
+
+[SCTP]
+fields = ["src_port", "dst_port"]
+
+[SRv6]
+fields = ["segments_left", "segments", "segments_structure", "csid_containers"]
+
+[HTTP]
+fields = [
+  "method",
+  "uri",
+  "version",
+  "status_code",
+  "reason_phrase",
+  "headers",
+  "content_length",
+  "reassembly_in_progress",
+  "segment_count",
+]
+
+[HTTP2]
+fields = [
+  "magic",
+  "frame_length",
+  "frame_type",
+  "flags",
+  "stream_id",
+  "settings",
+  "error_code",
+  "last_stream_id",
+  "window_size_increment",
+  "promised_stream_id",
+  "header_block_fragment",
+  "headers",
+  "padding_length",
+  "opaque_data",
+  "reassembly_in_progress",
+  "segment_count",
+]
+
+[SIP]
+fields = [
+  # Request/response identification
+  "is_response",
+  "method",
+  "uri",
+  "version",
+  "status_code",
+  "reason_phrase",
+  # Key headers for call tracking
+  "headers",
+  "headers.name",
+  "headers.value",
+  "content_length",
+  "content_type",
+]
+
+[Diameter]
+fields = [
+  # Command identification
+  "command_code",
+  "command_name",
+  "is_request",
+  "application_id",
+  "application_name",
+  # Correlation IDs
+  "hop_by_hop_id",
+  "end_to_end_id",
+  # AVPs: show name, vendor_id (only present for vendor-specific AVPs), value, and
+  # result_code_name (only present on Result-Code AVP); omit numeric code, flags, and wire-level length
+  "avps",
+  "avps.name",
+  "avps.vendor_id",
+  "avps.value",
+  "avps.result_code_name",
+]
+
+[GENEVE]
+fields = ["protocol_type", "vni"]
+
+[GRE]
+fields = ["protocol_type", "key"]
+
+[VXLAN]
+fields = ["vni"]
+
+[GTPv1-U]
+fields = [
+  # Tunnel identification
+  "teid",
+  "message_type",
+  # Optional fields present when S/PN/E flags are set
+  "sequence_number",
+  "n_pdu_number",
+  "next_extension_header_type",
+  "extension_headers",
+]
+
+[NTP]
+fields = [
+  "leap_indicator_name",
+  "version",
+  "mode_name",
+  "stratum",
+  "stratum_name",
+  "poll",
+  "precision",
+  "reference_id",
+  "reference_timestamp",
+  "transmit_timestamp",
+]
+
+[GTPv2-C]
+fields = [
+  # Message identification
+  "message_type",
+  # Tunnel identification (absent on some messages)
+  "teid",
+  "sequence_number",
+  # IEs: show type name, instance, and value; omit numeric type code and wire-level length
+  "ies",
+  "ies.type_name",
+  "ies.instance",
+  "ies.value",
+]
+
+[PFCP]
+fields = [
+  # Message identification
+  "message_type",
+  # Session identification (absent on node-related messages)
+  "seid",
+  "sequence_number",
+  # IEs: show type name and value; omit numeric type code and wire-level length
+  "ies",
+  "ies.type_name",
+  "ies.value",
+]
+
+[ISIS]
+fields = [
+  "pdu_type_name",
+  "source_id",
+  "holding_time",
+  "priority",
+  "lan_id",
+  "local_circuit_id",
+  "lsp_id",
+  "remaining_lifetime",
+  "sequence_number",
+  "start_lsp_id",
+  "end_lsp_id",
+  "tlvs",
+  "tlvs.type_name",
+  "tlvs.hostname",
+  "tlvs.addresses",
+  "tlvs.router_id",
+  "tlvs.areas",
+  "tlvs.neighbors",
+  "tlvs.prefixes",
+  "tlvs.protocols",
+  "tlvs.entries",
+  "tlvs.state_name",
+  "tlvs.auth_type_name",
+  "tlvs.flags_names",
+  "tlvs.remaining_time",
+]
+
+[BGP]
+fields = [
+  "type_name",
+  "version",
+  "my_as",
+  "hold_time",
+  "bgp_identifier",
+  "optional_parameters",
+  "optional_parameters.code",
+  "optional_parameters.code_name",
+  "optional_parameters.value",
+  "withdrawn_routes_length",
+  "withdrawn_routes",
+  "path_attributes",
+  "path_attributes.type_name",
+  "path_attributes.value",
+  "nlri",
+  "error_code_name",
+  "error_subcode_name",
+  "data",
+  "afi",
+  "afi_name",
+  "safi",
+  "safi_name",
+]
+
+[TLS]
+fields = [
+  "content_type_name",
+  "version_name",
+  "handshake_type_name",
+  "handshake_version_name",
+  "cipher_suites",
+  "cipher_suite",
+  "cipher_suite_name",
+  "extensions",
+  "extensions.type_name",
+  "extensions.server_name",
+  "alert_level_name",
+  "alert_description_name",
+]
+
+[L2TP]
+fields = ["is_control", "tunnel_id", "session_id", "ns", "nr"]
+
+[L2TPv3]
+fields = [
+  "session_id",
+  "is_control",
+  "version",
+  "control_connection_id",
+  "ns",
+  "nr",
+  "message_type",
+  "avps",
+  "avps.mandatory",
+  "avps.vendor_id",
+  "avps.attribute_type",
+  "avps.value",
+]
+
+[L2TPv3-UDP]
+fields = [
+  "t_bit",
+  "version",
+  "session_id",
+  "control_connection_id",
+  "ns",
+  "nr",
+  "message_type",
+  "avps",
+  "avps.mandatory",
+  "avps.vendor_id",
+  "avps.attribute_type",
+  "avps.value",
+]
+
+[PPP]
+fields = ["protocol"]
+
+[AH]
+fields = ["next_header", "spi", "sequence_number"]
+
+[ESP]
+fields = ["spi", "sequence_number", "next_header", "pad_length"]
+
+[IKE]
+fields = [
+  "initiator_spi",
+  "responder_spi",
+  "major_version",
+  "exchange_type",
+  "flags",
+  "flag_initiator",
+  "flag_response",
+  "message_id",
+  "length",
+  "payloads",
+  "payloads.payload_type",
+  "payloads.payload_length",
+]
+
+[RTP]
+fields = [
+  "payload_type",
+  "sequence_number",
+  "timestamp",
+  "ssrc",
+  "marker",
+  "csrc_list",
+]
+
+[RADIUS]
+fields = [
+  "code",
+  "code_name",
+  "identifier",
+  "length",
+  "attributes",
+  "attributes.name",
+  "attributes.value",
+  "attributes.value_name",
+  "attributes.vendor_id",
+]
+
+[NGAP]
+fields = [
+  "pdu_type",
+  "pdu_type_name",
+  "procedure_code",
+  "procedure_code_name",
+  "ies",
+  "ies.id_name",
+  "ies.value",
+]
+
+[NAS-5G]
+fields = [
+  "extended_protocol_discriminator",
+  "extended_protocol_discriminator_name",
+  "security_header_type",
+  "security_header_type_name",
+  "message_type",
+  "message_type_name",
+  "pdu_session_id",
+  "procedure_transaction_identity",
+  "message_authentication_code",
+  "sequence_number",
+  "plain_nas_message",
+]
+
+[BFD]
+fields = [
+  "version",
+  "state_name",
+  "diagnostic_name",
+  "detect_mult",
+  "my_discriminator",
+  "your_discriminator",
+  "desired_min_tx_interval",
+  "required_min_rx_interval",
+]
+
+[QUIC]
+fields = [
+  "header_form",
+  "header_form_name",
+  "packet_type",
+  "packet_type_name",
+  "version",
+  "version_name",
+  "dcid",
+  "scid",
+  "spin_bit",
+  "key_phase",
+  "supported_versions",
+]
+
+[STUN]
+fields = [
+  "message_class",
+  "message_class_name",
+  "message_method",
+  "message_method_name",
+  "message_length",
+  "transaction_id",
+  "attributes",
+]

@@ -1,0 +1,111 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, closed]
+
+env:
+  CARGO_TERM_COLOR: always
+  BENCHER_PROJECT: dsct
+
+jobs:
+  benchmark_base:
+    if: github.event_name == 'push'
+    name: Track base branch benchmarks
+    permissions:
+      contents: read
+      checks: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: bencherdev/bencher@main
+
+      - name: Install hyperfine
+        uses: taiki-e/install-action@v2
+        with:
+          tool: hyperfine
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Generate benchmark pcap
+        run: python3 .github/scripts/gen_bench_pcap.py bench_input.pcap 100000
+
+      - name: Hyperfine benchmarks
+        run: |
+          bencher run \
+            --token '${{ secrets.BENCHER_API_TOKEN }}' \
+            --branch main \
+            --testbed ubuntu-latest \
+            --threshold-measure latency \
+            --threshold-test t_test \
+            --threshold-min-sample-size 30 \
+            --threshold-max-sample-size 64 \
+            --threshold-upper-boundary 0.99 \
+            --thresholds-reset \
+            --err \
+            --adapter shell_hyperfine \
+            --file results.json \
+            --github-actions '${{ secrets.GITHUB_TOKEN }}' \
+            "hyperfine --export-json results.json --warmup 3 \
+              'target/release/dsct read bench_input.pcap' \
+              'target/release/dsct stats bench_input.pcap'"
+
+  benchmark_pr:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    name: Track PR benchmarks
+    permissions:
+      contents: read
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: bencherdev/bencher@main
+
+      - name: Install hyperfine
+        uses: taiki-e/install-action@v2
+        with:
+          tool: hyperfine
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Generate benchmark pcap
+        run: python3 .github/scripts/gen_bench_pcap.py bench_input.pcap 100000
+
+      - name: Hyperfine benchmarks
+        run: |
+          bencher run \
+            --token '${{ secrets.BENCHER_API_TOKEN }}' \
+            --branch "$GITHUB_HEAD_REF" \
+            --start-point "$GITHUB_BASE_REF" \
+            --start-point-hash '${{ github.event.pull_request.base.sha }}' \
+            --start-point-clone-thresholds \
+            --start-point-reset \
+            --testbed ubuntu-latest \
+            --err \
+            --adapter shell_hyperfine \
+            --file results.json \
+            --github-actions '${{ secrets.GITHUB_TOKEN }}' \
+            "hyperfine --export-json results.json --warmup 3 \
+              'target/release/dsct read bench_input.pcap' \
+              'target/release/dsct stats bench_input.pcap'"
+
+  archive_pr:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    name: Archive closed PR branch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: bencherdev/bencher@main
+      - name: Archive branch
+        run: |
+          bencher archive \
+            --token '${{ secrets.BENCHER_API_TOKEN }}' \
+            --branch "$GITHUB_HEAD_REF"

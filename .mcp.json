@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "dsct": {
+      "command": "dsct",
+      "args": ["mcp"]
+    }
+  }
+}

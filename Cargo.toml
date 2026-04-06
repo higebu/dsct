@@ -1,0 +1,186 @@
+[package]
+name = "dsct"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.88"
+repository = "https://github.com/higebu/dsct"
+description = "LLM-friendly packet dissector CLI"
+keywords = ["pcap", "pcapng", "packet", "dissector", "llm"]
+categories = ["command-line-utilities", "network-programming"]
+
+[package.metadata.release]
+tag-prefix = "v"
+tag-name = "v{{version}}"
+pre-release-commit-message = "chore(release): v{{version}}"
+publish = false
+push = false
+
+[package.metadata.docs.rs]
+all-features = true
+
+[[bin]]
+name = "dsct"
+path = "src/main.rs"
+
+[features]
+default = [
+  "ethernet",
+  "linux_sll",
+  "linux_sll2",
+  "arp",
+  "lacp",
+  "ipv4",
+  "ipv6",
+  "icmp",
+  "icmpv6",
+  "igmp",
+  "tcp",
+  "udp",
+  "sctp",
+  "http",
+  "http2",
+  "dns",
+  "mdns",
+  "dhcp",
+  "dhcpv6",
+  "gtpv1u",
+  "gtpv2c",
+  "pfcp",
+  "sip",
+  "diameter",
+  "nas5g",
+  "ngap",
+  "srv6",
+  "geneve",
+  "gre",
+  "vxlan",
+  "lldp",
+  "stp",
+  "mpls",
+  "ntp",
+  "ospf",
+  "vrrp",
+  "bfd",
+  "isis",
+  "bgp",
+  "l2tp",
+  "l2tpv3",
+  "tls",
+  "ppp",
+  "radius",
+  "ah",
+  "esp",
+  "esp-decrypt",
+  "ike",
+  "rtp",
+  "quic",
+  "stun",
+]
+tui = [
+  "dep:ratatui",
+  "dep:crossterm",
+  "dep:memmap2",
+  "dep:nucleo-matcher",
+  "dep:tempfile",
+  "dep:rustix",
+  "dep:lru",
+]
+ethernet = ["packet-dissector/ethernet"]
+linux_sll = ["packet-dissector/linux_sll"]
+linux_sll2 = ["packet-dissector/linux_sll2"]
+arp = ["packet-dissector/arp"]
+lacp = ["packet-dissector/lacp"]
+ipv4 = ["packet-dissector/ipv4"]
+ipv6 = ["packet-dissector/ipv6"]
+icmp = ["packet-dissector/icmp"]
+icmpv6 = ["packet-dissector/icmpv6"]
+igmp = ["packet-dissector/igmp"]
+tcp = ["packet-dissector/tcp"]
+udp = ["packet-dissector/udp"]
+sctp = ["packet-dissector/sctp"]
+http = ["packet-dissector/http"]
+http2 = ["packet-dissector/http2"]
+dns = ["packet-dissector/dns"]
+mdns = ["packet-dissector/mdns"]
+dhcp = ["packet-dissector/dhcp"]
+dhcpv6 = ["packet-dissector/dhcpv6"]
+gtpv1u = ["packet-dissector/gtpv1u"]
+gtpv2c = ["packet-dissector/gtpv2c"]
+pfcp = ["packet-dissector/pfcp"]
+sip = ["packet-dissector/sip"]
+diameter = ["packet-dissector/diameter"]
+nas5g = ["packet-dissector/nas5g"]
+ngap = ["packet-dissector/ngap"]
+srv6 = ["packet-dissector/srv6"]
+geneve = ["packet-dissector/geneve"]
+gre = ["packet-dissector/gre"]
+vxlan = ["packet-dissector/vxlan"]
+lldp = ["packet-dissector/lldp"]
+stp = ["packet-dissector/stp"]
+mpls = ["packet-dissector/mpls"]
+ntp = ["packet-dissector/ntp"]
+ospf = ["packet-dissector/ospf"]
+vrrp = ["packet-dissector/vrrp"]
+bfd = ["packet-dissector/bfd"]
+isis = ["packet-dissector/isis"]
+bgp = ["packet-dissector/bgp"]
+l2tp = ["packet-dissector/l2tp"]
+l2tpv3 = ["packet-dissector/l2tpv3"]
+tls = ["packet-dissector/tls"]
+ppp = ["packet-dissector/ppp"]
+radius = ["packet-dissector/radius"]
+ah = ["packet-dissector/ah"]
+esp = ["packet-dissector/esp"]
+esp-decrypt = ["esp", "packet-dissector/esp-decrypt"]
+ike = ["packet-dissector/ike"]
+rtp = ["packet-dissector/rtp"]
+quic = ["packet-dissector/quic"]
+stun = ["packet-dissector/stun"]
+
+[dependencies]
+packet-dissector = { version = "0.2.1", default-features = false }
+packet-dissector-core = "0.2.1"
+packet-dissector-pcap = "0.2.1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+toml = "1.1"
+ratatui = { version = "0.30", default-features = false, features = [
+  "crossterm",
+], optional = true }
+crossterm = { version = "0.29", features = ["use-dev-tty"], optional = true }
+memmap2 = { version = "0.9", optional = true }
+nucleo-matcher = { version = "0.3", optional = true }
+tempfile = { version = "3", optional = true }
+rustix = { version = "1", features = ["stdio"], optional = true }
+lru = { version = "0.16", optional = true }
+sqlparser = "0.61.0"
+
+[dev-dependencies]
+assert_cmd = "2"
+criterion = { version = "0.8", features = ["html_reports"] }
+packet-dissector-test-alloc = "0.2.1"
+predicates = "3"
+tempfile = "3"
+nix = { version = "0.31", default-features = false, features = [
+  "term",
+  "poll",
+  "process",
+  "fs",
+] }
+
+[[bench]]
+name = "json_escape"
+harness = false
+
+[[bench]]
+name = "tui_index"
+harness = false
+required-features = ["tui"]
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
