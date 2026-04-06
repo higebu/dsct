@@ -1,0 +1,19 @@
+{
+  "name": "dsct",
+  "owner": {
+    "name": "higebu"
+  },
+  "plugins": [
+    {
+      "name": "dsct",
+      "source": "./",
+      "description": "LLM-friendly packet dissector with MCP server for pcap/pcapng analysis",
+      "version": "0.1.0",
+      "homepage": "https://github.com/higebu/dsct",
+      "repository": "https://github.com/higebu/dsct",
+      "license": "MIT OR Apache-2.0",
+      "category": "network",
+      "keywords": ["pcap", "packet", "dissector", "mcp", "network"]
+    }
+  ]
+}
