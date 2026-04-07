@@ -43,6 +43,24 @@ The optional TUI is designed for large captures too:
 - the selected packet is decoded in detail only when needed
 - the hex view reads directly from the mapped file
 
+## Installation
+
+CLI only:
+
+```bash
+cargo install --path .
+```
+
+With the optional TUI:
+
+```bash
+cargo install --path . --features tui
+```
+
+```bash
+brew install higebu/tap/dsct
+```
+
 ## Claude Code / Copilot CLI plugin
 
 Install as a plugin via the marketplace to get the MCP server and the
@@ -60,20 +78,6 @@ claude plugin install dsct@dsct
 ```bash
 copilot plugin marketplace add higebu/dsct
 copilot plugin install dsct@dsct
-```
-
-## Installation
-
-CLI only:
-
-```bash
-cargo install --path .
-```
-
-With the optional TUI:
-
-```bash
-cargo install --path . --features tui
 ```
 
 ## Quick start
