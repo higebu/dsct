@@ -101,12 +101,24 @@ impl CaptureMap {
             None => return Ok(false),
         };
         let file_len = file.metadata()?.len() as usize;
-        if file_len <= self.mmap.len() {
+        if file_len < self.mmap.len() {
+            // File was truncated.  The append-only invariant is violated;
+            // surface it instead of leaving a stale mmap that could SIGBUS
+            // on the next `packet_data()` read.
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "capture file was truncated; mmap append-only invariant violated",
+            ));
+        }
+        if file_len == self.mmap.len() {
             return Ok(false);
         }
-        // SAFETY: The file is append-only.  We drop the old mmap before
-        // creating a fresh read-only mapping of the new file size.  Existing
-        // byte offsets remain valid because the file is never truncated.
+        // SAFETY: The file is append-only.  We have just confirmed
+        // `file_len > self.mmap.len()` above (the truncation case returned
+        // `Err`), so the new mapping is strictly larger than the old one.
+        // We drop the old mmap before creating a fresh read-only mapping of
+        // the new file size.  Existing byte offsets remain valid because
+        // truncation is rejected on the error path above.
         let new_mmap = unsafe { memmap2::MmapOptions::new().map(file)? };
         self.mmap = new_mmap;
         Ok(true)
