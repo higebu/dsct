@@ -763,4 +763,77 @@ mod tests {
         assert!(capture.refresh().unwrap());
         assert_eq!(capture.as_bytes().len(), pcap.len());
     }
+
+    #[test]
+    fn capture_map_new_live_iterative_append_offset_invariant() {
+        use std::io::Write;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let file = tmp.as_file().try_clone().unwrap();
+        let mut capture = CaptureMap::new_live(file).unwrap();
+
+        let pcap = super::super::loader::tests::build_pcap_for_test(10);
+        let chunk = 16usize;
+        let mut prev_len = 0usize;
+        let mut written = 0usize;
+
+        let mut i = 0;
+        while written < pcap.len() {
+            let lo = i * chunk;
+            let hi = (lo + chunk).min(pcap.len());
+            tmp.as_file().write_all(&pcap[lo..hi]).unwrap();
+            tmp.as_file().flush().unwrap();
+            written = hi;
+            i += 1;
+
+            let _ = capture.refresh().unwrap();
+            let mmap_len = capture.as_bytes().len();
+
+            // Core invariant: any byte we have written so far is addressable
+            // through the mmap (i.e. observed offset never exceeds len).
+            assert!(
+                written <= mmap_len,
+                "observed offset {written} exceeds mmap len {mmap_len}"
+            );
+            // And the mmap length is non-decreasing across refreshes.
+            assert!(
+                mmap_len >= prev_len,
+                "mmap shrunk from {prev_len} to {mmap_len}"
+            );
+            prev_len = mmap_len;
+        }
+
+        assert_eq!(capture.as_bytes().len(), pcap.len());
+    }
+
+    #[test]
+    fn capture_map_refresh_rejects_truncation() {
+        use std::io::Write;
+
+        let pcap = super::super::loader::tests::build_pcap_for_test(5);
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&pcap).unwrap();
+        tmp.flush().unwrap();
+
+        let file = tmp.as_file().try_clone().unwrap();
+        let mut capture = CaptureMap::new_live(file).unwrap();
+        assert_eq!(capture.as_bytes().len(), pcap.len());
+
+        // Shrink the underlying file to half its size.
+        let new_len = (pcap.len() / 2) as u64;
+        tmp.as_file().set_len(new_len).unwrap();
+        tmp.as_file().flush().unwrap();
+
+        // refresh() must not panic and must surface InvalidData.
+        let result = capture.refresh();
+        assert!(
+            result.is_err(),
+            "refresh() should reject truncation; got {result:?}"
+        );
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+
+        // We deliberately do NOT touch `capture.as_bytes()[new_len..]`: the
+        // stale tail pages would SIGBUS.  This test only enforces "no panic,
+        // surfaces InvalidData".
+    }
 }
