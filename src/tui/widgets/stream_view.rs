@@ -63,3 +63,70 @@ pub fn render(f: &mut Frame, sv: &StreamViewState, area: Rect) {
     let paragraph = Paragraph::new(lines).block(block);
     f.render_widget(paragraph, area);
 }
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::*;
+    use crate::tui::state::StreamLine;
+    use crate::tui::test_util::render_to_string;
+
+    #[test]
+    fn stream_view_renders_title_and_lines() {
+        let sv = StreamViewState {
+            lines: vec![
+                StreamLine {
+                    text: "GET / HTTP/1.1".into(),
+                    is_client: true,
+                },
+                StreamLine {
+                    text: "HTTP/1.1 200 OK".into(),
+                    is_client: false,
+                },
+            ],
+            scroll_offset: 0,
+            title: "TCP Stream #1".into(),
+        };
+        let dump = render_to_string(60, 10, |f| {
+            render(f, &sv, f.area());
+        });
+        assert!(dump.contains("TCP Stream #1"), "dump: {dump}");
+        assert!(dump.contains("GET / HTTP/1.1"), "dump: {dump}");
+        assert!(dump.contains("HTTP/1.1 200 OK"), "dump: {dump}");
+    }
+
+    #[test]
+    fn stream_view_renders_arrows() {
+        let sv = StreamViewState {
+            lines: vec![
+                StreamLine {
+                    text: "client".into(),
+                    is_client: true,
+                },
+                StreamLine {
+                    text: "server".into(),
+                    is_client: false,
+                },
+            ],
+            scroll_offset: 0,
+            title: "t".into(),
+        };
+        let dump = render_to_string(60, 10, |f| {
+            render(f, &sv, f.area());
+        });
+        assert!(dump.contains("\u{25B6}"), "missing client arrow: {dump}");
+        assert!(dump.contains("\u{25C0}"), "missing server arrow: {dump}");
+    }
+
+    #[test]
+    fn stream_view_empty_state() {
+        let sv = StreamViewState {
+            lines: Vec::new(),
+            scroll_offset: 0,
+            title: "empty-test".into(),
+        };
+        let dump = render_to_string(60, 10, |f| {
+            render(f, &sv, f.area());
+        });
+        assert!(dump.contains("empty"), "dump: {dump}");
+    }
+}

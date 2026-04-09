@@ -162,3 +162,81 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
 
     f.render_stateful_widget(table, area, &mut state);
 }
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::*;
+    use crate::tui::test_util::{make_test_app, render_to_string};
+
+    #[test]
+    fn packet_list_renders_header() {
+        let mut app = make_test_app(3);
+        let dump = render_to_string(120, 10, |f| {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 120,
+                height: 10,
+            };
+            render(f, &mut app, area);
+        });
+        for label in [
+            "No.",
+            "Time",
+            "Source",
+            "Destination",
+            "Proto",
+            "Len",
+            "Info",
+        ] {
+            assert!(dump.contains(label), "missing {label:?} in dump: {dump}");
+        }
+    }
+
+    #[test]
+    fn packet_list_renders_addresses() {
+        let mut app = make_test_app(3);
+        let dump = render_to_string(120, 10, |f| {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 120,
+                height: 10,
+            };
+            render(f, &mut app, area);
+        });
+        assert!(dump.contains("10.0.0.1"), "dump: {dump}");
+        assert!(dump.contains("10.0.0.2"), "dump: {dump}");
+    }
+
+    #[test]
+    fn packet_list_renders_title() {
+        let mut app = make_test_app(1);
+        let dump = render_to_string(120, 10, |f| {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 120,
+                height: 10,
+            };
+            render(f, &mut app, area);
+        });
+        assert!(dump.contains("Packet List"), "dump: {dump}");
+    }
+
+    #[test]
+    fn packet_list_empty_renders_without_panic() {
+        let mut app = make_test_app(0);
+        let dump = render_to_string(120, 10, |f| {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 120,
+                height: 10,
+            };
+            render(f, &mut app, area);
+        });
+        assert!(dump.contains("Packet List"), "dump: {dump}");
+        assert!(dump.contains("No."), "dump: {dump}");
+    }
+}

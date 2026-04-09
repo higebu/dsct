@@ -1345,3 +1345,135 @@ impl App {
         }
     }
 }
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::super::state::{StreamLine, StreamViewState};
+    use super::super::test_util::make_test_app;
+    use super::*;
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn mouse_scroll_moves_selection() {
+        let mut app = make_test_app(5);
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 0, 0));
+        assert_eq!(app.packet_list.selected, 1);
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 0, 0));
+        assert_eq!(app.packet_list.selected, 2);
+        app.handle_mouse(mouse(MouseEventKind::ScrollUp, 0, 0));
+        assert_eq!(app.packet_list.selected, 1);
+    }
+
+    #[test]
+    fn mouse_click_selects_row() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = make_test_app(10);
+        // Render once so pane_layout is populated for hit-testing.
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| super::super::ui::render(f, &mut app))
+            .unwrap();
+
+        let area = app.pane_layout.packet_list;
+        // Click 4 rows inside the packet list (area.y + 1 is the first row).
+        let target_row = area.y + 1 + 3;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            area.x + 2,
+            target_row,
+        ));
+        assert_eq!(app.active_pane, Pane::PacketList);
+        assert_eq!(app.packet_list.selected, 3);
+    }
+
+    #[test]
+    fn on_resize_clamps_offsets() {
+        let mut app = make_test_app(3);
+        app.packet_list.scroll_offset = 999;
+        app.detail_tree.scroll_offset = 999;
+        app.hex_dump.scroll_offset = 999;
+        app.on_resize();
+        assert!(app.packet_list.scroll_offset < app.displayed_count());
+        // pane_layout is invalidated to default (all-zero rects).
+        assert_eq!(app.pane_layout.packet_list.width, 0);
+    }
+
+    #[test]
+    fn command_stats_starts_stats_progress() {
+        let mut app = make_test_app(3);
+        app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+        for c in "stats".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.stats_progress.is_some());
+    }
+
+    #[test]
+    fn command_wq_saves_and_quits() {
+        let mut app = make_test_app(2);
+        let path = std::env::temp_dir().join(format!(
+            "dsct_keys_wq_{}_{}.pcap",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let path_str = path.display().to_string();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+        for c in format!("wq {path_str}").chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(!app.running);
+        assert!(path.exists());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn stream_view_navigation_keys() {
+        let mut app = make_test_app(1);
+        app.stream_view = Some(StreamViewState {
+            lines: (0..10)
+                .map(|i| StreamLine {
+                    text: format!("line {i}"),
+                    is_client: i % 2 == 0,
+                })
+                .collect(),
+            scroll_offset: 0,
+            title: "test".into(),
+        });
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.stream_view.as_ref().unwrap().scroll_offset, 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
+        assert_eq!(app.stream_view.as_ref().unwrap().scroll_offset, 9);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(app.stream_view.as_ref().unwrap().scroll_offset, 8);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert_eq!(app.stream_view.as_ref().unwrap().scroll_offset, 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.stream_view.is_none());
+    }
+}

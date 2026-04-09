@@ -111,3 +111,49 @@ impl App {
         true
     }
 }
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::super::test_util::make_test_app;
+
+    #[test]
+    fn apply_filter_empty_shows_all() {
+        let mut app = make_test_app(3);
+        app.filter.buf.input.clear();
+        app.filter.buf.cursor = 0;
+        app.apply_filter();
+        assert!(app.filter_progress.is_none());
+        assert_eq!(app.filtered_indices.len(), app.indices.len());
+        assert_eq!(app.displayed_count(), 3);
+    }
+
+    #[test]
+    fn apply_filter_parse_error_sets_message() {
+        let mut app = make_test_app(3);
+        app.filter.buf.input = "udp.port ==".into();
+        app.filter.buf.cursor = app.filter.buf.input.len();
+        app.apply_filter();
+        assert!(app.filter.error_message.is_some());
+        assert!(app.filter_progress.is_none());
+    }
+
+    #[test]
+    fn filter_tick_runs_to_completion() {
+        let mut app = make_test_app(3);
+        app.filter.buf.input = "udp".into();
+        app.filter.buf.cursor = 3;
+        app.apply_filter();
+        // Either empty path or chunked path — drive until done.
+        while app.filter_tick() {}
+        assert!(app.filter_progress.is_none());
+        // Fixture packets are all UDP.
+        assert_eq!(app.displayed_count(), 3);
+    }
+
+    #[test]
+    fn filter_tick_returns_false_when_idle() {
+        let mut app = make_test_app(1);
+        assert!(app.filter_progress.is_none());
+        assert!(!app.filter_tick());
+    }
+}

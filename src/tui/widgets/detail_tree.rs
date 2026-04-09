@@ -99,3 +99,57 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 
     f.render_stateful_widget(list, area, &mut state);
 }
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::*;
+    use crate::tui::test_util::{make_test_app, render_to_string};
+
+    #[test]
+    fn detail_tree_renders_title() {
+        let app = make_test_app(1);
+        let dump = render_to_string(60, 15, |f| {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 60,
+                height: 15,
+            };
+            render(f, &app, area);
+        });
+        assert!(dump.contains("Protocol Detail"), "dump: {dump}");
+    }
+
+    #[test]
+    fn detail_tree_renders_layer_label() {
+        let app = make_test_app(1);
+        let dump = render_to_string(60, 15, |f| {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 60,
+                height: 15,
+            };
+            render(f, &app, area);
+        });
+        assert!(
+            dump.contains("Ethernet") || dump.contains("IPv4") || dump.contains("UDP"),
+            "expected a layer label in dump: {dump}"
+        );
+    }
+
+    #[test]
+    fn detail_tree_renders_empty_when_no_selection() {
+        let app = make_test_app(0);
+        let dump = render_to_string(60, 15, |f| {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 60,
+                height: 15,
+            };
+            render(f, &app, area);
+        });
+        assert!(dump.contains("Protocol Detail"), "dump: {dump}");
+    }
+}

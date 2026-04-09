@@ -174,3 +174,15 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
     super::state::save_history(&app.filter.history);
     Ok(())
 }
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    // `init_terminal`, `restore_terminal`, and `run_event_loop` require a
+    // real TTY and mutate global terminal state (raw mode, alternate screen),
+    // so they cannot be exercised safely from parallel unit tests.  This
+    // module exists to satisfy the repo-wide convention that every `src/tui/`
+    // file carries a `cfg(test)` block.  Integration coverage lives in the
+    // end-to-end CLI tests.
+    #[test]
+    fn module_compiles() {}
+}

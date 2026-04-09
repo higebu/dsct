@@ -56,3 +56,30 @@ impl App {
         true
     }
 }
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::super::state::StatsProgress;
+    use super::super::test_util::make_test_app;
+    use crate::stats::{StatsCollector, StatsFlags};
+
+    #[test]
+    fn stats_tick_idle_returns_false() {
+        let mut app = make_test_app(3);
+        assert!(app.stats_progress.is_none());
+        assert!(!app.stats_tick());
+        assert!(app.stats_output.is_none());
+    }
+
+    #[test]
+    fn stats_tick_runs_to_completion() {
+        let mut app = make_test_app(5);
+        app.stats_progress = Some(StatsProgress {
+            cursor: 0,
+            collector: StatsCollector::from_flags(&StatsFlags::all_protocols(true, true)),
+        });
+        while app.stats_tick() {}
+        let out = app.stats_output.as_ref().expect("stats_output set");
+        assert_eq!(out.total_packets, 5);
+    }
+}

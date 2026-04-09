@@ -74,3 +74,86 @@ impl Drop for StdinCopier {
         drop(self.handle.take());
     }
 }
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    /// Open a freshly-created, uniquely-named temp file for read + write.
+    fn unique_temp_path(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::AtomicU32;
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let c = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("dsct_live_test_{tag}_{}_{c}", std::process::id()))
+    }
+
+    /// Wait (up to `budget`) for the copier to observe EOF.
+    fn wait_eof(copier: &StdinCopier, budget: Duration) {
+        let deadline = Instant::now() + budget;
+        while Instant::now() < deadline {
+            if copier.eof.load(Ordering::Acquire) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn spawn_copies_file_contents() {
+        let src_path = unique_temp_path("src");
+        let dst_path = unique_temp_path("dst");
+        std::fs::write(&src_path, b"hello world").unwrap();
+
+        let source = std::fs::File::open(&src_path).unwrap();
+        let target = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&dst_path)
+            .unwrap();
+
+        let copier = StdinCopier::spawn(source, &target).unwrap();
+        wait_eof(&copier, Duration::from_millis(500));
+
+        assert!(copier.eof.load(Ordering::Acquire));
+        assert_eq!(copier.bytes_written.load(Ordering::Acquire), 11);
+
+        let mut out = String::new();
+        std::fs::File::open(&dst_path)
+            .unwrap()
+            .read_to_string(&mut out)
+            .unwrap();
+        assert_eq!(out, "hello world");
+
+        let _ = std::fs::remove_file(&src_path);
+        let _ = std::fs::remove_file(&dst_path);
+    }
+
+    #[test]
+    fn spawn_empty_source_sets_eof() {
+        let src_path = unique_temp_path("src_empty");
+        let dst_path = unique_temp_path("dst_empty");
+        std::fs::write(&src_path, b"").unwrap();
+
+        let source = std::fs::File::open(&src_path).unwrap();
+        let target = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&dst_path)
+            .unwrap();
+
+        let copier = StdinCopier::spawn(source, &target).unwrap();
+        wait_eof(&copier, Duration::from_millis(500));
+
+        assert!(copier.eof.load(Ordering::Acquire));
+        assert_eq!(copier.bytes_written.load(Ordering::Acquire), 0);
+
+        let _ = std::fs::remove_file(&src_path);
+        let _ = std::fs::remove_file(&dst_path);
+    }
+}
