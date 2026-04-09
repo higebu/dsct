@@ -120,10 +120,7 @@ mod tests {
 
     #[test]
     fn keeps_bare_numeric_output() {
-        assert_eq!(
-            run(desc_with_format_fn(fmt_number)),
-            Some("42".to_string())
-        );
+        assert_eq!(run(desc_with_format_fn(fmt_number)), Some("42".to_string()));
     }
 
     #[test]
