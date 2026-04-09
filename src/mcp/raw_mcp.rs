@@ -160,7 +160,7 @@ fn tools_list_result() -> Value {
         "tools": [
             {
                 "name": "dsct_read_packets",
-                "description": "Dissect packets from a pcap/pcapng capture file. Returns an object with a packets array of dissected packet objects with protocol layers and fields. IMPORTANT: Call dsct_get_stats first to understand capture size. Then use filter to narrow to relevant protocols and count (start with 50 or fewer) to keep output within context limits.",
+                "description": "Dissect packets from a pcap/pcapng capture file. Returns an object with a packets array of dissected packet objects with protocol layers and fields. IMPORTANT: Call dsct_get_stats first to understand capture size. Then use filter to narrow to relevant protocols and count (start with 50 or fewer) to keep output within context limits. For large captures, use sample_rate to get evenly-distributed packets across the timeline (e.g. sample_rate: total_packets / 50 yields ~50 representative packets).",
                 "annotations": { "readOnlyHint": true },
                 "inputSchema": read_packets_schema(),
                 "outputSchema": {
@@ -909,6 +909,21 @@ mod tests {
         assert!(names.contains(&"dsct_list_protocols"));
         assert!(names.contains(&"dsct_list_fields"));
         assert!(names.contains(&"dsct_get_schema"));
+    }
+
+    #[test]
+    fn read_packets_description_mentions_sample_rate() {
+        let result = tools_list_result();
+        let tools = result["tools"].as_array().unwrap();
+        let read_tool = tools
+            .iter()
+            .find(|t| t["name"] == "dsct_read_packets")
+            .expect("dsct_read_packets tool must exist");
+        let desc = read_tool["description"].as_str().unwrap();
+        assert!(
+            desc.contains("sample_rate"),
+            "dsct_read_packets description must mention sample_rate for discoverability, got: {desc}"
+        );
     }
 
     #[test]
