@@ -269,4 +269,89 @@ mod tests {
         assert!(records.is_empty());
         assert!(!done);
     }
+
+    #[test]
+    fn spawn_returns_error_for_nonexistent_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does_not_exist.pcap");
+        let result = BackgroundIndexer::spawn(&missing, 0);
+        assert!(
+            result.is_err(),
+            "spawn should return Err for a missing path, not panic"
+        );
+    }
+
+    #[test]
+    fn spawn_returns_error_for_unmappable_path() {
+        // A directory path opens successfully on Linux but mmap(2) on a
+        // directory fd returns ENODEV ("No such device").  memmap2 surfaces
+        // this as an Err, and BackgroundIndexer::spawn wraps it into a
+        // DsctError via `.map_err(|e| DsctError::msg(e.to_string()))?`.
+        // The test asserts that the error from the unsafe mmap block is
+        // propagated rather than panicking.
+        let dir = tempfile::tempdir().unwrap();
+        let result = BackgroundIndexer::spawn(dir.path(), 0);
+        assert!(
+            result.is_err(),
+            "spawn should return Err when mmap fails, not panic"
+        );
+    }
+
+    #[test]
+    fn bg_thread_exits_cleanly_when_receiver_dropped() {
+        use std::io::Write;
+        use std::sync::mpsc::RecvTimeoutError;
+        use std::time::Duration;
+
+        // 25_000 packets > 2 * CHUNK_SIZE so the bg thread is very likely
+        // still in its send loop when we drop the receiver.  Even if it
+        // already finished (very small input race), the test still passes
+        // — any clean exit path satisfies the assertion.
+        let pcap = super::super::loader::tests::build_pcap_for_test(25_000);
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&pcap).unwrap();
+        tmp.flush().unwrap();
+
+        let mut indexer = BackgroundIndexer::spawn(tmp.path(), pcap.len()).unwrap();
+
+        // Steal the real handle and receiver, leaving placeholders behind
+        // so that `std::mem::forget(indexer)` below doesn't leave dangling
+        // fields.
+        let dummy_handle = std::thread::spawn(|| {});
+        let handle = std::mem::replace(&mut indexer._handle, dummy_handle);
+
+        let (_dummy_tx, dummy_rx) = mpsc::channel::<IndexBatch>();
+        let receiver = std::mem::replace(&mut indexer.receiver, dummy_rx);
+
+        // Suppress BackgroundIndexer::Drop so the cancel flag is never set.
+        // We want to verify that *receiver drop alone* is sufficient for
+        // clean termination, independent of the cancel signal.
+        std::mem::forget(indexer);
+
+        // Drop the real receiver: the bg thread's next tx.send() now fails.
+        drop(receiver);
+
+        // Join via a helper thread so we can enforce a timeout — a hung or
+        // panicking bg thread must fail the test, not stall cargo.
+        let (done_tx, done_rx) = mpsc::channel::<std::thread::Result<()>>();
+        std::thread::spawn(move || {
+            let r = handle.join();
+            let _ = done_tx.send(r);
+        });
+
+        match done_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(join_result) => {
+                assert!(
+                    join_result.is_ok(),
+                    "bg thread panicked instead of exiting cleanly: {join_result:?}"
+                );
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                panic!("bg thread did not exit within 5s of receiver drop")
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                panic!("join helper thread died before reporting a result")
+            }
+        }
+    }
 }
