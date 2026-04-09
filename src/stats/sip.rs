@@ -80,3 +80,103 @@ impl SipStatsCollector {
 }
 
 super::impl_protocol_stats_collector!(SipStatsCollector, "sip", SipStats);
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_helpers::pkt;
+    use super::*;
+    use packet_dissector_core::field::FieldValue;
+    use packet_dissector_core::packet::DissectBuffer;
+    use packet_dissector_test_alloc::test_desc;
+
+    fn build_sip_request_buf(method: &'static str) -> DissectBuffer<'static> {
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer("SIP", None, &[], 0..16);
+        buf.push_field(
+            test_desc("is_response", "Is Response"),
+            FieldValue::U8(0),
+            0..1,
+        );
+        buf.push_field(test_desc("method", "Method"), FieldValue::Str(method), 1..8);
+        buf.end_layer();
+        buf
+    }
+
+    fn build_sip_response_buf(status_code: u16) -> DissectBuffer<'static> {
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer("SIP", None, &[], 0..16);
+        buf.push_field(
+            test_desc("is_response", "Is Response"),
+            FieldValue::U8(1),
+            0..1,
+        );
+        buf.push_field(
+            test_desc("status_code", "Status Code"),
+            FieldValue::U16(status_code),
+            1..3,
+        );
+        buf.end_layer();
+        buf
+    }
+
+    #[test]
+    fn sip_ignores_non_sip_packets() {
+        let mut c = SipStatsCollector::new();
+        let buf = DissectBuffer::new();
+        c.process_packet(&pkt(&buf), None);
+
+        let stats = c.finalize_stats(10);
+        assert_eq!(stats.total_requests, 0);
+        assert_eq!(stats.total_responses, 0);
+        assert!(stats.method_distribution.is_empty());
+        assert!(stats.status_code_distribution.is_empty());
+    }
+
+    #[test]
+    fn sip_counts_request_with_method() {
+        let mut c = SipStatsCollector::new();
+        let b1 = build_sip_request_buf("INVITE");
+        c.process_packet(&pkt(&b1), None);
+        let b2 = build_sip_request_buf("INVITE");
+        c.process_packet(&pkt(&b2), None);
+        let b3 = build_sip_request_buf("BYE");
+        c.process_packet(&pkt(&b3), None);
+
+        let stats = c.finalize_stats(10);
+        assert_eq!(stats.total_requests, 3);
+        assert_eq!(stats.total_responses, 0);
+        assert_eq!(stats.method_distribution[0].name, "INVITE");
+        assert_eq!(stats.method_distribution[0].count, 2);
+    }
+
+    #[test]
+    fn sip_counts_response_with_status_code() {
+        let mut c = SipStatsCollector::new();
+        let b1 = build_sip_response_buf(200);
+        c.process_packet(&pkt(&b1), None);
+        let b2 = build_sip_response_buf(200);
+        c.process_packet(&pkt(&b2), None);
+        let b3 = build_sip_response_buf(486);
+        c.process_packet(&pkt(&b3), None);
+
+        let stats = c.finalize_stats(10);
+        assert_eq!(stats.total_responses, 3);
+        assert_eq!(stats.total_requests, 0);
+        assert_eq!(stats.status_code_distribution[0].name, "200");
+        assert_eq!(stats.status_code_distribution[0].count, 2);
+    }
+
+    #[test]
+    fn sip_finalize_top_n_limits_methods() {
+        let mut c = SipStatsCollector::new();
+        let methods = ["INVITE", "BYE", "REGISTER", "OPTIONS", "ACK"];
+        for m in methods {
+            let b = build_sip_request_buf(m);
+            c.process_packet(&pkt(&b), None);
+        }
+
+        let stats = c.finalize_stats(2);
+        assert_eq!(stats.method_distribution.len(), 2);
+        assert_eq!(stats.total_requests, 5);
+    }
+}

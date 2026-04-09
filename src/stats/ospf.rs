@@ -68,3 +68,78 @@ impl OspfStatsCollector {
 }
 
 super::impl_protocol_stats_collector!(OspfStatsCollector, "ospf", OspfStats);
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_helpers::pkt;
+    use super::*;
+    use packet_dissector_core::field::FieldValue;
+    use packet_dissector_core::packet::DissectBuffer;
+    use packet_dissector_test_alloc::test_desc;
+
+    fn build_ospf_buf(layer: &'static str, msg_type: u8) -> DissectBuffer<'static> {
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer(layer, None, &[], 0..24);
+        buf.push_field(
+            test_desc("msg_type", "Message Type"),
+            FieldValue::U8(msg_type),
+            1..2,
+        );
+        buf.end_layer();
+        buf
+    }
+
+    #[test]
+    fn ospf_ignores_non_ospf_packets() {
+        let mut c = OspfStatsCollector::new();
+        let buf = DissectBuffer::new();
+        c.process_packet(&pkt(&buf), None);
+
+        let stats = c.finalize_stats(10);
+        assert_eq!(stats.total_packets, 0);
+        assert!(stats.packet_type_distribution.is_empty());
+        assert!(stats.version_distribution.is_empty());
+    }
+
+    #[test]
+    fn ospf_v2_counts_packets() {
+        let mut c = OspfStatsCollector::new();
+        let b1 = build_ospf_buf("OSPFv2", 1); // Hello
+        c.process_packet(&pkt(&b1), None);
+        let b2 = build_ospf_buf("OSPFv2", 1);
+        c.process_packet(&pkt(&b2), None);
+
+        let stats = c.finalize_stats(10);
+        assert_eq!(stats.total_packets, 2);
+        assert_eq!(stats.version_distribution[0].name, "v2");
+        assert_eq!(stats.version_distribution[0].count, 2);
+        assert_eq!(stats.packet_type_distribution[0].name, "1");
+        assert_eq!(stats.packet_type_distribution[0].count, 2);
+    }
+
+    #[test]
+    fn ospf_v3_counts_packets() {
+        let mut c = OspfStatsCollector::new();
+        let b1 = build_ospf_buf("OSPFv3", 2); // Database Description
+        c.process_packet(&pkt(&b1), None);
+
+        let stats = c.finalize_stats(10);
+        assert_eq!(stats.total_packets, 1);
+        assert_eq!(stats.version_distribution[0].name, "v3");
+        assert_eq!(stats.version_distribution[0].count, 1);
+        assert_eq!(stats.packet_type_distribution[0].name, "2");
+    }
+
+    #[test]
+    fn ospf_finalize_top_n_limits_msg_types() {
+        let mut c = OspfStatsCollector::new();
+        for t in 1u8..=5 {
+            let b = build_ospf_buf("OSPFv2", t);
+            c.process_packet(&pkt(&b), None);
+        }
+
+        let stats = c.finalize_stats(2);
+        assert_eq!(stats.packet_type_distribution.len(), 2);
+        assert_eq!(stats.total_packets, 5);
+    }
+}

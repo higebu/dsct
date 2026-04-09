@@ -55,3 +55,62 @@ impl BgpStatsCollector {
 }
 
 super::impl_protocol_stats_collector!(BgpStatsCollector, "bgp", BgpStats);
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_helpers::pkt;
+    use super::*;
+    use packet_dissector_core::field::FieldValue;
+    use packet_dissector_core::packet::DissectBuffer;
+    use packet_dissector_test_alloc::test_desc;
+
+    fn build_bgp_buf(msg_type: u8) -> DissectBuffer<'static> {
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer("BGP", None, &[], 0..19);
+        buf.push_field(test_desc("type", "Type"), FieldValue::U8(msg_type), 18..19);
+        buf.end_layer();
+        buf
+    }
+
+    #[test]
+    fn bgp_ignores_non_bgp_packets() {
+        let mut c = BgpStatsCollector::new();
+        let buf = DissectBuffer::new();
+        c.process_packet(&pkt(&buf), None);
+
+        let stats = c.finalize_stats(10);
+        assert_eq!(stats.total_messages, 0);
+        assert!(stats.message_type_distribution.is_empty());
+    }
+
+    #[test]
+    fn bgp_counts_message_types() {
+        let mut c = BgpStatsCollector::new();
+        let b1 = build_bgp_buf(2); // UPDATE
+        c.process_packet(&pkt(&b1), None);
+        let b2 = build_bgp_buf(2);
+        c.process_packet(&pkt(&b2), None);
+        let b3 = build_bgp_buf(4); // KEEPALIVE
+        c.process_packet(&pkt(&b3), None);
+
+        let stats = c.finalize_stats(10);
+        assert_eq!(stats.total_messages, 3);
+        assert_eq!(stats.message_type_distribution[0].name, "2");
+        assert_eq!(stats.message_type_distribution[0].count, 2);
+        assert_eq!(stats.message_type_distribution[1].name, "4");
+        assert_eq!(stats.message_type_distribution[1].count, 1);
+    }
+
+    #[test]
+    fn bgp_finalize_top_n_limits_distribution() {
+        let mut c = BgpStatsCollector::new();
+        for t in 1u8..=5 {
+            let b = build_bgp_buf(t);
+            c.process_packet(&pkt(&b), None);
+        }
+
+        let stats = c.finalize_stats(2);
+        assert_eq!(stats.message_type_distribution.len(), 2);
+        assert_eq!(stats.total_messages, 5);
+    }
+}

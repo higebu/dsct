@@ -84,3 +84,98 @@ impl HttpStatsCollector {
 }
 
 super::impl_protocol_stats_collector!(HttpStatsCollector, "http", HttpStats);
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_helpers::pkt;
+    use super::*;
+    use packet_dissector_core::field::FieldValue;
+    use packet_dissector_core::packet::DissectBuffer;
+    use packet_dissector_test_alloc::test_desc;
+
+    fn build_http_request_buf(method: &'static str, uri: &'static str) -> DissectBuffer<'static> {
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer("HTTP", None, &[], 0..16);
+        buf.push_field(test_desc("method", "Method"), FieldValue::Str(method), 0..4);
+        buf.push_field(test_desc("uri", "URI"), FieldValue::Str(uri), 4..16);
+        buf.end_layer();
+        buf
+    }
+
+    fn build_http_response_buf(status_code: u16) -> DissectBuffer<'static> {
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer("HTTP", None, &[], 0..16);
+        buf.push_field(
+            test_desc("status_code", "Status Code"),
+            FieldValue::U16(status_code),
+            0..2,
+        );
+        buf.end_layer();
+        buf
+    }
+
+    #[test]
+    fn http_ignores_non_http_packets() {
+        let mut c = HttpStatsCollector::new();
+        let buf = DissectBuffer::new();
+        c.process_packet(&pkt(&buf), None);
+
+        let stats = c.finalize_stats(10);
+        assert_eq!(stats.total_requests, 0);
+        assert_eq!(stats.total_responses, 0);
+        assert!(stats.method_distribution.is_empty());
+        assert!(stats.top_uris.is_empty());
+    }
+
+    #[test]
+    fn http_counts_request_method_and_uri() {
+        let mut c = HttpStatsCollector::new();
+        let b1 = build_http_request_buf("GET", "/index.html");
+        c.process_packet(&pkt(&b1), None);
+        let b2 = build_http_request_buf("GET", "/index.html");
+        c.process_packet(&pkt(&b2), None);
+        let b3 = build_http_request_buf("POST", "/api/login");
+        c.process_packet(&pkt(&b3), None);
+
+        let stats = c.finalize_stats(10);
+        assert_eq!(stats.total_requests, 3);
+        assert_eq!(stats.total_responses, 0);
+        assert_eq!(stats.method_distribution[0].name, "GET");
+        assert_eq!(stats.method_distribution[0].count, 2);
+        assert_eq!(stats.top_uris[0].name, "/index.html");
+        assert_eq!(stats.top_uris[0].count, 2);
+    }
+
+    #[test]
+    fn http_counts_response_status_code() {
+        let mut c = HttpStatsCollector::new();
+        let b1 = build_http_response_buf(200);
+        c.process_packet(&pkt(&b1), None);
+        let b2 = build_http_response_buf(200);
+        c.process_packet(&pkt(&b2), None);
+        let b3 = build_http_response_buf(404);
+        c.process_packet(&pkt(&b3), None);
+
+        let stats = c.finalize_stats(10);
+        assert_eq!(stats.total_responses, 3);
+        assert_eq!(stats.total_requests, 0);
+        assert_eq!(stats.status_code_distribution[0].name, "200");
+        assert_eq!(stats.status_code_distribution[0].count, 2);
+        assert_eq!(stats.status_code_distribution[1].name, "404");
+        assert_eq!(stats.status_code_distribution[1].count, 1);
+    }
+
+    #[test]
+    fn http_finalize_top_n_limits_uris() {
+        let mut c = HttpStatsCollector::new();
+        let uris = ["/a", "/b", "/c", "/d", "/e", "/f"];
+        for uri in uris {
+            let b = build_http_request_buf("GET", uri);
+            c.process_packet(&pkt(&b), None);
+        }
+
+        let stats = c.finalize_stats(3);
+        assert_eq!(stats.top_uris.len(), 3);
+        assert_eq!(stats.total_requests, 6);
+    }
+}

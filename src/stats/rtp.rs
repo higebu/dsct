@@ -90,3 +90,90 @@ fn rtp_payload_type_name(pt: u8) -> String {
         _ => format!("PT({pt})"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_helpers::pkt;
+    use super::*;
+    use packet_dissector_core::field::FieldValue;
+    use packet_dissector_core::packet::DissectBuffer;
+    use packet_dissector_test_alloc::test_desc;
+
+    fn build_rtp_buf(payload_type: u8, ssrc: u32) -> DissectBuffer<'static> {
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer("RTP", None, &[], 0..12);
+        buf.push_field(
+            test_desc("payload_type", "Payload Type"),
+            FieldValue::U8(payload_type),
+            1..2,
+        );
+        buf.push_field(test_desc("ssrc", "SSRC"), FieldValue::U32(ssrc), 8..12);
+        buf.end_layer();
+        buf
+    }
+
+    #[test]
+    fn rtp_ignores_non_rtp_packets() {
+        let mut c = RtpStatsCollector::new();
+        let buf = DissectBuffer::new();
+        c.process_packet(&pkt(&buf), None);
+
+        let stats = c.finalize_stats(10);
+        assert_eq!(stats.total_packets, 0);
+        assert!(stats.payload_type_distribution.is_empty());
+        assert!(stats.ssrc_distribution.is_empty());
+    }
+
+    #[test]
+    fn rtp_counts_payload_types_with_well_known_name() {
+        let mut c = RtpStatsCollector::new();
+        let b1 = build_rtp_buf(0, 0x12345678); // PCMU
+        c.process_packet(&pkt(&b1), None);
+        let b2 = build_rtp_buf(0, 0x12345678);
+        c.process_packet(&pkt(&b2), None);
+        let b3 = build_rtp_buf(8, 0x12345678); // PCMA
+        c.process_packet(&pkt(&b3), None);
+
+        let stats = c.finalize_stats(10);
+        assert_eq!(stats.total_packets, 3);
+        assert_eq!(stats.payload_type_distribution[0].name, "PCMU");
+        assert_eq!(stats.payload_type_distribution[0].count, 2);
+        assert_eq!(stats.payload_type_distribution[1].name, "PCMA");
+        assert_eq!(stats.payload_type_distribution[1].count, 1);
+    }
+
+    #[test]
+    fn rtp_dynamic_payload_type_format() {
+        let mut c = RtpStatsCollector::new();
+        let b = build_rtp_buf(96, 0x11111111);
+        c.process_packet(&pkt(&b), None);
+        let b2 = build_rtp_buf(200, 0x11111111);
+        c.process_packet(&pkt(&b2), None);
+
+        let stats = c.finalize_stats(10);
+        let names: Vec<&str> = stats
+            .payload_type_distribution
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(names.contains(&"Dynamic(96)"));
+        assert!(names.contains(&"PT(200)"));
+    }
+
+    #[test]
+    fn rtp_ssrc_distribution_hex_formatted() {
+        let mut c = RtpStatsCollector::new();
+        let b1 = build_rtp_buf(0, 0x12345678);
+        c.process_packet(&pkt(&b1), None);
+        let b2 = build_rtp_buf(0, 0x12345678);
+        c.process_packet(&pkt(&b2), None);
+        let b3 = build_rtp_buf(0, 0xDEADBEEF);
+        c.process_packet(&pkt(&b3), None);
+
+        let stats = c.finalize_stats(10);
+        assert_eq!(stats.ssrc_distribution[0].name, "0x12345678");
+        assert_eq!(stats.ssrc_distribution[0].count, 2);
+        assert_eq!(stats.ssrc_distribution[1].name, "0xDEADBEEF");
+        assert_eq!(stats.ssrc_distribution[1].count, 1);
+    }
+}
