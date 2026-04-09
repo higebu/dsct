@@ -238,7 +238,7 @@ Resource limits can be tuned via environment variables:
 `dsct read` emits one JSON object per line:
 
 ```jsonl
-{"number":1,"timestamp":"2024-01-15T10:30:00.123456Z","length":74,"original_length":74,"stack":"Ethernet:IPv4:UDP:DNS","layers":[{"protocol":"Ethernet","fields":{"dst_mac":"ff:ff:ff:ff:ff:ff","src_mac":"00:11:22:33:44:55","ethertype":"IPv4(2048)"}},{"protocol":"IPv4","fields":{"src":"10.0.0.1","dst":"10.0.0.2","protocol":"UDP(17)"}},{"protocol":"UDP","fields":{"src_port":12345,"dst_port":53}},{"protocol":"DNS","fields":{"id":4660,"qr":"Query","opcode":"QUERY(0)","questions":[{"name":"example.com","type":"A(1)","class":"IN(1)"}]}}]}
+{"number":1,"timestamp":"2024-01-15T10:30:00.123456Z","length":71,"original_length":71,"stack":"Ethernet:IPv4:UDP:DNS","layers":[{"protocol":"Ethernet","fields":{"dst":"ff:ff:ff:ff:ff:ff","src":"00:11:22:33:44:55","ethertype":2048,"ethertype_name":"IPv4"}},{"protocol":"IPv4","fields":{"ttl":64,"protocol":17,"src":"10.0.0.1","dst":"10.0.0.2"}},{"protocol":"UDP","fields":{"src_port":12345,"dst_port":53}},{"protocol":"DNS","fields":{"id":4660,"qr":0,"opcode":0,"rcode":0,"questions":[{"name":"example.com","type":1,"class":1}]}}]}
 ```
 
 The other commands emit a single JSON object or array on stdout.
