@@ -56,3 +56,66 @@ impl PfcpStatsCollector {
 }
 
 super::impl_protocol_stats_collector!(PfcpStatsCollector, "pfcp", PfcpStats);
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_helpers::pkt;
+    use super::*;
+    use packet_dissector_core::field::FieldValue;
+    use packet_dissector_core::packet::DissectBuffer;
+    use packet_dissector_test_alloc::test_desc;
+
+    fn build_pfcp_buf(message_type: u8) -> DissectBuffer<'static> {
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer("PFCP", None, &[], 0..8);
+        buf.push_field(
+            test_desc("message_type", "Message Type"),
+            FieldValue::U8(message_type),
+            1..2,
+        );
+        buf.end_layer();
+        buf
+    }
+
+    #[test]
+    fn pfcp_ignores_non_pfcp_packets() {
+        let mut c = PfcpStatsCollector::new();
+        let buf = DissectBuffer::new();
+        c.process_packet(&pkt(&buf), None);
+
+        let stats = c.finalize_stats(10);
+        assert_eq!(stats.total_messages, 0);
+        assert!(stats.message_type_distribution.is_empty());
+    }
+
+    #[test]
+    fn pfcp_counts_message_types() {
+        let mut c = PfcpStatsCollector::new();
+        let b1 = build_pfcp_buf(50); // Session Establishment Request
+        c.process_packet(&pkt(&b1), None);
+        let b2 = build_pfcp_buf(50);
+        c.process_packet(&pkt(&b2), None);
+        let b3 = build_pfcp_buf(51); // Session Establishment Response
+        c.process_packet(&pkt(&b3), None);
+
+        let stats = c.finalize_stats(10);
+        assert_eq!(stats.total_messages, 3);
+        assert_eq!(stats.message_type_distribution[0].name, "50");
+        assert_eq!(stats.message_type_distribution[0].count, 2);
+        assert_eq!(stats.message_type_distribution[1].name, "51");
+        assert_eq!(stats.message_type_distribution[1].count, 1);
+    }
+
+    #[test]
+    fn pfcp_finalize_top_n_limits_distribution() {
+        let mut c = PfcpStatsCollector::new();
+        for t in 50u8..55 {
+            let b = build_pfcp_buf(t);
+            c.process_packet(&pkt(&b), None);
+        }
+
+        let stats = c.finalize_stats(2);
+        assert_eq!(stats.message_type_distribution.len(), 2);
+        assert_eq!(stats.total_messages, 5);
+    }
+}

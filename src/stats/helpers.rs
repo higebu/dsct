@@ -166,3 +166,94 @@ pub(super) fn percentile(sorted: &[f64], p: f64) -> f64 {
         sorted[lower] * (1.0 - frac) + sorted[upper] * frac
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_helpers::{add_ipv4_udp, pkt};
+    use super::*;
+    use packet_dissector_core::packet::DissectBuffer;
+
+    #[test]
+    fn sorted_top_n_orders_by_count_desc_then_name_asc() {
+        let input = vec![
+            ("b".to_string(), 1u64),
+            ("a".to_string(), 2u64),
+            ("c".to_string(), 2u64),
+        ];
+        let sorted = sorted_top_n(input.clone().into_iter(), 10);
+        assert_eq!(sorted.len(), 3);
+        assert_eq!(sorted[0].name, "a");
+        assert_eq!(sorted[0].count, 2);
+        assert_eq!(sorted[1].name, "c");
+        assert_eq!(sorted[1].count, 2);
+        assert_eq!(sorted[2].name, "b");
+        assert_eq!(sorted[2].count, 1);
+
+        let truncated = sorted_top_n(input.into_iter(), 2);
+        assert_eq!(truncated.len(), 2);
+        assert_eq!(truncated[0].name, "a");
+        assert_eq!(truncated[1].name, "c");
+    }
+
+    #[test]
+    fn percentile_linear_interpolation_basic() {
+        let v = [1.0f64, 2.0, 3.0, 4.0];
+        assert!((percentile(&v, 0.0) - 1.0).abs() < 1e-9);
+        assert!((percentile(&v, 50.0) - 2.5).abs() < 1e-9);
+        assert!((percentile(&v, 100.0) - 4.0).abs() < 1e-9);
+
+        let single = [7.5f64];
+        assert!((percentile(&single, 50.0) - 7.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compute_response_time_stats_none_for_empty() {
+        assert!(compute_response_time_stats(Vec::new()).is_none());
+    }
+
+    #[test]
+    fn compute_response_time_stats_basic() {
+        let times = vec![0.5, 0.1, 0.3, 0.2, 0.4];
+        let Some(stats) = compute_response_time_stats(times) else {
+            panic!("expected Some stats for non-empty input");
+        };
+        assert_eq!(stats.count, 5);
+        assert!((stats.min - 0.1).abs() < 1e-9);
+        assert!((stats.max - 0.5).abs() < 1e-9);
+        assert!((stats.mean - 0.3).abs() < 1e-9);
+        assert!((stats.median - 0.3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn field_value_to_string_handles_common_variants() {
+        assert_eq!(field_value_to_string(&FieldValue::Str("hello")), "hello");
+        assert_eq!(field_value_to_string(&FieldValue::U8(42)), "42");
+        assert_eq!(field_value_to_string(&FieldValue::U16(1024)), "1024");
+        assert_eq!(field_value_to_string(&FieldValue::U32(70000)), "70000");
+        assert_eq!(
+            field_value_to_string(&FieldValue::Ipv4Addr([10, 0, 0, 1])),
+            "10.0.0.1"
+        );
+        assert_eq!(field_value_to_string(&FieldValue::Bytes(b"raw")), "raw");
+    }
+
+    #[test]
+    fn extract_ip_and_transport_from_udp_over_ipv4() {
+        let mut buf = DissectBuffer::new();
+        add_ipv4_udp(&mut buf, [10, 0, 0, 1], [10, 0, 0, 2], 53000, 53);
+        let packet = pkt(&buf);
+
+        let Some((src, dst)) = extract_ip_pair(&packet) else {
+            panic!("expected extract_ip_pair to return Some");
+        };
+        assert_eq!(src, "10.0.0.1");
+        assert_eq!(dst, "10.0.0.2");
+
+        let Some((proto, sport, dport)) = extract_transport(&packet) else {
+            panic!("expected extract_transport to return Some");
+        };
+        assert_eq!(proto, "UDP");
+        assert_eq!(sport, 53000);
+        assert_eq!(dport, 53);
+    }
+}
