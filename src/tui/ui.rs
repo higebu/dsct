@@ -324,3 +324,64 @@ fn render_stats_overlay(f: &mut Frame, stats: &crate::stats::StatsOutput) {
     );
     f.render_widget(para, popup);
 }
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::super::state::{FilterProgress, StreamLine, StreamViewState};
+    use super::super::test_util::{make_test_app, render_to_string};
+    use super::*;
+
+    #[test]
+    fn render_shows_panes() {
+        let mut app = make_test_app(3);
+        let dump = render_to_string(120, 30, |f| render(f, &mut app));
+        assert!(dump.contains("Packet List"));
+        assert!(dump.contains("Protocol Detail"));
+        assert!(dump.contains("Hex"));
+    }
+
+    #[test]
+    fn render_help_overlay() {
+        let mut app = make_test_app(1);
+        app.show_help = true;
+        let dump = render_to_string(120, 40, |f| render(f, &mut app));
+        assert!(dump.contains("Help"));
+        assert!(dump.contains("j/k"));
+    }
+
+    #[test]
+    fn render_with_maximized_pane() {
+        let mut app = make_test_app(3);
+        app.maximized_pane = Some(Pane::PacketList);
+        let dump = render_to_string(120, 30, |f| render(f, &mut app));
+        assert!(dump.contains("Packet List"));
+    }
+
+    #[test]
+    fn render_filter_progress_overlay() {
+        let mut app = make_test_app(3);
+        app.filter_progress = Some(FilterProgress {
+            expr: None,
+            cursor: 0,
+            results: Vec::new(),
+        });
+        let dump = render_to_string(120, 30, |f| render(f, &mut app));
+        assert!(dump.contains("Filtering"));
+    }
+
+    #[test]
+    fn render_stream_view_overlay() {
+        let mut app = make_test_app(1);
+        app.stream_view = Some(StreamViewState {
+            lines: vec![StreamLine {
+                text: "HTTP/1.1 200 OK".into(),
+                is_client: false,
+            }],
+            scroll_offset: 0,
+            title: "TCP Stream #42".into(),
+        });
+        let dump = render_to_string(120, 30, |f| render(f, &mut app));
+        assert!(dump.contains("HTTP/1.1 200 OK"));
+        assert!(dump.contains("TCP Stream #42"));
+    }
+}

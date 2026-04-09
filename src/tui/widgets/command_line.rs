@@ -204,3 +204,104 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         f.render_stateful_widget(list, dropdown_area, &mut state);
     }
 }
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::*;
+    use crate::tui::state::Pane;
+    use crate::tui::test_util::{make_test_app, render_to_string};
+
+    /// Extract the last non-empty visible line from the dump.
+    fn last_line(dump: &str) -> String {
+        dump.lines().last().unwrap_or("").to_string()
+    }
+
+    #[test]
+    fn command_line_default_empty() {
+        let app = make_test_app(1);
+        let dump = render_to_string(60, 5, |f| {
+            let area = Rect {
+                x: 0,
+                y: 4,
+                width: 60,
+                height: 1,
+            };
+            render(f, &app, area);
+        });
+        let line = last_line(&dump);
+        assert!(
+            line.trim().is_empty(),
+            "expected blank command line, got: {line:?}"
+        );
+    }
+
+    #[test]
+    fn command_line_shows_applied_filter_dim() {
+        let mut app = make_test_app(1);
+        app.filter.applied = "udp".into();
+        let dump = render_to_string(60, 5, |f| {
+            let area = Rect {
+                x: 0,
+                y: 4,
+                width: 60,
+                height: 1,
+            };
+            render(f, &app, area);
+        });
+        assert!(last_line(&dump).contains("/udp"), "dump: {dump}");
+    }
+
+    #[test]
+    fn command_line_filter_input_shows_slash() {
+        let mut app = make_test_app(1);
+        app.active_pane = Pane::FilterInput;
+        app.filter.buf.input = "tcp".into();
+        app.filter.buf.cursor = 3;
+        let dump = render_to_string(60, 5, |f| {
+            let area = Rect {
+                x: 0,
+                y: 4,
+                width: 60,
+                height: 1,
+            };
+            render(f, &app, area);
+        });
+        assert!(last_line(&dump).contains("/tcp"), "dump: {dump}");
+    }
+
+    #[test]
+    fn command_line_command_mode_shows_colon() {
+        let mut app = make_test_app(1);
+        app.active_pane = Pane::CommandMode;
+        let mut buf = crate::tui::cursor::CursorBuffer::new();
+        buf.input = "w".into();
+        buf.cursor = 1;
+        app.command = Some(crate::tui::state::CommandState { buf });
+        let dump = render_to_string(60, 5, |f| {
+            let area = Rect {
+                x: 0,
+                y: 4,
+                width: 60,
+                height: 1,
+            };
+            render(f, &app, area);
+        });
+        assert!(last_line(&dump).contains(":w"), "dump: {dump}");
+    }
+
+    #[test]
+    fn command_line_yank_prompt() {
+        let mut app = make_test_app(1);
+        app.active_pane = Pane::YankPrompt;
+        let dump = render_to_string(60, 5, |f| {
+            let area = Rect {
+                x: 0,
+                y: 4,
+                width: 60,
+                height: 1,
+            };
+            render(f, &app, area);
+        });
+        assert!(last_line(&dump).contains("Copy as:"), "dump: {dump}");
+    }
+}

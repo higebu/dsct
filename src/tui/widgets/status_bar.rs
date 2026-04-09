@@ -230,3 +230,59 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
     let paragraph = Paragraph::new(line);
     f.render_widget(paragraph, area);
 }
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::*;
+    use crate::tui::test_util::{make_test_app, render_to_string};
+
+    #[test]
+    fn status_bar_renders_mode_and_file() {
+        let mut app = make_test_app(3);
+        let dump = render_to_string(120, 1, |f| {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 120,
+                height: 1,
+            };
+            render(f, &mut app, area);
+        });
+        assert!(dump.contains("PACKETS"), "dump: {dump}");
+        assert!(dump.contains("test.pcap"), "dump: {dump}");
+        assert!(dump.contains("3 pkts"), "dump: {dump}");
+        assert!(dump.contains("Abs"), "dump: {dump}");
+    }
+
+    #[test]
+    fn status_bar_with_applied_filter_shows_ratio() {
+        let mut app = make_test_app(3);
+        app.filter.applied = "udp".into();
+        let dump = render_to_string(120, 1, |f| {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 120,
+                height: 1,
+            };
+            render(f, &mut app, area);
+        });
+        assert!(dump.contains("3/3"), "dump: {dump}");
+    }
+
+    #[test]
+    fn status_bar_command_mode_label() {
+        let mut app = make_test_app(1);
+        app.active_pane = Pane::CommandMode;
+        let dump = render_to_string(120, 1, |f| {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 120,
+                height: 1,
+            };
+            render(f, &mut app, area);
+        });
+        assert!(dump.contains("COMMAND"), "dump: {dump}");
+    }
+}

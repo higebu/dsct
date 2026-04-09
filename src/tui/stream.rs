@@ -257,3 +257,51 @@ pub(super) fn payload_to_ascii(data: &[u8]) -> String {
         })
         .collect()
 }
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::super::test_util::make_test_app;
+    use super::payload_to_ascii;
+
+    #[test]
+    fn payload_to_ascii_all_nonprintable() {
+        assert_eq!(payload_to_ascii(&[0, 1, 2, 3]), "....");
+    }
+
+    #[test]
+    fn payload_to_ascii_empty() {
+        assert_eq!(payload_to_ascii(&[]), "");
+    }
+
+    #[test]
+    fn payload_to_ascii_mixed_ascii_and_control() {
+        assert_eq!(payload_to_ascii(b"A\x01B\x02C"), "A.B.C");
+    }
+
+    #[test]
+    fn payload_to_ascii_preserves_whitespace() {
+        assert_eq!(payload_to_ascii(b"\t\n\r "), "\t\n\r ");
+    }
+
+    #[test]
+    fn start_follow_stream_noop_without_selection() {
+        let mut app = make_test_app(0);
+        assert!(app.selected.is_none());
+        app.start_follow_stream();
+        assert!(app.stream_build_progress.is_none());
+    }
+
+    #[test]
+    fn follow_stream_udp_produces_state() {
+        let mut app = make_test_app(3);
+        app.start_follow_stream();
+        assert!(app.stream_build_progress.is_some());
+        while app.stream_tick() {}
+        let sv = app.stream_view.as_ref().expect("stream_view set");
+        assert!(
+            sv.title.contains("UDP Stream"),
+            "unexpected title: {}",
+            sv.title
+        );
+    }
+}

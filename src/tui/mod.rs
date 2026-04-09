@@ -23,6 +23,8 @@ mod owned_packet;
 mod state;
 mod stats_collect;
 mod stream;
+#[cfg(all(test, feature = "tui"))]
+mod test_util;
 mod tree;
 mod ui;
 mod widgets;
