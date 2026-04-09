@@ -589,3 +589,209 @@ fn read_filter_invalid_sql_returns_exit_code_2() {
         "expected SQL parse error message, got: {msg}"
     );
 }
+
+// -- field-config tests --
+
+#[test]
+fn field_config_restricts_protocol_fields() {
+    let tmp = write_pcap(1);
+
+    // Custom TOML config: show only src_port for UDP, everything else for
+    // other protocols (unknown protocols fall through to "show all").
+    let mut cfg = NamedTempFile::with_suffix(".toml").unwrap();
+    cfg.write_all(
+        br#"
+[UDP]
+fields = ["src_port"]
+"#,
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args([
+            "read",
+            "--field-config",
+            cfg.path().to_str().unwrap(),
+            tmp.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 1);
+
+    let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    let layers = v["layers"].as_array().unwrap();
+
+    // Locate the UDP layer and verify it contains ONLY src_port.
+    let udp = layers
+        .iter()
+        .find(|l| l["protocol"] == "UDP")
+        .expect("UDP layer should be present");
+    let udp_fields = udp["fields"].as_object().unwrap();
+    assert_eq!(
+        udp_fields.get("src_port").and_then(|x| x.as_u64()),
+        Some(4096)
+    );
+    assert!(
+        udp_fields.get("dst_port").is_none(),
+        "dst_port should be filtered out by field-config, got fields: {udp_fields:?}"
+    );
+
+    // Sanity: protocols not listed in the config show their default fields.
+    assert!(layers.iter().any(|l| l["protocol"] == "Ethernet"));
+    assert!(layers.iter().any(|l| l["protocol"] == "IPv4"));
+}
+
+// -- progress tests --
+
+#[test]
+fn progress_emits_stderr_json_and_stdout_stays_clean() {
+    let tmp = write_pcap(10);
+
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args([
+            "read",
+            "--progress",
+            "2",
+            "--no-limit",
+            tmp.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+
+    // Stdout: all 10 packet JSONL lines are preserved.
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout_lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(stdout_lines.len(), 10);
+    for line in &stdout_lines {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert!(v["number"].is_number());
+    }
+
+    // Stderr: at least one progress JSON line, and every non-empty line is
+    // a progress report with the documented shape.
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let progress_lines: Vec<&str> = stderr.lines().filter(|l| !l.is_empty()).collect();
+    assert!(
+        !progress_lines.is_empty(),
+        "expected at least one progress line on stderr, got: {stderr:?}"
+    );
+    for line in &progress_lines {
+        let v: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("stderr line is not JSON: {line:?} ({e})"));
+        let progress = v["progress"]
+            .as_object()
+            .unwrap_or_else(|| panic!("stderr line missing progress object: {line:?}"));
+        assert!(progress["packets_processed"].is_number());
+        assert!(progress["packets_written"].is_number());
+        assert!(progress["elapsed_secs"].is_number());
+    }
+}
+
+// -- esp-sa decryption test --
+
+/// Build a pcap containing a single Ethernet/IPv4/ESP frame with a null-SA
+/// encrypted payload (SPI=0x1001, seq=1). The inner `next_header` is 255
+/// (Reserved) so that the post-decryption dispatch finds no dissector and
+/// cleanly terminates, keeping the test focused on the ESP layer fields.
+#[cfg(feature = "esp-decrypt")]
+fn build_esp_pcap() -> Vec<u8> {
+    let mut pcap = Vec::new();
+    // Global header (pcap little-endian, Ethernet link type)
+    pcap.extend_from_slice(&0xA1B2C3D4u32.to_le_bytes());
+    pcap.extend_from_slice(&2u16.to_le_bytes());
+    pcap.extend_from_slice(&4u16.to_le_bytes());
+    pcap.extend_from_slice(&0i32.to_le_bytes());
+    pcap.extend_from_slice(&0u32.to_le_bytes());
+    pcap.extend_from_slice(&65535u32.to_le_bytes());
+    pcap.extend_from_slice(&1u32.to_le_bytes());
+
+    // Ethernet + IPv4 (protocol=50 ESP) + ESP (SPI=0x1001, seq=1, null SA).
+    // ESP trailer: payload(2) + pad_length(0) + next_header(255).
+    let pkt: &[u8] = &[
+        // Ethernet (14)
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // dst mac
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, // src mac
+        0x08, 0x00, // ethertype IPv4
+        // IPv4 (20): total length = 32, protocol = 50 (ESP)
+        0x45, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x40, 0x32, 0x00, 0x00, 0x0A, 0x00, 0x00,
+        0x01, 0x0A, 0x00, 0x00, 0x02, // ESP (12): SPI + seq + (payload|pad_len|next_header)
+        0x00, 0x00, 0x10, 0x01, // SPI = 0x1001
+        0x00, 0x00, 0x00, 0x01, // sequence number = 1
+        0xAB, 0xCD, 0x00, 0xFF, // payload(2) + pad_len(0) + next_header(255)
+    ];
+
+    pcap.extend_from_slice(&0u32.to_le_bytes()); // ts_sec
+    pcap.extend_from_slice(&0u32.to_le_bytes()); // ts_usec
+    pcap.extend_from_slice(&(pkt.len() as u32).to_le_bytes());
+    pcap.extend_from_slice(&(pkt.len() as u32).to_le_bytes());
+    pcap.extend_from_slice(pkt);
+    pcap
+}
+
+#[cfg(feature = "esp-decrypt")]
+#[test]
+fn esp_sa_null_decrypts_payload_fields() {
+    let pcap = build_esp_pcap();
+    let mut tmp = NamedTempFile::with_suffix(".pcap").unwrap();
+    tmp.write_all(&pcap).unwrap();
+
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args([
+            "read",
+            "--esp-sa",
+            "0x1001:null",
+            tmp.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 1);
+
+    let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert!(
+        v["stack"].as_str().unwrap().contains("ESP"),
+        "stack should contain ESP, got: {}",
+        v["stack"]
+    );
+
+    let layers = v["layers"].as_array().unwrap();
+    let esp = layers
+        .iter()
+        .find(|l| l["protocol"] == "ESP")
+        .expect("ESP layer should be present");
+    let fields = esp["fields"].as_object().unwrap();
+
+    assert_eq!(fields.get("spi").and_then(|x| x.as_u64()), Some(0x1001));
+    assert_eq!(
+        fields.get("sequence_number").and_then(|x| x.as_u64()),
+        Some(1)
+    );
+    // Decryption success is proven by the presence of next_header and
+    // pad_length (absent without a matching SA).
+    assert_eq!(
+        fields.get("next_header").and_then(|x| x.as_u64()),
+        Some(255)
+    );
+    assert_eq!(fields.get("pad_length").and_then(|x| x.as_u64()), Some(0));
+    assert!(
+        fields.get("encrypted_data").is_none(),
+        "encrypted_data should not be emitted when decryption succeeds"
+    );
+}
