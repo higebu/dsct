@@ -40,3 +40,99 @@ pub fn format_field_to_string(
         Some(s)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use packet_dissector_core::field::{
+        FieldDescriptor, FieldType, FieldValue, FormatContext, FormatFn,
+    };
+    use packet_dissector_core::packet::{DissectBuffer, Packet};
+    use packet_dissector_test_alloc::test_desc;
+
+    /// Build a `&'static FieldDescriptor` whose `format_fn` is set to the
+    /// given function pointer. `test_desc` cannot inject a `format_fn`, so
+    /// tests that need one leak a descriptor built with the public builder.
+    fn desc_with_format_fn(format_fn: FormatFn) -> &'static FieldDescriptor {
+        Box::leak(Box::new(
+            FieldDescriptor::new("f", "Field", FieldType::Bytes).with_format_fn(format_fn),
+        ))
+    }
+
+    /// Build a single-field `DissectBuffer`, extract the sole layer and field,
+    /// and invoke `format_field_to_string` against them.
+    fn run(desc: &'static FieldDescriptor) -> Option<String> {
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer("Test", None, &[], 0..1);
+        buf.push_field(desc, FieldValue::U8(0), 0..1);
+        buf.end_layer();
+        let packet = Packet::new(&buf, &[]);
+        let layer = &packet.layers()[0];
+        let field = &packet.layer_fields(layer)[0];
+        format_field_to_string(field, &[], layer, &[])
+    }
+
+    fn fmt_quoted(
+        _v: &FieldValue<'_>,
+        _ctx: &FormatContext<'_>,
+        w: &mut dyn std::io::Write,
+    ) -> std::io::Result<()> {
+        w.write_all(b"\"example.com\"")
+    }
+
+    fn fmt_number(
+        _v: &FieldValue<'_>,
+        _ctx: &FormatContext<'_>,
+        w: &mut dyn std::io::Write,
+    ) -> std::io::Result<()> {
+        w.write_all(b"42")
+    }
+
+    fn fmt_err(
+        _v: &FieldValue<'_>,
+        _ctx: &FormatContext<'_>,
+        _w: &mut dyn std::io::Write,
+    ) -> std::io::Result<()> {
+        Err(std::io::Error::other("boom"))
+    }
+
+    fn fmt_non_utf8(
+        _v: &FieldValue<'_>,
+        _ctx: &FormatContext<'_>,
+        w: &mut dyn std::io::Write,
+    ) -> std::io::Result<()> {
+        w.write_all(&[0xFF, 0xFE, 0xFD])
+    }
+
+    #[test]
+    fn returns_none_when_format_fn_missing() {
+        // `test_desc` always sets `format_fn: None`.
+        assert_eq!(run(test_desc("f", "Field")), None);
+    }
+
+    #[test]
+    fn strips_surrounding_json_quotes() {
+        assert_eq!(
+            run(desc_with_format_fn(fmt_quoted)),
+            Some("example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn keeps_bare_numeric_output() {
+        assert_eq!(
+            run(desc_with_format_fn(fmt_number)),
+            Some("42".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_when_format_fn_errors() {
+        assert_eq!(run(desc_with_format_fn(fmt_err)), None);
+    }
+
+    #[test]
+    fn returns_none_for_non_utf8_output() {
+        assert_eq!(run(desc_with_format_fn(fmt_non_utf8)), None);
+    }
+}
