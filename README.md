@@ -1,9 +1,10 @@
 # dsct
 
-[![CI](https://github.com/higebu/dsct/actions/workflows/ci.yml/badge.svg)](https://github.com/higebu/dsct/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/dsct.svg)](https://crates.io/crates/dsct)
 [![docs.rs](https://docs.rs/dsct/badge.svg)](https://docs.rs/dsct)
 [![MSRV](https://img.shields.io/badge/rustc-1.88+-blue.svg)](https://blog.rust-lang.org/2025/06/26/Rust-1.88.0/)
+[![CI](https://github.com/higebu/dsct/actions/workflows/ci.yml/badge.svg)](https://github.com/higebu/dsct/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/github/higebu/dsct/graph/badge.svg?token=EaeOxnsedN)](https://codecov.io/github/higebu/dsct)
 
 `dsct` is a packet dissector CLI for LLMs and large captures.
 
