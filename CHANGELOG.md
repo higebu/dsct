@@ -1,3 +1,12 @@
+## [0.2.5] - 2026-04-10
+
+### 🚀 Features
+
+- Add Gemini CLI extension support
+
+### 📚 Documentation
+
+- Add OpenAI Codex CLI setup instructions
 ## [0.2.4] - 2026-04-09
 
 ### 🐛 Bug Fixes
@@ -28,6 +37,7 @@
 
 - Update README.md
 - Add codecov badge to README.md
+- *(release)* V0.2.4
 ## [0.2.3] - 2026-04-07
 
 ### ⚙️ Miscellaneous Tasks
