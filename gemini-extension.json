@@ -1,0 +1,12 @@
+{
+  "name": "dsct",
+  "version": "0.2.4",
+  "description": "LLM-friendly packet dissector with MCP server for pcap/pcapng analysis",
+  "mcpServers": {
+    "dsct": {
+      "command": "dsct",
+      "args": ["mcp"]
+    }
+  },
+  "contextFileName": "GEMINI.md"
+}
