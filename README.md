@@ -62,7 +62,7 @@ cargo install --path . --features tui
 brew install higebu/tap/dsct
 ```
 
-## Claude Code / Copilot CLI plugin
+## AI coding agent plugins
 
 Install as a plugin via the marketplace to get the MCP server and the
 `analyze-packets` skill automatically:
@@ -79,6 +79,18 @@ claude plugin install dsct@dsct
 ```bash
 copilot plugin marketplace add higebu/dsct
 copilot plugin install dsct@dsct
+```
+
+**OpenAI Codex CLI**
+
+Add the MCP server, then install the `analyze-packets` skill inside Codex:
+
+```bash
+codex mcp add dsct -- dsct mcp
+```
+
+```text
+$skill-installer higebu/dsct skills/analyze-packets
 ```
 
 ## Quick start
