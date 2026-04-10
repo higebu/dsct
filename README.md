@@ -93,6 +93,12 @@ codex mcp add dsct -- dsct mcp
 $skill-installer higebu/dsct skills/analyze-packets
 ```
 
+**Gemini CLI**
+
+```bash
+gemini extensions install https://github.com/higebu/dsct
+```
+
 ## Quick start
 
 Get a capture overview:
