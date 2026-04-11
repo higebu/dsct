@@ -4,7 +4,7 @@ default:
 
 # Install development tools
 setup:
-    cargo install taplo-cli cargo-edit cargo-outdated cargo-release git-cliff
+    cargo install taplo-cli cargo-edit cargo-outdated release-plz
     rustup component add rustfmt clippy
 
 # Run all CI checks
@@ -58,24 +58,6 @@ update:
 bench *ARGS:
     cargo bench {{ ARGS }}
 
-# Generate CHANGELOG from git history
-changelog:
-    git-cliff -o CHANGELOG.md
-
-# Publish to crates.io (called from GitHub Actions)
-publish:
-    cargo publish
-
-# Bump version, generate changelog, commit, and tag
-release version:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo release version {{version}} --execute --no-confirm
-    git-cliff --tag "v{{version}}" -o CHANGELOG.md
-    # Update version in plugin manifests
-    jq --arg v "{{version}}" '.version = $v' .claude-plugin/plugin.json > .claude-plugin/plugin.json.tmp && mv .claude-plugin/plugin.json.tmp .claude-plugin/plugin.json
-    jq --arg v "{{version}}" '.plugins[].version = $v' .claude-plugin/marketplace.json > .claude-plugin/marketplace.json.tmp && mv .claude-plugin/marketplace.json.tmp .claude-plugin/marketplace.json
-    git add -A
-    git commit -m "chore(release): v{{version}}"
-    git tag -a "v{{version}}" -m "v{{version}}"
-    echo "Review the commit, then run: git push --follow-tags"
+# Preview the release-plz release PR without making any changes
+release-dry-run:
+    release-plz update --dry-run
