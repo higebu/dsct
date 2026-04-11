@@ -795,3 +795,98 @@ fn esp_sa_null_decrypts_payload_fields() {
         "encrypted_data should not be emitted when decryption succeeds"
     );
 }
+
+/// Build a pcap with a NULL-encrypted ESP frame whose inner transport payload
+/// is a minimal UDP datagram (8-byte header, no data: src=1234, dst=5678).
+/// next_header=17 is recognised by the 0.2.3 heuristic; pad_length=0 requires
+/// no padding bytes to validate; the inner UDP header is exactly 8 bytes so
+/// the UDP dissector parses it without error.
+#[cfg(feature = "esp")]
+fn build_esp_null_auto_pcap() -> Vec<u8> {
+    let mut pcap = Vec::new();
+    // Global header (pcap little-endian, Ethernet link type)
+    pcap.extend_from_slice(&0xA1B2C3D4u32.to_le_bytes());
+    pcap.extend_from_slice(&2u16.to_le_bytes());
+    pcap.extend_from_slice(&4u16.to_le_bytes());
+    pcap.extend_from_slice(&0i32.to_le_bytes());
+    pcap.extend_from_slice(&0u32.to_le_bytes());
+    pcap.extend_from_slice(&65535u32.to_le_bytes());
+    pcap.extend_from_slice(&1u32.to_le_bytes());
+
+    // Ethernet + IPv4 (protocol=50 ESP) + ESP (SPI=0x1001, seq=1).
+    // ESP payload: UDP header (8) + pad_length(0) + next_header(17).
+    // IPv4 total length = 20 + 8 (ESP hdr) + 10 (ESP payload) = 38.
+    let pkt: &[u8] = &[
+        // Ethernet (14)
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // dst mac
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, // src mac
+        0x08, 0x00, // ethertype IPv4
+        // IPv4 (20): total length = 38, protocol = 50 (ESP)
+        0x45, 0x00, 0x00, 0x26, 0x00, 0x00, 0x00, 0x00, 0x40, 0x32, 0x00, 0x00, 0x0A, 0x00, 0x00,
+        0x01, 0x0A, 0x00, 0x00, 0x02, // ESP header (8): SPI + sequence number
+        0x00, 0x00, 0x10, 0x01, // SPI = 0x1001
+        0x00, 0x00, 0x00, 0x01, // sequence number = 1
+        // ESP payload (10): UDP header + pad_len + next_header
+        0x04, 0xD2, // src_port = 1234
+        0x16, 0x2E, // dst_port = 5678
+        0x00, 0x08, // length = 8 (header only, no data)
+        0x00, 0x00, // checksum = 0
+        0x00, // pad_length = 0
+        0x11, // next_header = 17 (UDP)
+    ];
+
+    pcap.extend_from_slice(&0u32.to_le_bytes()); // ts_sec
+    pcap.extend_from_slice(&0u32.to_le_bytes()); // ts_usec
+    pcap.extend_from_slice(&(pkt.len() as u32).to_le_bytes());
+    pcap.extend_from_slice(&(pkt.len() as u32).to_le_bytes());
+    pcap.extend_from_slice(pkt);
+    pcap
+}
+
+/// packet-dissector 0.2.3: NULL-encrypted ESP is decoded automatically without
+/// any --esp-sa argument when the heuristic recognises the inner protocol.
+/// next_header and pad_length must be present, and encrypted_data absent.
+#[cfg(feature = "esp")]
+#[test]
+fn esp_null_decoded_without_sa() {
+    let pcap = build_esp_null_auto_pcap();
+    let mut tmp = NamedTempFile::with_suffix(".pcap").unwrap();
+    tmp.write_all(&pcap).unwrap();
+
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args(["read", tmp.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 1);
+
+    let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    let layers = v["layers"].as_array().unwrap();
+    let esp = layers
+        .iter()
+        .find(|l| l["protocol"] == "ESP")
+        .expect("ESP layer should be present");
+    let fields = esp["fields"].as_object().unwrap();
+
+    assert_eq!(fields.get("spi").and_then(|x| x.as_u64()), Some(0x1001));
+    // Decryption success: next_header and pad_length present without --esp-sa
+    assert_eq!(
+        fields.get("next_header").and_then(|x| x.as_u64()),
+        Some(17),
+        "next_header should be decoded without --esp-sa (NULL encryption auto-decode)"
+    );
+    assert_eq!(fields.get("pad_length").and_then(|x| x.as_u64()), Some(0));
+    assert!(
+        fields.get("encrypted_data").is_none(),
+        "encrypted_data should not be emitted when auto-decoding succeeds"
+    );
+}
