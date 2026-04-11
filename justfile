@@ -4,7 +4,7 @@ default:
 
 # Install development tools
 setup:
-    cargo install taplo-cli cargo-edit cargo-outdated git-cliff release-plz
+    cargo install taplo-cli cargo-edit cargo-outdated release-plz
     rustup component add rustfmt clippy
 
 # Run all CI checks
@@ -57,10 +57,6 @@ update:
 # Run benchmarks
 bench *ARGS:
     cargo bench {{ ARGS }}
-
-# Generate CHANGELOG from git history
-changelog:
-    git-cliff -o CHANGELOG.md
 
 # Preview the release-plz release PR without making any changes
 release-dry-run:
