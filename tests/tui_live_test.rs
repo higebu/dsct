@@ -141,12 +141,12 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 /// RAII guard that spawns dsct in a pty and cleans up on drop.
-struct BaskChild {
+struct DsctChild {
     child: std::process::Child,
     master: OwnedFd,
 }
 
-impl BaskChild {
+impl DsctChild {
     /// Spawn `dsct tui -` with `pipe_r` as stdin, pty as stdout/stderr.
     fn spawn(pipe_r: OwnedFd) -> Self {
         let pty = openpty(None, None).expect("openpty failed");
@@ -164,9 +164,9 @@ impl BaskChild {
         }
 
         let master_raw = pty.master.as_raw_fd();
-        let bask_bin = assert_cmd::cargo::cargo_bin("dsct");
+        let dsct_bin = assert_cmd::cargo::cargo_bin("dsct");
 
-        let mut cmd = Command::new(&bask_bin);
+        let mut cmd = Command::new(&dsct_bin);
         cmd.args(["tui", "-"]);
         cmd.stdin(pipe_r);
         // Both stdout and stderr go to the pty slave.
@@ -191,7 +191,7 @@ impl BaskChild {
         }
 
         let child = cmd.spawn().expect("failed to spawn dsct");
-        BaskChild {
+        DsctChild {
             child,
             master: pty.master,
         }
@@ -210,7 +210,7 @@ impl BaskChild {
     }
 }
 
-impl Drop for BaskChild {
+impl Drop for DsctChild {
     fn drop(&mut self) {
         // Drain the pty master to unblock dsct if it's stuck writing to the
         // full pty output buffer (macOS pty buffer is ~4KB).
@@ -251,7 +251,7 @@ impl Drop for BaskChild {
 #[test]
 fn tui_live_immediate_data() {
     let (pipe_r, pipe_w) = nix::unistd::pipe().expect("pipe failed");
-    let child = BaskChild::spawn(pipe_r);
+    let child = DsctChild::spawn(pipe_r);
 
     // Write data immediately.
     nix::unistd::write(&pipe_w, &build_pcap(3)).expect("write failed");
@@ -277,7 +277,7 @@ fn tui_live_immediate_data() {
 #[test]
 fn tui_live_delayed_data() {
     let (pipe_r, pipe_w) = nix::unistd::pipe().expect("pipe failed");
-    let child = BaskChild::spawn(pipe_r);
+    let child = DsctChild::spawn(pipe_r);
 
     // Do NOT write data yet — simulate tcpdump buffering.
     // Wait for the "Waiting" message (appears immediately).
@@ -320,7 +320,7 @@ fn tui_live_eof_before_data() {
     // Close write end immediately — EOF.
     drop(pipe_w);
 
-    let mut child = BaskChild::spawn(pipe_r);
+    let mut child = DsctChild::spawn(pipe_r);
 
     // Read immediately — on macOS the pty master loses buffered data once
     // all slave fds close (i.e. when the child exits), so we must be

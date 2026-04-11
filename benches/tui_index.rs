@@ -49,7 +49,7 @@ fn bench_build_index(c: &mut Criterion) {
 
     for &n in &[1_000, 10_000, 100_000] {
         let path =
-            std::env::temp_dir().join(format!("bask_bench_index_{n}_{}.pcap", std::process::id()));
+            std::env::temp_dir().join(format!("dsct_bench_index_{n}_{}.pcap", std::process::id()));
         write_test_pcap(&path, n);
 
         let file_size = std::fs::metadata(&path).unwrap().len();
