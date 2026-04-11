@@ -9,13 +9,6 @@ description = "LLM-friendly packet dissector CLI"
 keywords = ["pcap", "pcapng", "packet", "dissector", "llm"]
 categories = ["command-line-utilities", "network-programming"]
 
-[package.metadata.release]
-tag-prefix = "v"
-tag-name = "v{{version}}"
-pre-release-commit-message = "chore(release): v{{version}}"
-publish = false
-push = false
-
 [package.metadata.docs.rs]
 all-features = true
 

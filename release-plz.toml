@@ -1,0 +1,20 @@
+[workspace]
+# Reuse the existing git-cliff configuration for CHANGELOG generation.
+changelog_config = "cliff.toml"
+# Release PR presentation.
+pr_name = "chore(release): v{{ version }}"
+pr_labels = ["release"]
+
+[[package]]
+name = "dsct"
+# Maintain CHANGELOG.md alongside version bumps.
+changelog_update = true
+# Publish to crates.io on release.
+publish = true
+# Create the git tag; cargo-dist (release.yml) is triggered by this tag push.
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+# GitHub Release is created by cargo-dist, not release-plz.
+git_release_enable = false
+# Skip cargo-semver-checks on every run; rely on Conventional Commits.
+semver_check = false
