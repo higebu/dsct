@@ -8,7 +8,7 @@ version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d122413f284cf2d62fb1b7db97e02edb8cda96d769b16e443a4f6195e35662b0"
 dependencies = [
- "crypto-common",
+ "crypto-common 0.1.7",
  "generic-array",
 ]
 
@@ -19,8 +19,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
 dependencies = [
  "cfg-if",
- "cipher",
- "cpufeatures",
+ "cipher 0.4.4",
+ "cpufeatures 0.2.17",
+]
+
+[[package]]
+name = "aes"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66bd29a732b644c0431c6140f370d097879203d79b80c94a6747ba0872adaef8"
+dependencies = [
+ "cipher 0.5.1",
+ "cpubits",
+ "cpufeatures 0.3.0",
 ]
 
 [[package]]
@@ -30,8 +41,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "831010a0f742e1209b3bcea8fab6a8e149051ba6099432c8cb2cc117dec3ead1"
 dependencies = [
  "aead",
- "aes",
- "cipher",
+ "aes 0.8.4",
+ "cipher 0.4.4",
  "ctr",
  "ghash",
  "subtle",
@@ -161,11 +172,11 @@ checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 
 [[package]]
 name = "block-padding"
-version = "0.3.3"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8894febbff9f758034a5b8e12d87918f56dfc64a8e1fe757d65e29041538d93"
+checksum = "710f1dd022ef4e93f8a438b4ba958de7f64308434fa6a87104481645cc30068b"
 dependencies = [
- "generic-array",
+ "hybrid-array",
 ]
 
 [[package]]
@@ -202,18 +213,18 @@ dependencies = [
 
 [[package]]
 name = "cbc"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26b52a9543ae338f279b96b0b9fed9c8093744685043739079ce85cd58f289a6"
+checksum = "98db6aeaef0eeef2c1e3ce9a27b739218825dae116076352ac3777076aa22225"
 dependencies = [
- "cipher",
+ "cipher 0.5.1",
 ]
 
 [[package]]
 name = "cc"
-version = "1.2.58"
+version = "1.2.60"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1e928d4b69e3077709075a938a05ffbedfa53a84c8f766efbf8220bb1ff60e1"
+checksum = "43c5703da9466b66a946814e1adf53ea2c90f10063b86290cc9eb67ce3478a20"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -264,8 +275,18 @@ version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
 dependencies = [
- "crypto-common",
- "inout",
+ "crypto-common 0.1.7",
+ "inout 0.1.4",
+]
+
+[[package]]
+name = "cipher"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e34d8227fe1ba289043aeb13792056ff80fd6de1a9f49137a5f499de8e8c78ea"
+dependencies = [
+ "crypto-common 0.2.1",
+ "inout 0.2.2",
 ]
 
 [[package]]
@@ -338,10 +359,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpubits"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ef0c543070d296ea414df2dd7625d1b24866ce206709d8a4a424f28377f5861"
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "cpufeatures"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201"
 dependencies = [
  "libc",
 ]
@@ -452,19 +488,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "crypto-common"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77727bb15fa921304124b128af125e7e3b968275d1b108b379190264f4423710"
+dependencies = [
+ "hybrid-array",
+]
+
+[[package]]
 name = "ctr"
 version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0369ee1ad671834580515889b80f2ea915f23b8be8d0daa4bbaf2ac5c7590835"
 dependencies = [
- "cipher",
+ "cipher 0.4.4",
 ]
 
 [[package]]
 name = "darling"
-version = "0.20.11"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc7f46116c46ff9ab3eb1597a45688b6715c6e628b5c133e288e709a29bcb4ee"
+checksum = "25ae13da2f202d56bd7f91c25fba009e7717a1e4a1cc98a76d844b65ae912e9d"
 dependencies = [
  "darling_core",
  "darling_macro",
@@ -472,11 +517,10 @@ dependencies = [
 
 [[package]]
 name = "darling_core"
-version = "0.20.11"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d00b9596d185e565c2207a0b01f8bd1a135483d02d9b7b0a54b11da8d53412e"
+checksum = "9865a50f7c335f53564bb694ef660825eb8610e0a53d3e11bf1b0d3df31e03b0"
 dependencies = [
- "fnv",
  "ident_case",
  "proc-macro2",
  "quote",
@@ -486,9 +530,9 @@ dependencies = [
 
 [[package]]
 name = "darling_macro"
-version = "0.20.11"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc34b93ccb385b40dc71c6fceac4b2ad23662c7eeb248cf10d529b7e055b6ead"
+checksum = "ac3984ec7bd6cfa798e62b4a642426a5be0e68f9401cfc2a01e3fa9ea2fcdb8d"
 dependencies = [
  "darling_core",
  "quote",
@@ -592,9 +636,9 @@ dependencies = [
 
 [[package]]
 name = "fastrand"
-version = "2.3.0"
+version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "filedescriptor"
@@ -621,12 +665,6 @@ checksum = "b09cf3155332e944990140d967ff5eceb70df778b34f77d8075db46e4704e6d8"
 dependencies = [
  "num-traits",
 ]
-
-[[package]]
-name = "fnv"
-version = "1.0.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "foldhash"
@@ -716,6 +754,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashbrown"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -726,6 +770,15 @@ name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
+
+[[package]]
+name = "hybrid-array"
+version = "0.4.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3944cf8cf766b40e2a1a333ee5e9b563f854d5fa49d6a8ca2764e97c6eddb214"
+dependencies = [
+ "typenum",
+]
 
 [[package]]
 name = "id-arena"
@@ -741,12 +794,12 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
 name = "indexmap"
-version = "2.13.0"
+version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7714e70437a7dc3ac8eb7e6f8df75fd8eb422675fc7678aff7364301092b1017"
+checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.0",
  "serde",
  "serde_core",
 ]
@@ -766,15 +819,24 @@ version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
- "block-padding",
  "generic-array",
 ]
 
 [[package]]
-name = "instability"
-version = "0.3.10"
+name = "inout"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6778b0196eefee7df739db78758e5cf9b37412268bfa5650bfeed028aed20d9c"
+checksum = "4250ce6452e92010fdf7268ccc5d14faa80bb12fc741938534c58f16804e03c7"
+dependencies = [
+ "block-padding",
+ "hybrid-array",
+]
+
+[[package]]
+name = "instability"
+version = "0.3.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eb2d60ef19920a3a9193c3e371f726ec1dafc045dac788d0fb3704272458971"
 dependencies = [
  "darling",
  "indoc",
@@ -815,9 +877,9 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "js-sys"
-version = "0.3.94"
+version = "0.3.95"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e04e2ef80ce82e13552136fabeef8a5ed1f985a96805761cbb9a2c34e7664d9"
+checksum = "2964e92d1d9dc3364cae4d718d93f227e3abb088e747d92e0395bfdedf1c12ca"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
@@ -948,9 +1010,9 @@ dependencies = [
 
 [[package]]
 name = "num-conv"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51d515d32fb182ee37cda2ccdcb92950d6a3c2893aa280e540671c2cd0f3b1d9"
+checksum = "c6673768db2d862beb9b39a78fdcb1a69439615d5794a1be50caa9bc92c81967"
 
 [[package]]
 name = "num-traits"
@@ -1005,9 +1067,9 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "packet-dissector"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd9b6d432b72c260010c7d11e466934679084cbbe465af462365a0f9bdfc77b0"
+checksum = "5726438ff779e7b015b4f364cf017c93ebf6cdd0a2614ffe2b2ea44f6ae10c75"
 dependencies = [
  "packet-dissector-ah",
  "packet-dissector-arp",
@@ -1065,92 +1127,92 @@ dependencies = [
 
 [[package]]
 name = "packet-dissector-ah"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b222d88f5a8111a57b1bf617f1457ecd05c7bf08536e59e1826d7571b552a34"
+checksum = "9e3f2d64f31815fac1733e41944090a3354b7548030ea46189eadb50963657db"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-arp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f33d02c07eb436b3cffcba66a412fac857fde70a5f0639d566189c775621773"
+checksum = "f2f57601ac7473eace2fe089548af017952c2740a8c83970d9916affc75c25d3"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-bfd"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc3e313f13b8db1fb3f6248b6d2b76a3b3393acdf87d767ff7372b734b143d7b"
+checksum = "2bdcbf263841a79ccde4dee5634cfb3f2b1ee1a309dfe2796b5f1e7727fee8ec"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-bgp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74859ee5eba2343636c9bf678d07699befd2611a9871f231864d63867a693789"
+checksum = "1c030de8d8ff516834d7413c24f650ff0a1794be48e12894246f739f9089a81c"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-core"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52157eb2a81a758c73a956f949999b03e59f9ca5456ffc6cdb20db76a665f17e"
+checksum = "bfd1c09f51be7c5189b0bc12fe4f970c544007a492dc77ff746ff230a115606f"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "packet-dissector-dhcp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72621adc7b3c702a053d667a777c730c29cbd19b2f8622a894a3fdb20d4b6496"
+checksum = "98a7efccfb7bf7cb1a630fd77d27ddea389a4ee50d6ed177ec5e73ce27fe629a"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-dhcpv6"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9eba121ea1fbb3cbaffc28c57d8f079f441e557bff170cbf816dfc12703512f6"
+checksum = "4deb882f46fb0e622f37a0924d388fa7dff6e255db71fc969be2a4a5e9259347"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-diameter"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffe912f72b9fa5d3e8da6e9c919d6bed3ea0c359a297d1b9836863543b369ad7"
+checksum = "5771a399920121d4ee37a6423006b8466ab695d932ff3f2790df2840e5fe32bb"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-dns"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "271bd9eb8a44a4b2acddf81991a84d63c054d9ff46c2931f82d20e639f09aa9c"
+checksum = "6b81e35cd0c5d1277ab963f21997484462b038f1e57c8d9bfe4ef888d598fb96"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-esp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0759ffd51d8dff3bdd150e9dc3f8d4339380f8f86525b836b6e047689f660937"
+checksum = "ec05282b2c7c0e9ffe11fcc58dd9c38dad464c21284436e5fe7c5d5ad7d1def4"
 dependencies = [
- "aes",
+ "aes 0.9.0",
  "aes-gcm",
  "cbc",
  "packet-dissector-core",
@@ -1158,45 +1220,45 @@ dependencies = [
 
 [[package]]
 name = "packet-dissector-ethernet"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7055bf96ad25f8b028951e42b9454f3b5a18b16c78f8b28c6ed3075109e2c02f"
+checksum = "f9c1d1ebc33e490ddb83f25f838a63bebd6c752947a1a3dcca84c4781ef50804"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-geneve"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40306938debd56e7f04289708354dda41c8629003acae8e05424bd744a3542ee"
+checksum = "af5a93be0c1167d35031daa19757a3aac3d8bc5c90bf9ada1d58badaad0f48e5"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-gre"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b9439eacf1f32a5a960debb9cbe7ee34f397c6984b87b40d0bbbdce8f05c0ee"
+checksum = "9da518dab83ab21645d37e15ab91371f61c3cfe5b2a276ab29818bb602b827d8"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-gtpv1u"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59a4d0ea6c270103a49bb073e381797f66a8f1ee6c56cb8d00adb3eedcfb1413"
+checksum = "c2b27a971cbcf9bf235394cb9b3bb4f7c25470a405b4811355a223ad7d7dc90a"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-gtpv2c"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e3daf459007fc5841f15cd324c3b4b1847763e33189cee7786dbf307dc4bd92"
+checksum = "b85a1d9d8530b747db9a37d16f4da6817af5b74fe3b51f4e59b6d96a348ce358"
 dependencies = [
  "packet-dissector-core",
  "packet-dissector-ppp",
@@ -1204,9 +1266,9 @@ dependencies = [
 
 [[package]]
 name = "packet-dissector-http"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7aabcdd072a4138c5c80a20073d3113a6cfe1c31c6b4483a23ee76582e291060"
+checksum = "d5704295fda69d217d639b240c10c7ccf231f68a59b3245d1deeb3d2bb759d75"
 dependencies = [
  "httparse",
  "packet-dissector-core",
@@ -1214,135 +1276,135 @@ dependencies = [
 
 [[package]]
 name = "packet-dissector-http2"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6931ee95a29bebb33e798eb7450b6fac884d52a5fb3ec3246187712e4bd14030"
+checksum = "11d49667db44bbd57a7ecce69c89adafecc2a57fcfbf7cd5068bdf0989d80e6d"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-icmp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7638c3a1473f0065e5a7eb91c855eb1ca70b1ab5354c1d1f5cb916b6ee49726a"
+checksum = "4f01a8f3c3f0393ad824ea1545961112b73754d24549b29336d17e2033c03155"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-icmpv6"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be430d76e0f195fe0722dc41383fb92c54d2b1b92791892ffd85c29b093abe41"
+checksum = "06c10969ba98cd9dc54c685d429270e0c13521340d05b969a74871886b12c23d"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-igmp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdd4e65f8183c66a6299cf1e4c2662ae199a61cd15df940039b58a7e09ca6a37"
+checksum = "0b6aed2f59c7c05bcb9c319c9d8c8471bce9fd7cedf9de47352ec411135af6de"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-ike"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ac6c8523316fbae0f700fd659cc723511135ae231df5c91d2a611c6d571da01"
+checksum = "240d2de3cd4e4d94dfc68a0de2229edcb40783c517a3796241252ff5e5b54a20"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-ipv4"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d649857c1a3c69399d15f80cfc0bfb4873eebe5f1c28acf20933bd83c327201"
+checksum = "6fbd6223914c9f52c9a6b6dbaa057978e12638946812deba4239bd4fb86041c8"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-ipv6"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3950203e5ec90cfa276990a7517bb85e2ca21c63b16bd2a97b110e8aa621a71e"
+checksum = "72dff464d039a504c268422264ac4f6aaea2b4691b6eb31d18374242610f997b"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-isis"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76045daaa722bdf76c79c6a4f04e33409ebe76d49396db0e96e6044e940cfad2"
+checksum = "254367d17675ba1da315f9153f4d5bb10bdd924ab882c461b89ca67d81d8fb2f"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-l2tp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efbc6374b64ce97560aa411db16b4d7945daa0f26f3e8526b55424adf6d9ade7"
+checksum = "ef8cac378fe00c61d15ff022fe30d437739dd480ac97087a3b414fc80024eb95"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-l2tpv3"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "863bab01d64c2a9b211726244a3ee7b3244ed7917694422a8e76a782036c5f24"
+checksum = "0abbffed278a0d430928e383bc735a28e84b93bdfba98453da2342fe4f40b126"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-lacp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1129d558f219351455ca5c1d8ee0e4743229c8b7a779ba5d3c140a2877d790e6"
+checksum = "1154641a084b2f8abcb3c4597ccfd8f037b2d79e5f1aee9ef36307eb6a529a4c"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-linux-sll"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45986c0eddd4634d867d4cb3667812ccc8a7ee8b051d37985fa20259cc7911ba"
+checksum = "441aba3f2d29aede4e44c549f2bc1e68b8548562297606d23f0c45f7a95539a8"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-linux-sll2"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41cc9141fe7641b1f7d1ac0eb9107e5a7f2e7bf910965610ba31bfba44d1b4b6"
+checksum = "ddfd5f161b3c25884cd0ea84164c1f3256d3e62fe8d8ddeb4387ee7a310eeee5"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-lldp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b25fbf8aa2884f0a46d23723ef7e7d1d188e51c541d148028fb62b192bc73d7c"
+checksum = "595a51a23aef2227b3b89d59e86226dd806a87e3fc3205e2f5e2690257546466"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-mdns"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a4344b52b9bffb4a189f0efec7d70b11716effc2c35e141a986b5f48fd99f71"
+checksum = "f96c9036e4dad928eec2a6724249d1582f0c6b408abdc63034bf891fa800c0b7"
 dependencies = [
  "packet-dissector-core",
  "packet-dissector-dns",
@@ -1350,27 +1412,27 @@ dependencies = [
 
 [[package]]
 name = "packet-dissector-mpls"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "215a3ac4952eebed2e30ea87932497a85a3449ac0dc3c5484f08d06dacc32bdd"
+checksum = "ecd47cea726ec50e6db7480ab6085a1572dd086ddf24b94821457bce549b2c60"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-nas5g"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "277cb6312509eee6fd9c1f78a99a1a64637ba8a223befbacd6be05ccdeb5361a"
+checksum = "9a5664a3a787b2f400b1c8688484ecb496a23302c6b9b94da9551e98e78b8a50"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-ngap"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f911ade9a4ca05c4ee6e0567f3c454ee67ebf14d216e66378f76bfeeb225b82e"
+checksum = "f97383d6fbf3db2232c7a20ae80b0a129e721669a45eac7250ffa69ba6e36b3d"
 dependencies = [
  "packet-dissector-core",
  "packet-dissector-nas5g",
@@ -1378,99 +1440,99 @@ dependencies = [
 
 [[package]]
 name = "packet-dissector-ntp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16ec397d079aacc1f91b10030107d61a32a388347348bb25f0bfb5f1c6a1bcf3"
+checksum = "596310da9a3fc4988cc10b3d1445f4ce0bb7c5fc8c9a47c4d6f9ef4722f1c816"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-ospf"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb72f421f12ee175e6c6fb9c5ffefcc4b5adcc2d0596a54e77a61b2b59f47390"
+checksum = "a3f7ee609e8b1b15bf239fedde9821f7999b4b12d0c4957196abce8a290b36ce"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-pcap"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1020d493100e6b4e4bca9a5d5301ce1a4c8a1cceed87a86b8e3f183660d9a53d"
+checksum = "88902d690d48c68bca0344fed45bb17ccc333db25d74c2b324cb30aeaf9a5100"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "packet-dissector-pfcp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1211d14c9612a4215c81dd82a637b5086594031165d5bada553668dbd1db1131"
+checksum = "e43ea194dde525db869309221d7d3300282afb133bba742705cb866078892258"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-ppp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3390e14e42a3ac07543cdaaa4a316da95ef5f3b02c57832034fc9ce14188da8"
+checksum = "74581396b3f21e871d8c99db29514d077d92df323fe26f104f8fe049969c67b9"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-quic"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5430006ef65c681e99f933ed337ae1af4f871f2a4a82cb42e64ee5d058d1c4a2"
+checksum = "70b833d9233a79e8e9a0ec00ab346aed75a59dd15824abdeb5a82601e97780d7"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-radius"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6673e41f3c3a405a1ac99cc1b7ac4de54b97af589a1b24894c93ba411df709b"
+checksum = "de59483195be0353f42f1df2ee72591d59f6def70a14eefb4fbef4975978d639"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-reassembly"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a3ff7f7a3edcda8d60ce9a6870e3c7679782fc5637343048b592815b3f3bd24"
+checksum = "3ef824005e005e1fcac3aad90f48e8d9701fcdce15b1979c147bfc610393a685"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "packet-dissector-rtp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "305e3fc6b1ac15256551038cbad98e74acd40944b5f19c5f3717635cdc8096c5"
+checksum = "cd4b1ae9d301db5a7c6d49c1ebc812575a418b8e1116f110cbabab44279a1a59"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-sctp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a79b437477e1e73655bd8a6da7aceed28469a633ea4a0e4f981ff8b9ea8ba35"
+checksum = "f0680b065b15c817d6184a327885eba5d0fe111189ade9c235205982efe45de8"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-sip"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab9455c20b586791e9cb8888f8eec671ce2d52ec10611af691bb4d682ecc1e29"
+checksum = "3ed92750340b868e5bf39fe6bdc1ea3c0684449a6b6635870fe5d4e16cc56488"
 dependencies = [
  "httparse",
  "packet-dissector-core",
@@ -1478,81 +1540,81 @@ dependencies = [
 
 [[package]]
 name = "packet-dissector-srv6"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4bbe7f11e984b44a29650784b3a9c2d26268281cebc478162b495be7ccd4c97"
+checksum = "80f26a176bde31680adb4a3c74423ca0bc4995c6c4b19488a865e59ac25b0e9b"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-stp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbc186a251f0c252436e31662b0433b7662a04067a1c1c3221127ab2bca49bb4"
+checksum = "7740315440841153106b0d24fbd39d8e14cae9a7397f2b0ee521ce7c4e7b2f6b"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-stun"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d6c1d54f6adc771ee8451d1220362e4df37ffd71766d52f3cd524414e321f67"
+checksum = "b2b3bae831a89f7173bce1f101bbdbf88bea5401efde524b261dce2c14b04059"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-tcp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf116b14fedd2d4c3313be11670094a507657db4be9ca95ff24c71e72c76939d"
+checksum = "b8375d034709da178593af223f4f377a5f776858f580bd621879e689fe0b47ab"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-test-alloc"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4975b83712d615b1f6de379d879931367738a4905d821fa3bb312e4de31358c"
+checksum = "b4ea47720797f668636021f43474ff192a4580117dcdb80ab0c9b14fe444bdbe"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-tls"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4c4a227f24bed4065cae08d33d979bc51e9a41fc2bbe9e9444b7af527901d7e"
+checksum = "98a823c6f6321884fd229e948ccf14b67fc4924ee43b526880c043b846575345"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-udp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5986800476ec6b96a5a1eac0d881b00fd140062fd9f8b0f7f065519258151777"
+checksum = "84465e61daaf565af288a576189a62ee292c0dc6881f8c677e59042f6fd28e49"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-vrrp"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e6f16856eebccacd43044864186a3c49751bdd08a121ff65ec3b7e5bc4af2b2"
+checksum = "829d4aec007935bd87547f0f692b9e6ad6fb2396937f06cea64ee2d5e32e7587"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-vxlan"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5869967fcc3675b2356746c9abc3375e46b1958dbaba5989abf0ba77a7b1743a"
+checksum = "e2ac2efbd3f51a52ee86031d9d345aeba52acb2126545e0c9594de4335a2610f"
 dependencies = [
  "packet-dissector-core",
 ]
@@ -1625,7 +1687,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d1fe60d06143b2430aa532c94cfe9e29783047f06c0d7fd359a9a51b729fa25"
 dependencies = [
  "cfg-if",
- "cpufeatures",
+ "cpufeatures 0.2.17",
  "opaque-debug",
  "universal-hash",
 ]
@@ -1917,9 +1979,9 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "semver"
-version = "1.0.27"
+version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d767eb0aabc880b29956c35734170f26ed551a859dbd361d140cdbeca61ab1e2"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "serde"
@@ -2151,9 +2213,9 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.45"
+version = "0.3.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9e442fc33d7fdb45aa9bfeb312c095964abdf596f7567261062b2a7107aaabd"
+checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
 dependencies = [
  "deranged",
  "libc",
@@ -2166,9 +2228,9 @@ dependencies = [
 
 [[package]]
 name = "time-core"
-version = "0.1.7"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b36ee98fd31ec7426d599183e8fe26932a8dc1fb76ddb6214d05493377d34ca"
+checksum = "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca"
 
 [[package]]
 name = "tinytemplate"
@@ -2266,7 +2328,7 @@ version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc1de2c688dc15305988b563c3854064043356019f97a4b46276fe734c4f07ea"
 dependencies = [
- "crypto-common",
+ "crypto-common 0.1.7",
  "subtle",
 ]
 
@@ -2327,9 +2389,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.117"
+version = "0.2.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0551fc1bb415591e3372d0bc4780db7e587d84e2a7e79da121051c5c4b89d0b0"
+checksum = "0bf938a0bacb0469e83c1e148908bd7d5a6010354cf4fb73279b7447422e3a89"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -2340,9 +2402,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.117"
+version = "0.2.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fbdf9a35adf44786aecd5ff89b4563a90325f9da0923236f6104e603c7e86be"
+checksum = "eeff24f84126c0ec2db7a449f0c2ec963c6a49efe0698c4242929da037ca28ed"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -2350,9 +2412,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.117"
+version = "0.2.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dca9693ef2bab6d4e6707234500350d8dad079eb508dca05530c85dc3a529ff2"
+checksum = "9d08065faf983b2b80a79fd87d8254c409281cf7de75fc4b773019824196c904"
 dependencies = [
  "bumpalo",
  "proc-macro2",
@@ -2363,9 +2425,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.117"
+version = "0.2.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39129a682a6d2d841b6c429d0c51e5cb0ed1a03829d8b3d1e69a011e62cb3d3b"
+checksum = "5fd04d9e306f1907bd13c6361b5c6bfc7b3b3c095ed3f8a9246390f8dbdee129"
 dependencies = [
  "unicode-ident",
 ]
@@ -2406,9 +2468,9 @@ dependencies = [
 
 [[package]]
 name = "web-sys"
-version = "0.3.94"
+version = "0.3.95"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd70027e39b12f0849461e08ffc50b9cd7688d942c1c8e3c7b22273236b4dd0a"
+checksum = "4f2dfbb17949fa2088e5d39408c48368947b86f7834484e87b73de55bc14d97d"
 dependencies = [
  "js-sys",
  "wasm-bindgen",

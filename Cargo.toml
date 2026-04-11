@@ -132,9 +132,9 @@ quic = ["packet-dissector/quic"]
 stun = ["packet-dissector/stun"]
 
 [dependencies]
-packet-dissector = { version = "0.2.1", default-features = false }
-packet-dissector-core = "0.2.1"
-packet-dissector-pcap = "0.2.1"
+packet-dissector = { version = "0.2.3", default-features = false }
+packet-dissector-core = "0.2.3"
+packet-dissector-pcap = "0.2.3"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -154,7 +154,7 @@ sqlparser = "0.61.0"
 [dev-dependencies]
 assert_cmd = "2"
 criterion = { version = "0.8", features = ["html_reports"] }
-packet-dissector-test-alloc = "0.2.1"
+packet-dissector-test-alloc = "0.2.3"
 predicates = "3"
 tempfile = "3"
 nix = { version = "0.31", default-features = false, features = [
