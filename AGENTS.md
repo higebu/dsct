@@ -9,7 +9,7 @@
 - **MSRV**: see `rust-version` in `Cargo.toml`
 - **Primary purpose**: machine-consumable packet analysis, not human-first terminal output
 - **Dependency boundary**: this repo consumes public crates from the
-  `packet-dissector` repository via git dependencies
+  `packet-dissector` family published on crates.io
 
 ## Repository Layout
 
@@ -101,8 +101,8 @@ expected behavior.
 ## Dependency Boundary
 
 This repo depends on `packet-dissector`, `packet-dissector-core`,
-`packet-dissector-pcap`, and `packet-dissector-test-alloc` from the
-`packet-dissector` repository.
+`packet-dissector-pcap`, and `packet-dissector-test-alloc` published on
+crates.io.
 
 Rules:
 
