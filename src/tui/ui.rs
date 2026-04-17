@@ -42,19 +42,21 @@ pub fn render(f: &mut Frame, app: &mut App) {
     } else {
         // Normal mode: use pane weights.
         let w = app.pane_weights;
-        let total = w[0] as u32 + w[1] as u32 + w[2] as u32;
-        if total == 0 {
-            (
+        let total = u32::from(w[0]) + u32::from(w[1]) + u32::from(w[2]);
+        match (
+            (u32::from(w[0]) * 100).checked_div(total),
+            (u32::from(w[1]) * 100).checked_div(total),
+        ) {
+            (Some(p0), Some(p1)) => (
+                Constraint::Percentage(p0 as u16),
+                Constraint::Percentage(p1 as u16),
+                Constraint::Min(3),
+            ),
+            _ => (
                 Constraint::Percentage(35),
                 Constraint::Percentage(35),
                 Constraint::Min(3),
-            )
-        } else {
-            (
-                Constraint::Percentage((u32::from(w[0]) * 100 / total) as u16),
-                Constraint::Percentage((u32::from(w[1]) * 100 / total) as u16),
-                Constraint::Min(3),
-            )
+            ),
         }
     };
 
