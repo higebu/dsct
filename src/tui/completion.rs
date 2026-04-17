@@ -141,7 +141,7 @@ impl CompletionEngine {
             }
         }
 
-        items.sort_by(|a, b| b.score.cmp(&a.score));
+        items.sort_by_key(|b| std::cmp::Reverse(b.score));
         items
     }
 
@@ -247,7 +247,7 @@ impl CompletionEngine {
                 score,
             })
             .collect();
-        items.sort_by(|a, b| b.score.cmp(&a.score));
+        items.sort_by_key(|b| std::cmp::Reverse(b.score));
         items
     }
 }

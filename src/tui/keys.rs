@@ -242,15 +242,11 @@ impl App {
             KeyCode::Char('n') => self.tree_search_next(),
             KeyCode::Char('N') => self.tree_search_prev(),
             KeyCode::Enter | KeyCode::Char(' ') => self.toggle_tree_node(),
-            KeyCode::Char('p') => {
-                if self.live_mode == Some(LiveMode::Live) {
-                    self.live_mode = Some(LiveMode::Paused);
-                }
+            KeyCode::Char('p') if self.live_mode == Some(LiveMode::Live) => {
+                self.live_mode = Some(LiveMode::Paused);
             }
-            KeyCode::Char('r') => {
-                if self.live_mode == Some(LiveMode::Paused) {
-                    self.live_mode = Some(LiveMode::Live);
-                }
+            KeyCode::Char('r') if self.live_mode == Some(LiveMode::Paused) => {
+                self.live_mode = Some(LiveMode::Live);
             }
             KeyCode::Char('f') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.start_follow_stream();
@@ -321,17 +317,14 @@ impl App {
                 }
                 self.update_completions();
             }
-            KeyCode::Down => {
-                if self.filter.completion_visible && !self.filter.completions.is_empty() {
-                    self.filter.completion_selected = (self.filter.completion_selected + 1)
-                        .min(self.filter.completions.len() - 1);
-                }
+            KeyCode::Down
+                if self.filter.completion_visible && !self.filter.completions.is_empty() =>
+            {
+                self.filter.completion_selected =
+                    (self.filter.completion_selected + 1).min(self.filter.completions.len() - 1);
             }
-            KeyCode::Up => {
-                if self.filter.completion_visible {
-                    self.filter.completion_selected =
-                        self.filter.completion_selected.saturating_sub(1);
-                }
+            KeyCode::Up if self.filter.completion_visible => {
+                self.filter.completion_selected = self.filter.completion_selected.saturating_sub(1);
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Ctrl+U: clear input (like Vim/readline).
@@ -389,12 +382,10 @@ impl App {
                 self.detail_tree.search_completions.clear();
                 self.active_pane = Pane::DetailTree;
             }
-            KeyCode::Down => {
-                if !self.detail_tree.search_completions.is_empty() {
-                    self.detail_tree.search_completion_selected =
-                        (self.detail_tree.search_completion_selected + 1)
-                            .min(self.detail_tree.search_completions.len() - 1);
-                }
+            KeyCode::Down if !self.detail_tree.search_completions.is_empty() => {
+                self.detail_tree.search_completion_selected =
+                    (self.detail_tree.search_completion_selected + 1)
+                        .min(self.detail_tree.search_completions.len() - 1);
             }
             KeyCode::Up => {
                 self.detail_tree.search_completion_selected = self
@@ -466,7 +457,7 @@ impl App {
                 (label.to_string(), node_index, score)
             })
             .collect();
-        matches.sort_by(|a, b| b.2.cmp(&a.2));
+        matches.sort_by_key(|b| std::cmp::Reverse(b.2));
 
         use super::state::TreeSearchCandidate;
         self.detail_tree.search_completions = matches
@@ -610,15 +601,11 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if mode == SelectionMode::Line {
-                    self.move_down();
-                }
+            KeyCode::Char('j') | KeyCode::Down if mode == SelectionMode::Line => {
+                self.move_down();
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if mode == SelectionMode::Line {
-                    self.move_up();
-                }
+            KeyCode::Char('k') | KeyCode::Up if mode == SelectionMode::Line => {
+                self.move_up();
             }
             _ => {}
         }
@@ -764,10 +751,8 @@ impl App {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.stream_view = None;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if sv.scroll_offset + 1 < sv.lines.len() {
-                    sv.scroll_offset += 1;
-                }
+            KeyCode::Char('j') | KeyCode::Down if sv.scroll_offset + 1 < sv.lines.len() => {
+                sv.scroll_offset += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 sv.scroll_offset = sv.scroll_offset.saturating_sub(1);
