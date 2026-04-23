@@ -53,6 +53,10 @@ pub fn read_schema() -> serde_json::Value {
                         }
                     }
                 }
+            },
+            "raw_bytes": {
+                "type": "string",
+                "description": "Original packet bytes (link-layer included) as a lowercase hex string. Present only when --raw-bytes is specified."
             }
         }
     })
@@ -212,6 +216,15 @@ mod tests {
         let required = schema["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v == "number"));
         assert!(required.iter().any(|v| v == "layers"));
+    }
+
+    #[test]
+    fn read_schema_has_optional_raw_bytes_property() {
+        let schema = read_schema();
+        let raw = &schema["properties"]["raw_bytes"];
+        assert_eq!(raw["type"], "string");
+        let required = schema["required"].as_array().unwrap();
+        assert!(!required.iter().any(|v| v == "raw_bytes"));
     }
 
     #[test]

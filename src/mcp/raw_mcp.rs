@@ -272,6 +272,11 @@ fn read_packets_schema() -> Value {
                 "default": false,
                 "description": "Show all fields including low-level details (checksums, header lengths, etc.)."
             },
+            "raw_bytes": {
+                "type": "boolean",
+                "default": false,
+                "description": "Include the original packet bytes (link-layer included) as a lowercase hex string under the `raw_bytes` field of each record."
+            },
             "sample_rate": {
                 "type": "integer",
                 "minimum": 1,
@@ -495,6 +500,10 @@ fn handle_read_packets_streaming(
         .get("verbose")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let raw_bytes = arguments
+        .get("raw_bytes")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let field_config = if verbose {
         None
     } else {
@@ -624,6 +633,7 @@ fn handle_read_packets_streaming(
             dissect_buf,
             data,
             field_config.as_ref(),
+            raw_bytes,
         )?;
         w.write_all(&pkt_buf)?;
         packets_written += 1;
@@ -958,6 +968,14 @@ mod tests {
         let verbose = &schema["properties"]["verbose"];
         assert_eq!(verbose["type"], "boolean");
         assert_eq!(verbose["default"], false);
+    }
+
+    #[test]
+    fn read_packets_schema_has_raw_bytes() {
+        let schema = read_packets_schema();
+        let raw = &schema["properties"]["raw_bytes"];
+        assert_eq!(raw["type"], "boolean");
+        assert_eq!(raw["default"], false);
     }
 
     #[test]

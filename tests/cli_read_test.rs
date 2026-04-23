@@ -890,3 +890,58 @@ fn esp_null_decoded_without_sa() {
         "encrypted_data should not be emitted when auto-decoding succeeds"
     );
 }
+
+#[test]
+fn read_raw_bytes_emits_hex_matching_packet() {
+    let tmp = write_pcap(1);
+
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args(["read", "--raw-bytes", tmp.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let line = stdout.trim().lines().next().unwrap();
+    let v: serde_json::Value = serde_json::from_str(line).unwrap();
+    let raw = v["raw_bytes"].as_str().expect("raw_bytes must be a string");
+
+    let length = v["length"].as_u64().unwrap() as usize;
+    assert_eq!(raw.len(), length * 2, "hex length must be 2 * length");
+    assert!(
+        raw.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        "raw_bytes must be lowercase hex"
+    );
+
+    // The fixed Ethernet/IPv4/UDP packet built by build_pcap starts with the
+    // broadcast destination MAC and has a well-known byte layout.  Verify a
+    // prefix exact match to ensure bytes are passed through unchanged.
+    let expected_prefix = "ffffffffffff00112233445508004500001c";
+    assert!(
+        raw.starts_with(expected_prefix),
+        "unexpected raw_bytes prefix: {raw}"
+    );
+}
+
+#[test]
+fn read_without_raw_bytes_omits_field() {
+    let tmp = write_pcap(1);
+
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args(["read", tmp.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let line = stdout.trim().lines().next().unwrap();
+    let v: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert!(
+        v.get("raw_bytes").is_none(),
+        "raw_bytes must be absent when --raw-bytes is not set"
+    );
+}

@@ -111,6 +111,11 @@ struct ReadOptions {
     /// - `0x1234:aes-256-cbc:0xKEY:hmac-sha1-96:0xKEY`
     #[arg(long = "esp-sa", num_args = 1)]
     esp_sa: Vec<String>,
+
+    /// Include the original packet bytes (link-layer included) as a
+    /// lowercase hex string under the `raw_bytes` field of each record.
+    #[arg(long)]
+    raw_bytes: bool,
 }
 
 /// Options for the `dsct stats` command.
@@ -303,6 +308,7 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
         progress,
         decode_as: decode_as_args,
         esp_sa: esp_sa_args,
+        raw_bytes,
     } = opts;
     // Resolve effective count: explicit --count, default limit, or unlimited.
     let (count, is_default_limit) = if no_limit {
@@ -428,6 +434,7 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
             dissect_buf,
             data,
             field_config.as_ref(),
+            raw_bytes,
         )?;
         pkt_buf.push(b'\n');
         writer.write_all(&pkt_buf)?;
