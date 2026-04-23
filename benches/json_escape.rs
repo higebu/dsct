@@ -152,6 +152,7 @@ fn bench_json_escape(c: &mut Criterion) {
                 black_box(&tcp_buf),
                 black_box(tcp_data),
                 None,
+                false,
             )
             .unwrap();
             black_box(&buf);
@@ -168,6 +169,7 @@ fn bench_json_escape(c: &mut Criterion) {
                 black_box(&tcp_buf),
                 black_box(tcp_data),
                 None,
+                false,
             )
             .unwrap();
             black_box(&buf);
@@ -186,6 +188,7 @@ fn bench_json_escape(c: &mut Criterion) {
                     black_box(&tcp_buf),
                     black_box(tcp_data),
                     None,
+                    false,
                 )
                 .unwrap();
                 bw.flush().unwrap();
@@ -204,6 +207,7 @@ fn bench_json_escape(c: &mut Criterion) {
                 black_box(&tcp_buf),
                 black_box(tcp_data),
                 None,
+                false,
             )
             .unwrap();
             let mut ew = JsonEscapeWriter::new(&mut buf);
@@ -228,6 +232,7 @@ fn bench_json_escape(c: &mut Criterion) {
                 black_box(&dns_buf),
                 black_box(dns_data),
                 None,
+                false,
             )
             .unwrap();
             black_box(&buf);
@@ -244,6 +249,7 @@ fn bench_json_escape(c: &mut Criterion) {
                 black_box(&dns_buf),
                 black_box(dns_data),
                 None,
+                false,
             )
             .unwrap();
             black_box(&buf);
@@ -262,6 +268,7 @@ fn bench_json_escape(c: &mut Criterion) {
                     black_box(&dns_buf),
                     black_box(dns_data),
                     None,
+                    false,
                 )
                 .unwrap();
                 bw.flush().unwrap();
@@ -280,6 +287,7 @@ fn bench_json_escape(c: &mut Criterion) {
                 black_box(&dns_buf),
                 black_box(dns_data),
                 None,
+                false,
             )
             .unwrap();
             let mut ew = JsonEscapeWriter::new(&mut buf);
@@ -306,6 +314,7 @@ fn bench_json_escape(c: &mut Criterion) {
                         black_box(&dissect_buf),
                         black_box(&tp.raw),
                         None,
+                        false,
                     )
                     .unwrap();
                     buf.push(b'\n');
@@ -330,6 +339,7 @@ fn bench_json_escape(c: &mut Criterion) {
                         black_box(&dissect_buf),
                         black_box(&tp.raw),
                         None,
+                        false,
                     )
                     .unwrap();
                     ew.write_all(&pkt_buf).unwrap();
@@ -352,6 +362,7 @@ fn bench_json_escape(c: &mut Criterion) {
         &tcp_buf,
         &test_packets[0].raw,
         None,
+        false,
     )
     .unwrap();
     sample_json.push(b'\n');
@@ -361,6 +372,7 @@ fn bench_json_escape(c: &mut Criterion) {
         &dns_buf,
         &test_packets[1].raw,
         None,
+        false,
     )
     .unwrap();
     sample_json.push(b'\n');

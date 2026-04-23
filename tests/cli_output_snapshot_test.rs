@@ -171,6 +171,40 @@ fn read_verbose_adds_fields_to_ipv4_layer() {
     );
 }
 
+#[test]
+fn read_raw_bytes_appends_field_at_end() {
+    let tmp = write_pcap(1);
+
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args(["read", "--raw-bytes", tmp.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let first_line = stdout.lines().next().expect("at least one JSONL line");
+    let value: Value = serde_json::from_str(first_line).unwrap();
+
+    // raw_bytes must be appended after `layers`, preserving the existing
+    // top-level key order.
+    let expected = [
+        "number",
+        "timestamp",
+        "length",
+        "original_length",
+        "stack",
+        "layers",
+        "raw_bytes",
+    ];
+    assert_eq!(
+        object_keys(&value),
+        expected,
+        "raw_bytes must be appended at the end of the record"
+    );
+    assert!(value["raw_bytes"].is_string());
+}
+
 // ---------------------------------------------------------------------------
 // `dsct stats` — StatsOutput schema
 // ---------------------------------------------------------------------------

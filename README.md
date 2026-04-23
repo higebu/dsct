@@ -150,6 +150,13 @@ tcpdump -w - -c 1000 | dsct read -
 tcpdump -w - -i eth0 udp port 53 | dsct read - -f dns
 ```
 
+Include the original packet bytes (link-layer included) as a hex string under
+`raw_bytes` for downstream parsing or reconstruction:
+
+```bash
+dsct read capture.pcap --raw-bytes --count 1
+```
+
 Inspect available fields and schemas:
 
 ```bash

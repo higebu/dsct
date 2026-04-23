@@ -155,6 +155,17 @@ fn write_timestamp_to<W: Write>(w: &mut W, secs: u64, usecs: u32) -> std::io::Re
 // Streaming JSON write — zero-allocation packet serialization via DissectBuffer.
 // ---------------------------------------------------------------------------
 
+/// Write `bytes` as a JSON string of lowercase hex digits, including the
+/// enclosing double quotes.
+fn write_hex_string<W: Write>(w: &mut W, bytes: &[u8]) -> Result<()> {
+    w.write_all(b"\"")?;
+    for byte in bytes {
+        write!(w, "{byte:02x}")?;
+    }
+    w.write_all(b"\"")?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 
 /// Write a [`FieldValue`] as a JSON token to `w`.
@@ -206,20 +217,10 @@ fn write_raw_field_value_json<W: Write>(
             write!(w, "\"{addr}\"")?;
         }
         FieldValue::MacAddr(m) => write!(w, "\"{m}\"")?,
-        FieldValue::Bytes(b) => {
-            write!(w, "\"")?;
-            for byte in *b {
-                write!(w, "{byte:02x}")?;
-            }
-            write!(w, "\"")?;
-        }
+        FieldValue::Bytes(b) => write_hex_string(w, b)?,
         FieldValue::Scratch(range) => {
             let scratch_bytes = &buf.scratch()[range.start as usize..range.end as usize];
-            write!(w, "\"")?;
-            for byte in scratch_bytes {
-                write!(w, "{byte:02x}")?;
-            }
-            write!(w, "\"")?;
+            write_hex_string(w, scratch_bytes)?;
         }
         FieldValue::Array(_) | FieldValue::Object(_) => {
             // Container fields should be handled by write_field_json;
@@ -437,12 +438,16 @@ fn write_layer_fields<W: Write>(
 ///
 /// Uses the flat [`DissectBuffer`] API — no intermediate serde structures
 /// are allocated.
+///
+/// When `raw_bytes` is `true`, a trailing `"raw_bytes":"<hex>"` field is
+/// appended with the original packet bytes (including link-layer headers).
 pub fn write_packet_json<W: Write>(
     w: &mut W,
     meta: &PacketMeta,
     buf: &DissectBuffer<'_>,
     data: &[u8],
     field_config: Option<&FieldConfig>,
+    raw_bytes: bool,
 ) -> Result<()> {
     // number
     write!(w, "{{\"number\":{},\"timestamp\":\"", meta.number)?;
@@ -473,7 +478,14 @@ pub fn write_packet_json<W: Write>(
         write_layer_fields(w, layer, buf, data, field_config)?;
         write!(w, "}}}}")?; // close fields, close layer
     }
-    write!(w, "]}}")?; // close layers, close packet
+    // close layers
+    w.write_all(b"]")?;
+    if raw_bytes {
+        w.write_all(b",\"raw_bytes\":")?;
+        write_hex_string(w, data)?;
+    }
+    // close packet
+    w.write_all(b"}")?;
     Ok(())
 }
 
@@ -605,7 +617,7 @@ mod tests {
         field_config: Option<&FieldConfig>,
     ) -> serde_json::Value {
         let mut out = Vec::new();
-        write_packet_json(&mut out, meta, buf, data, field_config).unwrap();
+        write_packet_json(&mut out, meta, buf, data, field_config, false).unwrap();
         serde_json::from_slice(&out).unwrap()
     }
 
