@@ -49,13 +49,13 @@ The optional TUI is designed for large captures too:
 CLI only:
 
 ```bash
-cargo install --path .
+cargo install dsct
 ```
 
 With the optional TUI:
 
 ```bash
-cargo install --path . --features tui
+cargo install dsct --features tui
 ```
 
 ```bash
