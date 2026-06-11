@@ -161,7 +161,9 @@ impl FilterExpr {
     fn all_protocol_refs_in(&self, set: &[&str]) -> bool {
         match self {
             FilterExpr::Protocol(name) => set.contains(&normalize_protocol_name(name).as_str()),
-            FilterExpr::Where(clause) => set.contains(&clause.protocol.as_str()),
+            FilterExpr::Where(clause) => {
+                set.contains(&normalize_protocol_name(&clause.protocol).as_str())
+            }
             FilterExpr::And(a, b) | FilterExpr::Or(a, b) => {
                 a.all_protocol_refs_in(set) && b.all_protocol_refs_in(set)
             }
@@ -192,9 +194,8 @@ impl FilterExpr {
             FilterExpr::Protocol(name) => {
                 NON_TCP_TERMINAL_PROTOCOLS.contains(&normalize_protocol_name(name).as_str())
             }
-            FilterExpr::Where(clause) => {
-                NON_TCP_TERMINAL_PROTOCOLS.contains(&clause.protocol.as_str())
-            }
+            FilterExpr::Where(clause) => NON_TCP_TERMINAL_PROTOCOLS
+                .contains(&normalize_protocol_name(&clause.protocol).as_str()),
             FilterExpr::And(a, b) => a.guarantees_non_tcp() || b.guarantees_non_tcp(),
             FilterExpr::Or(a, b) => a.guarantees_non_tcp() && b.guarantees_non_tcp(),
             FilterExpr::Not(_) | FilterExpr::PacketNumber(_) => false,
@@ -663,5 +664,20 @@ mod tests {
                 "{input} must fall back to the sequential CLI path"
             );
         }
+    }
+
+    #[test]
+    fn where_clause_protocol_name_is_normalized() {
+        // A `Where` clause stores the protocol name as typed; the allowlist
+        // lookups normalize it just like the `Protocol` variant, so mixed-case
+        // field filters are classified consistently with their lowercase forms.
+        assert!(
+            parse("IPV4.src = '10.0.0.1'").match_is_reassembly_independent(),
+            "mixed-case Where protocol should be reassembly-independent"
+        );
+        assert!(
+            parse("ICMP.type = 8").output_is_reassembly_free(),
+            "mixed-case Where protocol should be output-reassembly-free"
+        );
     }
 }

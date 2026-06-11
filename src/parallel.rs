@@ -160,9 +160,14 @@ pub fn filter_indices<R: ScanIndex>(
                 })
             })
             .collect();
+        // Propagate a worker panic to the main thread instead of silently
+        // dropping that chunk's results.  Swallowing the panic (e.g. with
+        // `unwrap_or_default()`) would emit fewer packets than actually match
+        // with exit code 0, violating the byte-identical / packet-number-order
+        // output contract.  Re-panicking surfaces the failure visibly.
         handles
             .into_iter()
-            .map(|h| h.join().unwrap_or_default())
+            .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
             .collect()
     });
 
