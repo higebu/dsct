@@ -70,6 +70,7 @@ pub fn run(file: PathBuf, decode_as_args: Vec<String>) -> Result<()> {
     let indices = Vec::new();
     let mut app = app::App::new(capture, indices, registry, &file);
     app.bg_indexer = Some(bg_indexer);
+    app.decode_as_args = decode_as_args;
 
     let mut terminal = event::init_terminal()?;
     let result = event::run_event_loop(&mut terminal, app);
@@ -136,7 +137,8 @@ pub fn run_live(decode_as_args: Vec<String>) -> Result<()> {
         let capture = state::CaptureMap::new_live(file)?;
         let indices = Vec::new();
 
-        let app = app::App::new_live(capture, indices, registry, copier);
+        let mut app = app::App::new_live(capture, indices, registry, copier);
+        app.decode_as_args = decode_as_args;
         event::run_event_loop(&mut terminal, app)
     })();
 

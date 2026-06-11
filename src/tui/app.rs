@@ -83,6 +83,9 @@ pub struct App {
     pub index_progress: Option<IndexProgress>,
     /// Background indexer thread (None = idle or complete).
     pub bg_indexer: Option<super::bg_indexer::BackgroundIndexer>,
+    /// `--decode-as` arguments, used to rebuild equivalent registries on
+    /// parallel filter-scan worker threads.
+    pub decode_as_args: Vec<String>,
 }
 
 impl App {
@@ -132,6 +135,7 @@ impl App {
             indexed_bytes: 0,
             index_progress: None,
             bg_indexer: None,
+            decode_as_args: Vec::new(),
         };
         app.filter.history = loaded_history;
         app.load_selected();
@@ -183,6 +187,7 @@ impl App {
             indexed_bytes,
             index_progress: None,
             bg_indexer: None,
+            decode_as_args: Vec::new(),
         };
         app.filter.history = loaded_history;
         app.load_selected();

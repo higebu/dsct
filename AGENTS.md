@@ -115,9 +115,10 @@ Rules:
 ## Rust Coding Conventions
 
 - No `unsafe` — enforced by `#![deny(unsafe_code)]` in `lib.rs`.
-  `unsafe` is permitted only in `CaptureMap` (`src/tui/state.rs`) and
-  `BgIndexer::spawn` (`src/tui/bg_indexer.rs`) for `memmap2` mmap operations,
-  guarded by `#[allow(unsafe_code)]` with SAFETY comments.
+  `unsafe` is permitted only in `CaptureMap` (`src/tui/state.rs`),
+  `BgIndexer::spawn` (`src/tui/bg_indexer.rs`), and `MappedFile`
+  (`src/mmap.rs`, used by the parallel `read` path) for `memmap2` mmap
+  operations, guarded by `#[allow(unsafe_code)]` with SAFETY comments.
 - No `.unwrap()` / `.expect()` in `src/`; use `?` and contextual errors.
   `const` context `unwrap()` / `panic!` is permitted as it is evaluated at
   compile time and cannot cause runtime panics.

@@ -17,7 +17,55 @@
 
 use packet_dissector_core::packet::Packet;
 
-use crate::filter::{PacketNumberFilter, WhereClause, protocol_names_match};
+use crate::filter::{
+    PacketNumberFilter, WhereClause, normalize_protocol_name, protocol_names_match,
+};
+
+/// Protocol names (normalized via [`normalize_protocol_name`]) whose *presence*
+/// in a packet is decided by the deterministic per-packet dissection chain
+/// (link / network / transport / tunnel layers), independent of TCP stream
+/// reassembly.
+///
+/// TCP reassembly never adds or removes any of these layers — it only buffers
+/// TCP payload and dispatches the reassembled bytes to an *application* layer
+/// dissector (HTTP, TLS, DNS-over-TCP, …) on the segment where a PDU completes.
+/// A filter that references only these protocols therefore produces the same
+/// match decision whether or not earlier segments of a stream were seen, which
+/// is what makes per-thread (registry-per-worker) parallel scanning sound.
+///
+/// This is intentionally an *allowlist*: application protocols (even
+/// UDP-borne ones such as `dns`, which can also run length-prefixed over TCP)
+/// are excluded so that any unrecognized or reassembly-sensitive reference
+/// falls back to the sequential path.
+const REASSEMBLY_INDEPENDENT_PROTOCOLS: &[&str] = &[
+    "ethernet",
+    "linuxsll",
+    "linuxsll2",
+    "ipv4",
+    "ipv6",
+    "arp",
+    "tcp",
+    "udp",
+    "sctp",
+    "icmp",
+    "icmpv6",
+    "igmp",
+    "mpls",
+    "gre",
+    "vxlan",
+    "geneve",
+    "vrrp",
+    "stp",
+    "lacp",
+    "lldp",
+];
+
+/// Protocol names (normalized) that are terminal IP/link protocols which can
+/// never carry a TCP layer.  A filter that *guarantees* every matched packet
+/// contains one of these is safe to evaluate — and to serialize — in parallel,
+/// because such packets are never subject to TCP reassembly, so their full
+/// dissection output is byte-identical to the sequential path.
+const NON_TCP_TERMINAL_PROTOCOLS: &[&str] = &["arp", "icmp", "icmpv6", "igmp"];
 
 /// A parsed filter expression.
 #[derive(Debug)]
@@ -75,6 +123,81 @@ impl FilterExpr {
             }
             FilterExpr::Not(e) => !e.matches_with_number(packet, number),
             FilterExpr::PacketNumber(pnf) => pnf.contains(number),
+        }
+    }
+
+    /// Returns `true` if this filter's **match decision** is independent of TCP
+    /// reassembly state, so it can be evaluated correctly with a separate
+    /// per-thread registry over disjoint chunks of the packet index.
+    ///
+    /// True when every referenced protocol is in
+    /// [`REASSEMBLY_INDEPENDENT_PROTOCOLS`] and no referenced field is a
+    /// reassembly-metadata field (e.g. `tcp.reassembly_in_progress`).
+    ///
+    /// Used by the TUI's parallel filter scan, which only needs each packet's
+    /// match decision (the displayed list is dissected lazily on demand).
+    pub fn match_is_reassembly_independent(&self) -> bool {
+        self.all_protocol_refs_in(REASSEMBLY_INDEPENDENT_PROTOCOLS)
+            && !self.references_reassembly_field()
+    }
+
+    /// Returns `true` if every packet this filter can match is guaranteed to
+    /// contain no TCP layer, so the packet's full dissection output is
+    /// independent of TCP reassembly state.
+    ///
+    /// Used by the CLI `read` parallel path, where the JSONL output contains
+    /// each matched packet's complete dissection: reassembly can alter the
+    /// per-segment output of a TCP packet, so parallel serialization is only
+    /// byte-identical to the sequential path when matched packets are never
+    /// TCP segments.  This is deliberately conservative — `tcp`, `tcp.port`,
+    /// `ipv4.*` and similar filters fall back to the sequential path.
+    pub fn output_is_reassembly_free(&self) -> bool {
+        self.guarantees_non_tcp()
+    }
+
+    /// Recursively check that every `Protocol` / `Where` reference uses a
+    /// protocol in `set`.  `PacketNumber` terms reference no protocol and are
+    /// always considered in-set.
+    fn all_protocol_refs_in(&self, set: &[&str]) -> bool {
+        match self {
+            FilterExpr::Protocol(name) => set.contains(&normalize_protocol_name(name).as_str()),
+            FilterExpr::Where(clause) => set.contains(&clause.protocol.as_str()),
+            FilterExpr::And(a, b) | FilterExpr::Or(a, b) => {
+                a.all_protocol_refs_in(set) && b.all_protocol_refs_in(set)
+            }
+            FilterExpr::Not(e) => e.all_protocol_refs_in(set),
+            FilterExpr::PacketNumber(_) => true,
+        }
+    }
+
+    /// Recursively check whether any `Where` clause references a
+    /// reassembly-metadata field, whose value depends on stream state.
+    fn references_reassembly_field(&self) -> bool {
+        match self {
+            FilterExpr::Where(clause) => clause.field.contains("reassembl"),
+            FilterExpr::Protocol(_) | FilterExpr::PacketNumber(_) => false,
+            FilterExpr::Not(e) => e.references_reassembly_field(),
+            FilterExpr::And(a, b) | FilterExpr::Or(a, b) => {
+                a.references_reassembly_field() || b.references_reassembly_field()
+            }
+        }
+    }
+
+    /// Recursively determine whether a match implies the packet contains no TCP
+    /// layer.  For `And`, either operand guaranteeing non-TCP suffices; for
+    /// `Or`, both operands must guarantee it.  `Not` and `PacketNumber` place
+    /// no protocol constraint on a match, so they cannot guarantee non-TCP.
+    fn guarantees_non_tcp(&self) -> bool {
+        match self {
+            FilterExpr::Protocol(name) => {
+                NON_TCP_TERMINAL_PROTOCOLS.contains(&normalize_protocol_name(name).as_str())
+            }
+            FilterExpr::Where(clause) => {
+                NON_TCP_TERMINAL_PROTOCOLS.contains(&clause.protocol.as_str())
+            }
+            FilterExpr::And(a, b) => a.guarantees_non_tcp() || b.guarantees_non_tcp(),
+            FilterExpr::Or(a, b) => a.guarantees_non_tcp() && b.guarantees_non_tcp(),
+            FilterExpr::Not(_) | FilterExpr::PacketNumber(_) => false,
         }
     }
 
@@ -462,5 +585,83 @@ mod tests {
         let buf = make_tcp_buf();
         let pkt = make_tcp_packet_ref(&buf);
         assert!(expr.matches(&pkt));
+    }
+
+    // --- Reassembly-safety predicates ---
+
+    fn parse(input: &str) -> FilterExpr {
+        FilterExpr::parse(input).unwrap().unwrap()
+    }
+
+    #[test]
+    fn match_independent_for_transport_and_below() {
+        for input in [
+            "tcp",
+            "udp",
+            "tcp.dst_port > 1024",
+            "ipv4.src = '10.0.0.1'",
+            "tcp AND ipv4.src = '10.0.0.1'",
+            "(tcp OR udp) AND NOT arp",
+            "packet_number BETWEEN 1 AND 100",
+            "vxlan",
+        ] {
+            assert!(
+                parse(input).match_is_reassembly_independent(),
+                "{input} should be reassembly-independent"
+            );
+        }
+    }
+
+    #[test]
+    fn match_dependent_for_app_over_tcp() {
+        for input in ["http", "tls", "dns", "sip", "bgp", "tcp OR http"] {
+            assert!(
+                !parse(input).match_is_reassembly_independent(),
+                "{input} should require the sequential path"
+            );
+        }
+    }
+
+    #[test]
+    fn match_dependent_for_reassembly_metadata_field() {
+        assert!(
+            !parse("tcp.reassembly_in_progress = 1").match_is_reassembly_independent(),
+            "reassembly-metadata fields are stream-state dependent"
+        );
+    }
+
+    #[test]
+    fn output_reassembly_free_only_for_non_tcp_terminal() {
+        for input in [
+            "icmp",
+            "arp",
+            "igmp",
+            "icmpv6",
+            "icmp AND ipv4.src = '10.0.0.1'", // AND: one branch guarantees non-TCP
+            "icmp OR arp",
+        ] {
+            assert!(
+                parse(input).output_is_reassembly_free(),
+                "{input} should be safe for parallel CLI output"
+            );
+        }
+    }
+
+    #[test]
+    fn output_not_reassembly_free_when_tcp_possible() {
+        for input in [
+            "tcp",
+            "udp",
+            "ipv4.src = '10.0.0.1'",
+            "tcp.port = 443",
+            "icmp OR tcp", // OR: tcp branch can match a reassembled segment
+            "NOT icmp",
+            "packet_number = 5",
+        ] {
+            assert!(
+                !parse(input).output_is_reassembly_free(),
+                "{input} must fall back to the sequential CLI path"
+            );
+        }
     }
 }

@@ -33,7 +33,11 @@ pub mod limits;
 #[doc(hidden)]
 pub mod mcp;
 #[doc(hidden)]
+pub mod mmap;
+#[doc(hidden)]
 pub mod output;
+#[doc(hidden)]
+pub mod parallel;
 #[doc(hidden)]
 pub mod schema;
 #[doc(hidden)]

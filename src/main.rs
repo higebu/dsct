@@ -8,6 +8,8 @@ use dsct::filter_expr;
 use dsct::input;
 use dsct::limits;
 use dsct::mcp;
+use dsct::mmap;
+use dsct::parallel;
 use dsct::schema;
 use dsct::serialize;
 use dsct::stats;
@@ -25,7 +27,8 @@ use crate::field_config::FieldConfig;
 use crate::filter::{PacketNumberFilter, normalize_protocol_name};
 use crate::filter_expr::FilterExpr;
 use crate::input::CaptureReader;
-use crate::serialize::write_packet_json;
+use crate::mmap::MappedFile;
+use crate::serialize::{PacketMeta, write_packet_json};
 use dsct::error::{DsctError, Result, ResultExt, format_error};
 
 /// LLM-friendly packet dissector CLI.
@@ -116,6 +119,14 @@ struct ReadOptions {
     /// lowercase hex string under the `raw_bytes` field of each record.
     #[arg(long)]
     raw_bytes: bool,
+
+    /// Number of worker threads for parallel filter evaluation over file
+    /// input. Defaults to the number of available CPUs (override with the
+    /// `DSCT_THREADS` environment variable). Parallelism is only engaged for
+    /// file input with a `--filter` that cannot match TCP-reassembled packets
+    /// (e.g. `icmp`, `arp`); all other reads use the streaming path.
+    #[arg(long)]
+    threads: Option<usize>,
 }
 
 /// Options for the `dsct stats` command.
@@ -309,6 +320,7 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
         decode_as: decode_as_args,
         esp_sa: esp_sa_args,
         raw_bytes,
+        threads,
     } = opts;
     // Resolve effective count: explicit --count, default limit, or unlimited.
     let (count, is_default_limit) = if no_limit {
@@ -361,6 +373,39 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
     } else {
         Box::new(io::BufWriter::new(stdout.lock()))
     };
+
+    // Parallel fast path: for file input with a filter that can only match
+    // packets free of TCP reassembly, evaluate the filter across worker threads
+    // (registry-per-thread).  stdin streaming, the no-filter fast path, and any
+    // reassembly-sensitive filter all fall through to the sequential loop below.
+    // `--progress` also falls through so its per-packet semantics are preserved.
+    if !is_stdin
+        && progress.is_none()
+        && let Some(expr) = filter_expr
+            .as_ref()
+            .filter(|e| e.output_is_reassembly_free())
+    {
+        let resolved_threads = parallel::resolve_threads(threads);
+        if resolved_threads > 1 {
+            return read_parallel(
+                ReadParallelArgs {
+                    file: &file,
+                    expr,
+                    pn_filter: pn_filter.as_ref(),
+                    sample_rate,
+                    offset,
+                    count,
+                    is_default_limit,
+                    field_config: field_config.as_ref(),
+                    raw_bytes,
+                    decode_as_args: &decode_as_args,
+                    esp_sa_args: &esp_sa_args,
+                    threads: resolved_threads,
+                },
+                writer.as_mut(),
+            );
+        }
+    }
 
     let mut packets_processed = 0u64;
     let mut packets_written = 0u64;
@@ -458,6 +503,136 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
 
     writer.flush()?;
 
+    Ok(())
+}
+
+/// Inputs to [`read_parallel`], grouped to keep the argument list manageable.
+struct ReadParallelArgs<'a> {
+    file: &'a std::path::Path,
+    expr: &'a FilterExpr,
+    pn_filter: Option<&'a PacketNumberFilter>,
+    sample_rate: u64,
+    offset: u64,
+    count: Option<u64>,
+    is_default_limit: bool,
+    field_config: Option<&'a FieldConfig>,
+    raw_bytes: bool,
+    decode_as_args: &'a [String],
+    esp_sa_args: &'a [String],
+    threads: usize,
+}
+
+/// Parallel implementation of `dsct read` for file input with a
+/// reassembly-free filter.
+///
+/// The capture is memory-mapped and indexed once, the filter is evaluated
+/// across worker threads (each with its own registry and dissect buffer), and
+/// the matching indices are merged in packet-number order.  Sample-rate,
+/// offset, and count are then applied over that ordered set exactly as in the
+/// sequential path, and the survivors are serialized in order.  Because every
+/// matched packet is guaranteed free of TCP reassembly, re-dissecting each
+/// survivor with a fresh registry reproduces the sequential output byte for
+/// byte.
+fn read_parallel(args: ReadParallelArgs<'_>, writer: &mut dyn Write) -> Result<()> {
+    let ReadParallelArgs {
+        file,
+        expr,
+        pn_filter,
+        sample_rate,
+        offset,
+        count,
+        is_default_limit,
+        field_config,
+        raw_bytes,
+        decode_as_args,
+        esp_sa_args,
+        threads,
+    } = args;
+
+    let mapped = MappedFile::open(file).context("failed to open capture file")?;
+    let data = mapped.as_bytes();
+    let records = packet_dissector_pcap::build_index(data)
+        .map_err(DsctError::from)
+        .context("invalid capture file")?;
+
+    // Build a fully-configured registry per worker thread.  decode-as / esp-sa
+    // arguments were already validated when the sequential registry was built
+    // in `cmd_read`, so re-application here cannot fail.
+    let make_registry = || {
+        let mut registry = DissectorRegistry::default();
+        let _ = decode_as::parse_and_apply(&mut registry, decode_as_args);
+        let _ = esp_sa::parse_and_apply(&registry, esp_sa_args);
+        registry
+    };
+
+    let mut matched = parallel::filter_indices(data, &records, expr, threads, &make_registry);
+    if let Some(pnf) = pn_filter {
+        matched.retain(|&i| pnf.contains((i as u64) + 1));
+    }
+
+    let out_registry = make_registry();
+    let mut dissect_buf = packet_dissector_core::packet::DissectBuffer::new();
+    let mut pkt_buf: Vec<u8> = Vec::with_capacity(4096);
+    let mut filter_matches = 0u64;
+    let mut results_matched = 0u64;
+    let mut packets_written = 0u64;
+    let mut truncated_by_limit = false;
+
+    for &i in &matched {
+        // --- apply sample rate (every Nth filter-passing packet) ---
+        filter_matches += 1;
+        if sample_rate > 1 && !(filter_matches - 1).is_multiple_of(sample_rate) {
+            continue;
+        }
+        // --- apply result-based offset (consistent with --count) ---
+        results_matched += 1;
+        if results_matched <= offset {
+            continue;
+        }
+
+        let rec = &records[i];
+        let offset_bytes = rec.data_offset as usize;
+        let Some(pkt_data) = data.get(offset_bytes..offset_bytes + rec.captured_len as usize)
+        else {
+            continue;
+        };
+        let buf = dissect_buf.clear_into();
+        if out_registry
+            .dissect_with_link_type(pkt_data, rec.link_type as u32, buf)
+            .is_err()
+        {
+            // Reassembly-free packets that matched the scan dissect identically
+            // here; skip defensively on the unexpected error, mirroring the
+            // sequential path's behavior of not emitting failed packets.
+            continue;
+        }
+        let meta = PacketMeta {
+            number: (i as u64) + 1,
+            timestamp_secs: rec.timestamp_secs,
+            timestamp_usecs: rec.timestamp_usecs,
+            captured_length: rec.captured_len,
+            original_length: rec.original_len,
+            link_type: rec.link_type as u32,
+        };
+        pkt_buf.clear();
+        write_packet_json(&mut pkt_buf, &meta, buf, pkt_data, field_config, raw_bytes)?;
+        pkt_buf.push(b'\n');
+        writer.write_all(&pkt_buf)?;
+        packets_written += 1;
+
+        if let Some(max) = count
+            && packets_written >= max
+        {
+            truncated_by_limit = true;
+            break;
+        }
+    }
+
+    if is_default_limit && truncated_by_limit {
+        emit_truncation_warning(limits::DEFAULT_PACKET_COUNT);
+    }
+
+    writer.flush()?;
     Ok(())
 }
 

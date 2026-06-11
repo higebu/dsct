@@ -1,5 +1,6 @@
 //! Filter application and chunked filter scanning.
 
+use packet_dissector::registry::DissectorRegistry;
 use packet_dissector_core::packet::{DissectBuffer, Packet};
 
 use super::app::App;
@@ -7,6 +8,11 @@ use super::state::FilterProgress;
 use crate::filter_expr::FilterExpr;
 
 impl App {
+    /// Minimum packet count below which a synchronous (chunked) scan is used
+    /// instead of spawning worker threads, so tiny captures avoid thread-setup
+    /// overhead.
+    const MIN_PARALLEL_PACKETS: usize = 4_096;
+
     pub(super) fn apply_filter(&mut self) {
         self.filter.error_message = None;
 
@@ -20,23 +26,67 @@ impl App {
 
         self.filter.applied = self.filter.buf.input.clone();
 
-        if expr.is_none() {
-            // Empty filter — show all packets immediately.
-            self.filtered_indices = (0..self.indices.len()).collect();
-            self.summary_cache.clear();
-            self.packet_list.selected = 0;
-            self.packet_list.scroll_offset = 0;
-            self.load_selected();
-            self.hex_dump.scroll_offset = 0;
+        let expr = match expr {
+            Some(expr) => expr,
+            None => {
+                // Empty filter — show all packets immediately.
+                let all = (0..self.indices.len()).collect();
+                self.finalize_filter(all);
+                return;
+            }
+        };
+
+        // Parallel one-shot scan: only for static file mode with a filter whose
+        // match decision is independent of TCP reassembly, on captures large
+        // enough to amortize thread setup.  Everything else (live capture,
+        // reassembly-sensitive filters, packet-number-only filters, tiny
+        // captures, single core) uses the chunked sequential scan below.
+        let threads = crate::parallel::resolve_threads(None);
+        if threads > 1
+            && self.live_mode.is_none()
+            && self.indices.len() >= Self::MIN_PARALLEL_PACKETS
+            && !expr.is_packet_number_only()
+            && expr.match_is_reassembly_independent()
+        {
+            let results = self.parallel_filter_indices(&expr, threads);
+            self.finalize_filter(results);
             return;
         }
 
-        // Start a chunked filter scan.
+        // Start a chunked sequential filter scan.
         self.filter_progress = Some(FilterProgress {
-            expr,
+            expr: Some(expr),
             cursor: 0,
             results: Vec::new(),
         });
+    }
+
+    /// Evaluate `expr` against the full packet index in parallel, returning the
+    /// matching indices in ascending order.
+    ///
+    /// Each worker thread builds its own [`DissectorRegistry`] (re-applying the
+    /// session's `--decode-as` arguments) because registries are not `Sync`.
+    pub(super) fn parallel_filter_indices(&self, expr: &FilterExpr, threads: usize) -> Vec<usize> {
+        let data = self.capture.as_bytes();
+        let decode_as_args = &self.decode_as_args;
+        let make_registry = || {
+            let mut registry = DissectorRegistry::default();
+            // Arguments were validated at startup, so re-application cannot fail.
+            let _ = crate::decode_as::parse_and_apply(&mut registry, decode_as_args);
+            registry
+        };
+        crate::parallel::filter_indices(data, &self.indices, expr, threads, &make_registry)
+    }
+
+    /// Install a completed filter result set and refresh dependent UI state.
+    fn finalize_filter(&mut self, results: Vec<usize>) {
+        self.filter_progress = None;
+        self.filtered_indices = results;
+        self.summary_cache.clear();
+        self.packet_list.selected = 0;
+        self.packet_list.scroll_offset = 0;
+        self.load_selected();
+        self.hex_dump.scroll_offset = 0;
     }
 
     /// Number of packets to scan per tick during filter progress.
@@ -100,12 +150,7 @@ impl App {
                 Some(fp) => fp.results,
                 None => Vec::new(),
             };
-            self.filtered_indices = results;
-            self.summary_cache.clear();
-            self.packet_list.selected = 0;
-            self.packet_list.scroll_offset = 0;
-            self.load_selected();
-            self.hex_dump.scroll_offset = 0;
+            self.finalize_filter(results);
             return false;
         }
         true
@@ -155,5 +200,39 @@ mod tests {
         let mut app = make_test_app(1);
         assert!(app.filter_progress.is_none());
         assert!(!app.filter_tick());
+    }
+
+    #[test]
+    fn parallel_filter_matches_single_thread() {
+        use crate::filter_expr::FilterExpr;
+        let app = make_test_app(5000);
+        let expr = FilterExpr::parse("udp").unwrap().unwrap();
+        let seq = app.parallel_filter_indices(&expr, 1);
+        // Every fixture packet is UDP.
+        assert_eq!(seq.len(), 5000);
+        for threads in [2usize, 3, 8, 64] {
+            let par = app.parallel_filter_indices(&expr, threads);
+            assert_eq!(par, seq, "thread count {threads} must agree with 1 thread");
+        }
+    }
+
+    #[test]
+    fn parallel_filter_empty_for_non_matching() {
+        use crate::filter_expr::FilterExpr;
+        let app = make_test_app(5000);
+        let expr = FilterExpr::parse("tcp").unwrap().unwrap();
+        let par = app.parallel_filter_indices(&expr, 8);
+        assert!(par.is_empty());
+    }
+
+    #[test]
+    fn parallel_filter_where_clause_agrees_across_threads() {
+        use crate::filter_expr::FilterExpr;
+        let app = make_test_app(5000);
+        let expr = FilterExpr::parse("ipv4.src = '10.0.0.1'").unwrap().unwrap();
+        let seq = app.parallel_filter_indices(&expr, 1);
+        let par = app.parallel_filter_indices(&expr, 7);
+        assert_eq!(seq.len(), 5000);
+        assert_eq!(par, seq);
     }
 }

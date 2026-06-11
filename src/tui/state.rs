@@ -31,6 +31,18 @@ pub struct PacketIndex {
     pub _pad: u16,
 }
 
+impl crate::parallel::ScanIndex for PacketIndex {
+    fn scan_data_offset(&self) -> usize {
+        self.data_offset as usize
+    }
+    fn scan_captured_len(&self) -> usize {
+        self.captured_len as usize
+    }
+    fn scan_link_type(&self) -> u32 {
+        self.link_type as u32
+    }
+}
+
 /// Live capture mode state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveMode {

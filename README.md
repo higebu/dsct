@@ -157,6 +157,26 @@ Include the original packet bytes (link-layer included) as a hex string under
 dsct read capture.pcap --raw-bytes --count 1
 ```
 
+#### Parallel filtering
+
+For large capture **files** (not stdin), `dsct read` can evaluate a filter
+across multiple worker threads. The thread count defaults to the number of
+available CPUs and can be overridden with the `--threads` flag or the
+`DSCT_THREADS` environment variable:
+
+```bash
+dsct read capture.pcap -f icmp --threads 8
+DSCT_THREADS=8 dsct read capture.pcap -f icmp
+```
+
+Parallelism is engaged conservatively to preserve the exact JSONL output: only
+file input with a filter whose matches can never be a TCP segment (e.g. `icmp`,
+`arp`, `igmp`, `icmpv6`) uses the parallel path. Because TCP reassembly is
+stateful and order-dependent, all other filters — and stdin streaming, the
+no-filter fast path, and `--progress` — fall back to the single-threaded
+streaming path. Output order is always packet-number order regardless of the
+thread count.
+
 Inspect available fields and schemas:
 
 ```bash
@@ -171,6 +191,12 @@ dsct tui capture.pcap
 ```
 
 In the TUI, press `?` to open the built-in help overlay and `q` to quit.
+
+Filtering a multi-gigabyte capture in the TUI uses all available CPU cores when
+the filter's match decision is independent of TCP reassembly (transport-layer
+and below — e.g. `tcp`, `udp`, `ipv4.src = ...`, `tcp.port = 443`). Set
+`DSCT_THREADS` to override the worker count. Application-layer filters that rely
+on TCP reassembly (e.g. `http`, `tls`) use the incremental single-threaded scan.
 
 ## Typical workflow
 
