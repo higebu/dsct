@@ -49,6 +49,12 @@ pub struct App {
     pub filter: FilterState,
     /// In-progress filter scan (None = idle).
     pub filter_progress: Option<FilterProgress>,
+    /// In-progress parallel filter scan (None = idle).
+    pub parallel_scan: Option<super::parallel_scan::ParallelFilterScan>,
+    /// Path of the capture file (None in live mode).
+    pub capture_path: Option<std::path::PathBuf>,
+    /// Decode-as arguments for rebuilding registries in parallel workers.
+    pub decode_as_args: Vec<String>,
     /// Maximized pane (None = normal layout).
     pub maximized_pane: Option<Pane>,
     /// Per-pane height weights [packet_list, detail_tree, hex_dump].
@@ -92,6 +98,7 @@ impl App {
         indices: Vec<PacketIndex>,
         registry: DissectorRegistry,
         file_path: &std::path::Path,
+        decode_as_args: Vec<String>,
     ) -> Self {
         let file_name = file_path
             .file_name()
@@ -115,6 +122,9 @@ impl App {
             hex_dump: HexDumpState::default(),
             filter: FilterState::default(),
             filter_progress: None,
+            parallel_scan: None,
+            capture_path: Some(file_path.to_path_buf()),
+            decode_as_args,
             maximized_pane: None,
             pane_weights: DEFAULT_PANE_WEIGHTS,
             pending_count: String::new(),
@@ -144,6 +154,7 @@ impl App {
         indices: Vec<PacketIndex>,
         registry: DissectorRegistry,
         copier: StdinCopier,
+        decode_as_args: Vec<String>,
     ) -> Self {
         let completion_engine = CompletionEngine::from_registry(&registry);
         // Start at 0 so the first live_tick() ingests any data that was
@@ -166,6 +177,9 @@ impl App {
             hex_dump: HexDumpState::default(),
             filter: FilterState::default(),
             filter_progress: None,
+            parallel_scan: None,
+            capture_path: None,
+            decode_as_args,
             maximized_pane: None,
             pane_weights: DEFAULT_PANE_WEIGHTS,
             pending_count: String::new(),
@@ -531,6 +545,7 @@ mod tests {
             indices,
             DissectorRegistry::default(),
             std::path::Path::new("test.pcap"),
+            vec![],
         );
         let _ = std::fs::remove_file(&path);
         app
@@ -1823,7 +1838,13 @@ mod tests {
             handle: None,
         };
 
-        let app = App::new_live(capture, indices, DissectorRegistry::default(), copier);
+        let app = App::new_live(
+            capture,
+            indices,
+            DissectorRegistry::default(),
+            copier,
+            vec![],
+        );
         (app, tmp)
     }
 
@@ -2185,7 +2206,13 @@ mod tests {
         };
 
         let indices = Vec::new();
-        let mut app = App::new_live(capture, indices, DissectorRegistry::default(), copier);
+        let mut app = App::new_live(
+            capture,
+            indices,
+            DissectorRegistry::default(),
+            copier,
+            vec![],
+        );
         assert_eq!(app.total_count(), 0);
         assert_eq!(app.displayed_count(), 0);
 
@@ -2278,7 +2305,13 @@ mod tests {
             handle: None,
         };
 
-        let mut app = App::new_live(capture, Vec::new(), DissectorRegistry::default(), copier);
+        let mut app = App::new_live(
+            capture,
+            Vec::new(),
+            DissectorRegistry::default(),
+            copier,
+            vec![],
+        );
         assert_eq!(app.total_count(), 0);
 
         // 2. live_tick should ingest the pre-existing data.

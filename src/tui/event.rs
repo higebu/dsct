@@ -83,12 +83,16 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
             continue;
         }
 
-        // If a filter scan is in progress, drive it in chunks.
-        if app.filter_progress.is_some() {
+        // If a filter scan is in progress (sequential or parallel), drive it.
+        if app.filter_progress.is_some() || app.parallel_scan.is_some() {
             if event::poll(std::time::Duration::from_millis(0))?
                 && let Event::Key(key) = event::read()?
                 && key.code == crossterm::event::KeyCode::Esc
             {
+                if let Some(scan) = &app.parallel_scan {
+                    scan.cancel();
+                }
+                app.parallel_scan = None;
                 app.filter_progress = None;
                 continue;
             }

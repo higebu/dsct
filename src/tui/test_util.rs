@@ -42,6 +42,7 @@ pub(super) fn make_test_app(n: usize) -> App {
         indices,
         DissectorRegistry::default(),
         std::path::Path::new("test.pcap"),
+        vec![],
     );
     let _ = std::fs::remove_file(&path);
     app

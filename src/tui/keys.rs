@@ -64,6 +64,7 @@ impl App {
         // Ignore mouse during overlays.
         if self.stream_view.is_some()
             || self.filter_progress.is_some()
+            || self.parallel_scan.is_some()
             || self.stream_build_progress.is_some()
         {
             return;

@@ -110,7 +110,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         );
     }
 
-    // Overlay: centered progress bar while filter is scanning.
+    // Overlay: centered progress bar while filter is scanning (sequential or parallel).
     if let Some(progress) = &app.filter_progress {
         let total = app.indices.len();
         render_progress_overlay(
@@ -120,6 +120,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
             total,
             progress.fraction(total),
         );
+    } else if let Some(frac) = app.filter_fraction() {
+        let total = app.indices.len();
+        let scanned = (frac * total as f64) as usize;
+        render_progress_overlay(f, "Filtering", scanned, total, frac);
     }
 
     // Overlay: help screen.
