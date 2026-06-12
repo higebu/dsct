@@ -149,6 +149,7 @@ nucleo-matcher = { version = "0.3", optional = true }
 tempfile = { version = "3", optional = true }
 rustix = { version = "1", features = ["stdio"], optional = true }
 lru = { version = "0.16", optional = true }
+num_cpus = "1"
 sqlparser = "0.61.0"
 
 [dev-dependencies]
