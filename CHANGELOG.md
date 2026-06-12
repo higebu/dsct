@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.2.11] - 2026-06-12
+
+### 🚀 Features
+
+- Add thread pool sizing and filter parallel-safety check
+- *(tui)* Parallelize filter scan with per-worker registries
+- *(read)* Parallelize filter evaluation for file input
+
+### 🐛 Bug Fixes
+
+- *(read)* Align progress and serialization error semantics with sequential path
+
+### 💼 Other
+
+- Add parallel filter scan benchmark
+
+### 📚 Documentation
+
+- Install dsct from crates.io
+
+### ⚡ Performance
+
+- *(tui)* Replace filter result Vec<usize> with bitmap
+- *(tui)* Fill whole words in push_set_range
+
+### ⚙️ Miscellaneous Tasks
+
+- Update packet-dissector crates to 0.3.3
 ## [0.2.10] - 2026-04-23
 
 ### 🚀 Features
