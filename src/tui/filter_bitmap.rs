@@ -267,10 +267,21 @@ impl FilterBitmap {
             self.universe
         );
         self.grow_words(end);
-        for idx in start..end {
-            let word = idx / 64;
-            let bit = idx % 64;
-            self.words[word] |= 1u64 << bit;
+        // Fill whole words instead of setting bits one by one; for large
+        // contiguous ranges (e.g. `all_set` on load / filter clear) this is
+        // ~64x fewer operations.
+        let start_word = start / 64;
+        let start_bit = start % 64;
+        let end_word = (end - 1) / 64; // start < end checked above
+        let end_bit = (end - 1) % 64;
+        if start_word == end_word {
+            self.words[start_word] |= (!0u64 << start_bit) & (!0u64 >> (63 - end_bit));
+        } else {
+            self.words[start_word] |= !0u64 << start_bit;
+            for w in &mut self.words[start_word + 1..end_word] {
+                *w = !0u64;
+            }
+            self.words[end_word] |= !0u64 >> (63 - end_bit);
         }
         self.ones += end - start;
         self.universe = self.universe.max(end);
@@ -535,6 +546,26 @@ mod tests {
         assert_eq!(bm.universe(), 1000);
         for (n, &e) in expected.iter().enumerate() {
             assert_eq!(bm.select(n), Some(e));
+        }
+    }
+
+    #[test]
+    fn push_set_range_word_boundaries() {
+        // Exercise partial-first-word / full-middle-words / partial-last-word
+        // paths: starts and ends mid-word, spans multiple words and blocks.
+        for &(start, end) in &[(5usize, 901usize), (63, 65), (64, 128), (1, 2), (700, 1601)] {
+            let mut bm = FilterBitmap::new();
+            bm.extend_universe(start);
+            bm.push_set_range(start..end);
+            assert_eq!(bm.count_ones(), end - start, "range {start}..{end}");
+            assert_eq!(
+                bm.iter().collect::<Vec<_>>(),
+                (start..end).collect::<Vec<_>>(),
+                "range {start}..{end}"
+            );
+            for i in 0..end {
+                assert_eq!(bm.contains(i), i >= start, "contains {i} in {start}..{end}");
+            }
         }
     }
 
