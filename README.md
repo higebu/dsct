@@ -157,6 +157,19 @@ Include the original packet bytes (link-layer included) as a hex string under
 dsct read capture.pcap --raw-bytes --count 1
 ```
 
+Speed up filter evaluation on large files with `--threads`:
+
+```bash
+dsct read capture.pcap -f "udp" --no-limit --threads 4
+DSCT_THREADS=4 dsct read capture.pcap -f "tcp.dst_port > 1024" --no-limit
+```
+
+`--threads` distributes dissection and filter evaluation across N worker
+threads when the filter is stateless (L2–L4 protocols: `tcp`, `udp`, `ipv4`,
+etc.).  Filters that require TCP reassembly such as `http`, `dns`, `tls`, and
+`tcp.stream_id` automatically fall back to sequential processing regardless of
+`--threads`.  Stdin input always uses the sequential path.
+
 Inspect available fields and schemas:
 
 ```bash
@@ -258,6 +271,7 @@ Resource limits can be tuned via environment variables:
 | `DSCT_MCP_TIMEOUT` | 300 | Timeout per tool execution in seconds |
 | `DSCT_MCP_WRITE_BUFFER_SIZE` | 65536 | Stdout write buffer size in bytes |
 | `DSCT_MCP_MAX_FILE_SIZE` | 10737418240 | Maximum capture file size in bytes |
+| `DSCT_THREADS` | physical CPU count | Worker threads for `dsct read --filter` (see `--threads`) |
 
 ## Output
 

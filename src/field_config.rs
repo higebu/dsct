@@ -27,13 +27,13 @@ const DEFAULT_CONFIG: &str = include_str!("default_fields.toml");
 ///
 /// When a container field is included but has no nested patterns defined,
 /// all of its sub-fields are shown (e.g., SRv6 `segments_structure`).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FieldConfig {
     protocols: HashMap<String, FieldFilter>,
 }
 
 /// Per-protocol field filter with top-level and nested patterns.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FieldFilter {
     /// Patterns for top-level field names (no dots).
     top_level: PatternSet,
@@ -43,7 +43,7 @@ struct FieldFilter {
 }
 
 /// A set of patterns for matching field names.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PatternSet {
     /// When `true`, all names match (used for `"parent.*"` patterns).
     match_all: bool,
