@@ -315,6 +315,49 @@ fn parallel_sample_rate_combined_offset_count() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn parallel_progress_reports_total_processed_packets() {
+    // --progress must report packets_processed counting ALL packets read
+    // (like the sequential path), not just filter-matching ones.
+    // 400 rounds = 2000 packets, 1200 of which are UDP matches.
+    let tmp = write_mixed_pcap(400);
+    let path = tmp.path().to_str().unwrap();
+    let out = Command::cargo_bin("dsct")
+        .unwrap()
+        .args([
+            "read",
+            path,
+            "-f",
+            "udp",
+            "--no-limit",
+            "--threads",
+            "4",
+            "--progress",
+            "500",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let processed: Vec<u64> = stderr
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|v| v.pointer("/progress/packets_processed")?.as_u64())
+        .collect();
+    assert!(
+        !processed.is_empty(),
+        "expected at least one progress report on stderr, got: {stderr}"
+    );
+    let max = processed.iter().copied().max().unwrap();
+    // Only 1200 packets match; reaching >= 1500 proves the count covers all
+    // processed packets rather than matches only.
+    assert!(
+        max >= 1500,
+        "packets_processed must count all packets (got max {max})"
+    );
+}
+
+#[test]
 fn invalid_decode_as_on_parallel_path_exits_with_code_2() {
     // --decode-as must be validated even on the parallel path; a silent
     // empty-output success (exit 0) would violate the structured-error

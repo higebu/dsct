@@ -133,12 +133,15 @@ impl FilterExpr {
                 SAFE_PROTOCOLS.iter().any(|&s| s == norm)
             }
             FilterExpr::Where(clause) => {
-                if !SAFE_PROTOCOLS.iter().any(|&s| s == clause.protocol) {
+                // WhereClause::new already normalises the protocol name, but
+                // normalise again so this check does not silently depend on
+                // that constructor invariant (mirrors the Protocol arm).
+                let norm = crate::filter::normalize_protocol_name(&clause.protocol);
+                if !SAFE_PROTOCOLS.iter().any(|&s| s == norm) {
                     return false;
                 }
                 // TCP stateful fields are unsafe even though TCP itself is safe.
-                if clause.protocol == "tcp" && UNSAFE_TCP_FIELDS.iter().any(|&f| f == clause.field)
-                {
+                if norm == "tcp" && UNSAFE_TCP_FIELDS.iter().any(|&f| f == clause.field) {
                     return false;
                 }
                 true

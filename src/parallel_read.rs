@@ -108,10 +108,8 @@ pub struct ParallelReadOptions<'a> {
 ///
 /// Provides enough information for the caller to emit a truncation warning.
 pub struct ReadOutcome {
-    /// Total packets read from the file (after packet-number filtering).
-    /// Note: because workers do not report non-matching packets back to the
-    /// merger, this count reflects only matched-or-warned packets.  It is
-    /// provided primarily for truncation detection.
+    /// Total packets read from the file (after packet-number filtering),
+    /// matching or not — same semantics as the sequential path.
     pub packets_processed: u64,
     /// Number of JSON records written to the writer.
     pub packets_written: u64,
@@ -133,10 +131,20 @@ enum WorkerEntry {
     Match(Vec<u8>),
     /// Dissection failed for this packet number.
     Warning { number: u64, message: String },
+    /// Serialisation failed for a matched packet.  The merger treats this as
+    /// fatal, mirroring the sequential path where `write_packet_json` errors
+    /// propagate via `?`.
+    Fatal { number: u64, message: String },
 }
 
 /// One batch of results sent from a worker back to the merger.
-type OutputBatch = Vec<WorkerEntry>;
+struct OutputBatch {
+    /// Number of input packets this batch represents (matching or not), used
+    /// by the merger for `packets_processed` accounting.
+    packets: u64,
+    /// Per-packet entries (matches and warnings) in original packet order.
+    entries: Vec<WorkerEntry>,
+}
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -153,8 +161,10 @@ type OutputBatch = Vec<WorkerEntry>;
 /// Callbacks:
 /// - `warn(packet_number, message)` — called in packet order for per-packet
 ///   dissection warnings.
-/// - `progress(packets_processed, packets_written)` — called approximately
-///   every `opts.progress_interval` output records (at batch granularity).
+/// - `progress(packets_processed, packets_written)` — called whenever
+///   `packets_processed` crosses a multiple of `opts.progress_interval`.
+///   Unlike the sequential path this fires at batch granularity, so at most
+///   once per batch even when a batch crosses several interval boundaries.
 pub fn run<W: io::Write>(
     opts: &ParallelReadOptions<'_>,
     writer: &mut W,
@@ -343,12 +353,13 @@ fn worker_fn(
     let mut json_buf: Vec<u8> = Vec::with_capacity(4096);
 
     for batch in &irx {
-        let mut results: OutputBatch = Vec::with_capacity(batch.len());
+        let packets = batch.len() as u64;
+        let mut entries: Vec<WorkerEntry> = Vec::with_capacity(batch.len());
 
         for (meta, data) in &batch {
             let dbuf = dissect_buf.clear_into();
             if let Err(e) = registry.dissect_with_link_type(data, meta.link_type, dbuf) {
-                results.push(WorkerEntry::Warning {
+                entries.push(WorkerEntry::Warning {
                     number: meta.number,
                     message: format!("{e}"),
                 });
@@ -363,21 +374,30 @@ fn worker_fn(
             }
 
             json_buf.clear();
-            if write_packet_json(
+            match write_packet_json(
                 &mut json_buf,
                 meta,
                 dbuf,
                 data.as_slice(),
                 field_config.as_ref(),
                 raw_bytes,
-            )
-            .is_ok()
-            {
-                results.push(WorkerEntry::Match(json_buf.clone()));
+            ) {
+                Ok(()) => entries.push(WorkerEntry::Match(json_buf.clone())),
+                Err(e) => {
+                    // Fatal: the merger aborts the whole run on this entry,
+                    // mirroring the sequential path.  Send what we have and
+                    // exit the worker.
+                    entries.push(WorkerEntry::Fatal {
+                        number: meta.number,
+                        message: format!("{e}"),
+                    });
+                    let _ = otx.send(OutputBatch { packets, entries });
+                    return;
+                }
             }
         }
 
-        if otx.send(results).is_err() {
+        if otx.send(OutputBatch { packets, entries }).is_err() {
             // Merger dropped the receiver (count limit reached); exit cleanly.
             break;
         }
@@ -408,6 +428,9 @@ fn merger_fn<W: io::Write>(
     let mut results_matched = 0u64;
     let mut truncated_by_limit = false;
     let mut worker_idx = 0usize;
+    // packets_processed value at the last progress report, for interval
+    // boundary-crossing detection.
+    let mut progress_marker = 0u64;
 
     // Receive from workers in strict round-robin order (same order the reader
     // sent batches to them), preserving global packet order.
@@ -419,14 +442,18 @@ fn merger_fn<W: io::Write>(
                 break 'outer;
             }
             Ok(batch) => {
-                // Count packets represented in this batch for progress reporting.
-                let batch_count = batch.len() as u64;
-                packets_processed = packets_processed.saturating_add(batch_count);
+                packets_processed = packets_processed.saturating_add(batch.packets);
 
-                for entry in batch {
+                for entry in batch.entries {
                     match entry {
                         WorkerEntry::Warning { number, message } => {
                             warn(number, &message);
+                        }
+                        WorkerEntry::Fatal { number, message } => {
+                            stop.store(true, Ordering::Relaxed);
+                            return Err(DsctError::msg(format!(
+                                "failed to serialize packet {number}: {message}"
+                            )));
                         }
                         WorkerEntry::Match(json_bytes) => {
                             filter_matches += 1;
@@ -453,11 +480,13 @@ fn merger_fn<W: io::Write>(
                     }
                 }
 
-                // Progress reporting at batch granularity.
+                // Progress reporting at batch granularity: fire when
+                // packets_processed crossed a multiple of the interval since
+                // the last report (sequential semantics, batched).
                 if progress_interval > 0
-                    && packets_written > 0
-                    && packets_written.is_multiple_of(progress_interval)
+                    && packets_processed / progress_interval > progress_marker / progress_interval
                 {
+                    progress_marker = packets_processed;
                     progress(packets_processed, packets_written);
                 }
 
@@ -471,4 +500,90 @@ fn merger_fn<W: io::Write>(
         packets_written,
         truncated_by_limit,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_opts(progress_interval: u64) -> ParallelReadOptions<'static> {
+        ParallelReadOptions {
+            path: Path::new("unused"),
+            filter_str: "udp",
+            decode_as_args: &[],
+            threads: 2,
+            sample_rate: 1,
+            offset: 0,
+            count: None,
+            pn_filter: None,
+            field_config: None,
+            raw_bytes: false,
+            progress_interval,
+        }
+    }
+
+    #[test]
+    fn merger_aborts_on_fatal_entry() {
+        let (tx, rx) = mpsc::sync_channel::<OutputBatch>(2);
+        tx.send(OutputBatch {
+            packets: 1,
+            entries: vec![WorkerEntry::Fatal {
+                number: 7,
+                message: "boom".into(),
+            }],
+        })
+        .unwrap();
+        drop(tx);
+
+        let opts = test_opts(0);
+        let mut rxs = vec![rx];
+        let stop = AtomicBool::new(false);
+        let mut out: Vec<u8> = Vec::new();
+        let result = merger_fn(
+            &opts,
+            &mut rxs,
+            &mut out,
+            &mut |_, _| {},
+            &mut |_, _| {},
+            &stop,
+        );
+
+        assert!(result.is_err(), "Fatal entry must abort the merge");
+        assert!(stop.load(Ordering::Relaxed), "stop flag must be set");
+    }
+
+    #[test]
+    fn merger_progress_counts_all_packets() {
+        // Two batches of 300 packets with no matching entries: progress must
+        // fire once the 500-packet interval boundary is crossed, with
+        // packets_processed counting all packets (not just matches).
+        let (tx, rx) = mpsc::sync_channel::<OutputBatch>(2);
+        for _ in 0..2 {
+            tx.send(OutputBatch {
+                packets: 300,
+                entries: Vec::new(),
+            })
+            .unwrap();
+        }
+        drop(tx);
+
+        let opts = test_opts(500);
+        let mut rxs = vec![rx];
+        let stop = AtomicBool::new(false);
+        let mut out: Vec<u8> = Vec::new();
+        let mut reports: Vec<(u64, u64)> = Vec::new();
+        let outcome = merger_fn(
+            &opts,
+            &mut rxs,
+            &mut out,
+            &mut |_, _| {},
+            &mut |processed, written| reports.push((processed, written)),
+            &stop,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.packets_processed, 600);
+        assert_eq!(outcome.packets_written, 0);
+        assert_eq!(reports, vec![(600, 0)]);
+    }
 }
