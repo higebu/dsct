@@ -6,6 +6,7 @@ use lru::LruCache;
 use packet_dissector::registry::DissectorRegistry;
 
 use super::completion::CompletionEngine;
+use super::filter_bitmap::FilterBitmap;
 use super::live::StdinCopier;
 use super::loader;
 use super::state::{
@@ -27,8 +28,8 @@ pub struct App {
     pub capture: CaptureMap,
     /// Minimal index of all packets (32 bytes each).
     pub indices: Vec<PacketIndex>,
-    /// Indices into `indices` matching the current filter.
-    pub filtered_indices: Vec<usize>,
+    /// Bitmap of packets matching the current filter (one bit per packet).
+    pub filtered: FilterBitmap,
     /// Dissector registry (for on-demand dissection).
     pub registry: DissectorRegistry,
     /// Fuzzy completion engine for filter input.
@@ -105,13 +106,13 @@ impl App {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| file_path.display().to_string());
         let completion_engine = CompletionEngine::from_registry(&registry);
-        let filtered_indices: Vec<usize> = (0..indices.len()).collect();
+        let filtered = FilterBitmap::all_set(indices.len());
         let loaded_history = super::state::load_history();
         let mut app = Self {
             file_name,
             capture,
             indices,
-            filtered_indices,
+            filtered,
             registry,
             completion_engine,
             summary_cache: LruCache::new(SUMMARY_CACHE_CAPACITY),
@@ -160,13 +161,13 @@ impl App {
         // Start at 0 so the first live_tick() ingests any data that was
         // already in the mmap (e.g. written before CaptureMap::new_live).
         let indexed_bytes = 0;
-        let filtered_indices: Vec<usize> = (0..indices.len()).collect();
+        let filtered = FilterBitmap::all_set(indices.len());
         let loaded_history = super::state::load_history();
         let mut app = Self {
             file_name: "<stdin>".to_string(),
             capture,
             indices,
-            filtered_indices,
+            filtered,
             registry,
             completion_engine,
             summary_cache: LruCache::new(SUMMARY_CACHE_CAPACITY),
@@ -205,7 +206,7 @@ impl App {
 
     /// Number of displayed (filtered) packets.
     pub fn displayed_count(&self) -> usize {
-        self.filtered_indices.len()
+        self.filtered.count_ones()
     }
 
     /// Total number of packets in the capture.
@@ -215,9 +216,9 @@ impl App {
 
     /// Get the selected packet number (1-based), or 0 if nothing selected.
     pub fn selected_number(&self) -> u64 {
-        self.filtered_indices
-            .get(self.packet_list.selected)
-            .map(|&idx| idx as u64 + 1)
+        self.filtered
+            .select(self.packet_list.selected)
+            .map(|idx| idx as u64 + 1)
             .unwrap_or(0)
     }
 
@@ -262,7 +263,7 @@ impl App {
         self.detail_tree.selected = 0;
         self.detail_tree.scroll_offset = 0;
 
-        if let Some(&pkt_idx) = self.filtered_indices.get(self.packet_list.selected) {
+        if let Some(pkt_idx) = self.filtered.select(self.packet_list.selected) {
             if let Some(index) = self.indices.get(pkt_idx) {
                 if let Some(data) = self.capture.packet_data(index) {
                     self.selected = Some(loader::dissect_selected(
@@ -327,14 +328,16 @@ impl App {
             if self.indices.is_empty() {
                 let estimate = (bg.total_bytes / 80).min(Self::MAX_PREALLOC);
                 self.indices.reserve(estimate);
-                self.filtered_indices.reserve(estimate);
+                self.filtered.reserve(estimate);
             }
 
             let old_count = self.indices.len();
             let new_count = new_records.len();
             self.indices.extend(new_records);
-            self.filtered_indices
-                .extend(old_count..old_count + new_count);
+            // No filter is active during initial indexing: every new packet is
+            // displayed, so set the corresponding bits (identity growth).
+            self.filtered
+                .push_set_range(old_count..old_count + new_count);
 
             // Select the first packet as soon as we have data.
             if old_count == 0 && !self.indices.is_empty() && self.selected.is_none() {
@@ -359,7 +362,7 @@ impl App {
         if self.indices.is_empty() {
             let estimate = (progress.total_bytes / 80).min(Self::MAX_PREALLOC);
             self.indices.reserve(estimate);
-            self.filtered_indices.reserve(estimate);
+            self.filtered.reserve(estimate);
         }
 
         let deadline = std::time::Instant::now() + Self::INDEX_TIME_BUDGET;
@@ -388,9 +391,10 @@ impl App {
             let new_count = new_records.len();
             self.indices.extend(new_records);
 
-            // Extend filtered_indices (no filter is active during initial indexing).
-            self.filtered_indices
-                .extend(old_count..old_count + new_count);
+            // Set bits for the new packets (no filter is active during initial
+            // indexing).
+            self.filtered
+                .push_set_range(old_count..old_count + new_count);
 
             // Read `done` before releasing the mutable borrow on `index_progress`
             // so that `self.load_selected()` can borrow `self` mutably.
@@ -473,7 +477,7 @@ impl App {
         };
 
         let old_count = self.indices.len();
-        let old_displayed = self.filtered_indices.len();
+        let old_displayed = self.filtered.count_ones();
         let was_at_bottom =
             old_displayed == 0 || self.packet_list.selected >= old_displayed.saturating_sub(1);
 
@@ -481,22 +485,23 @@ impl App {
             let new_packets = &all_indices[old_count..];
             self.indices.extend_from_slice(new_packets);
 
-            // If no filter is active, extend filtered_indices with the new ones.
+            let start = old_count;
+            let end = self.indices.len();
             if self.filter.applied.is_empty() {
-                let start = old_count;
-                let end = self.indices.len();
-                self.filtered_indices.extend(start..end);
+                // No filter active: display the new packets (set their bits).
+                self.filtered.push_set_range(start..end);
+            } else {
+                // A filter is active: new packets are not in the view, but the
+                // universe must still grow so rank/select stay consistent.
+                self.filtered.extend_universe(end);
             }
         }
 
         self.indexed_bytes = data.len();
 
         // Auto-scroll: if user was at the bottom, follow new packets.
-        if was_at_bottom
-            && self.live_mode == Some(LiveMode::Live)
-            && !self.filtered_indices.is_empty()
-        {
-            self.packet_list.selected = self.filtered_indices.len() - 1;
+        if was_at_bottom && self.live_mode == Some(LiveMode::Live) && !self.filtered.is_empty() {
+            self.packet_list.selected = self.filtered.count_ones() - 1;
             self.load_selected();
         }
     }

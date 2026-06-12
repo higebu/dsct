@@ -5,6 +5,7 @@ use std::sync::Arc;
 use packet_dissector_core::packet::{DissectBuffer, Packet};
 
 use super::app::App;
+use super::filter_bitmap::FilterBitmap;
 use super::parallel_scan::{ParallelFilterScan, ScanPoll};
 use super::state::FilterProgress;
 use crate::filter_expr::FilterExpr;
@@ -24,8 +25,8 @@ impl App {
         self.filter.applied = self.filter.buf.input.clone();
 
         if expr.is_none() {
-            // Empty filter ��� show all packets immediately.
-            self.filtered_indices = (0..self.indices.len()).collect();
+            // Empty filter — show all packets immediately.
+            self.filtered = FilterBitmap::all_set(self.indices.len());
             self.summary_cache.clear();
             self.packet_list.selected = 0;
             self.packet_list.scroll_offset = 0;
@@ -43,7 +44,7 @@ impl App {
             self.filter_progress = Some(FilterProgress {
                 expr,
                 cursor: 0,
-                results: Vec::new(),
+                results: FilterBitmap::new(),
             });
         }
     }
@@ -157,7 +158,7 @@ impl App {
                 self.filter_progress = Some(FilterProgress {
                     expr,
                     cursor: 0,
-                    results: Vec::new(),
+                    results: FilterBitmap::new(),
                 });
                 true
             }
@@ -216,10 +217,13 @@ impl App {
 
         if progress.cursor >= total {
             // Scan complete — take results and finalize.
-            let results = match std::mem::take(&mut self.filter_progress) {
+            let mut results = match std::mem::take(&mut self.filter_progress) {
                 Some(fp) => fp.results,
-                None => Vec::new(),
+                None => FilterBitmap::new(),
             };
+            // Cover every scanned packet, including trailing non-matches, so
+            // rank/select stay consistent over the full universe.
+            results.extend_universe(total);
             self.finalize_filter(results);
             return false;
         }
@@ -227,8 +231,8 @@ impl App {
     }
 
     /// Apply completed filter results and update the UI state.
-    fn finalize_filter(&mut self, results: Vec<usize>) {
-        self.filtered_indices = results;
+    fn finalize_filter(&mut self, results: FilterBitmap) {
+        self.filtered = results;
         self.summary_cache.clear();
         self.packet_list.selected = 0;
         self.packet_list.scroll_offset = 0;
@@ -270,7 +274,7 @@ mod tests {
         app.filter.buf.cursor = 0;
         app.apply_filter();
         assert!(app.filter_progress.is_none());
-        assert_eq!(app.filtered_indices.len(), app.indices.len());
+        assert_eq!(app.filtered.count_ones(), app.indices.len());
         assert_eq!(app.displayed_count(), 3);
     }
 
@@ -295,6 +299,24 @@ mod tests {
         assert!(app.filter_progress.is_none());
         // Fixture packets are all UDP.
         assert_eq!(app.displayed_count(), 3);
+    }
+
+    #[test]
+    fn sequential_scan_bitmap_matches_expected_indices() {
+        // make_test_app's capture_path ("test.pcap") cannot be reopened by
+        // workers, so the scan finalizes via the sequential fallback.
+        let mut app = make_test_app(10);
+        app.filter.buf.input = "udp".into();
+        app.filter.buf.cursor = 3;
+        app.apply_filter();
+        drive_filter_to_completion(&mut app);
+
+        // All 10 fixture packets are UDP → every bit set.
+        let collected: Vec<usize> = app.filtered.iter().collect();
+        assert_eq!(collected, (0..10).collect::<Vec<_>>());
+        // The bitmap universe must cover every scanned packet, not just matches.
+        assert_eq!(app.filtered.universe(), 10);
+        assert_eq!(app.filtered.rank(10), 10);
     }
 
     #[test]

@@ -154,9 +154,8 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Section 4: Selected packet summary (middle, dim)
     let sel_pkt_idx = app
-        .filtered_indices
-        .get(app.packet_list.selected)
-        .copied()
+        .filtered
+        .select(app.packet_list.selected)
         .unwrap_or(usize::MAX);
     if let Some(summary) = app.summary_cache.get(&sel_pkt_idx) {
         spans.push(Span::styled(

@@ -53,18 +53,24 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
     let visible_end = total.min(offset + inner_height);
 
     // Prefetch: dissect visible range + margin for smooth scrolling.
+    // One select positions at the window start; iteration walks it cheaply.
     let prefetch_start = offset.saturating_sub(10);
     let prefetch_end = total.min(visible_end + 10);
-    for i in prefetch_start..prefetch_end {
-        if let Some(&pkt_idx) = app.filtered_indices.get(i) {
-            let _ = app.get_or_dissect_summary(pkt_idx);
-        }
+    let prefetch_pkt_indices: Vec<usize> = app
+        .filtered
+        .iter_from(prefetch_start)
+        .take(prefetch_end - prefetch_start)
+        .collect();
+    for &pkt_idx in &prefetch_pkt_indices {
+        let _ = app.get_or_dissect_summary(pkt_idx);
     }
 
     // Collect visible packet metadata first (avoids borrow conflicts with cache).
-    let visible_packets: Vec<(usize, PacketIndex)> = (offset..visible_end)
-        .filter_map(|i| {
-            let &pkt_idx = app.filtered_indices.get(i)?;
+    let visible_packets: Vec<(usize, PacketIndex)> = app
+        .filtered
+        .iter_from(offset)
+        .take(visible_end.saturating_sub(offset))
+        .filter_map(|pkt_idx| {
             let index = app.indices.get(pkt_idx)?.clone();
             Some((pkt_idx, index))
         })

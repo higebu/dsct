@@ -15,6 +15,7 @@ mod completion;
 mod cursor;
 mod event;
 mod filter_apply;
+mod filter_bitmap;
 mod keys;
 mod live;
 #[doc(hidden)]

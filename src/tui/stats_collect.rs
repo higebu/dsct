@@ -12,7 +12,7 @@ impl App {
     ///
     /// Returns `true` while the collection is still running.
     pub fn stats_tick(&mut self) -> bool {
-        let total = self.filtered_indices.len();
+        let total = self.filtered.count_ones();
         let progress = match &mut self.stats_progress {
             Some(p) => p,
             None => return false,
@@ -20,8 +20,10 @@ impl App {
 
         let end = (progress.cursor + Self::STATS_CHUNK_SIZE).min(total);
         let mut dissect_buf = DissectBuffer::new();
-        for fi in progress.cursor..end {
-            let idx = self.filtered_indices[fi];
+        // One select to position at the cursor, then cheap iteration over the
+        // chunk's matching packet indices.
+        let chunk_len = end - progress.cursor;
+        for idx in self.filtered.iter_from(progress.cursor).take(chunk_len) {
             let index = &self.indices[idx];
             let data = match self.capture.packet_data(index) {
                 Some(d) => d,

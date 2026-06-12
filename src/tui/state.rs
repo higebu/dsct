@@ -234,7 +234,7 @@ impl PaneLayout {
 /// State for the packet list pane.
 #[derive(Default)]
 pub struct PacketListState {
-    /// Index into `filtered_indices` of the selected row.
+    /// Select-order index of the selected row within the filter bitmap.
     pub selected: usize,
     /// Vertical scroll offset.
     pub scroll_offset: usize,
@@ -404,8 +404,8 @@ pub struct FilterProgress {
     pub expr: Option<crate::filter_expr::FilterExpr>,
     /// Next packet index to scan.
     pub cursor: usize,
-    /// Accumulated matching indices.
-    pub results: Vec<usize>,
+    /// Accumulated matching indices as a bitmap.
+    pub results: super::filter_bitmap::FilterBitmap,
 }
 
 impl FilterProgress {
