@@ -89,7 +89,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     // Overlay: stats progress bar.
     if let Some(progress) = &app.stats_progress {
-        let total = app.filtered_indices.len();
+        let total = app.filtered.count_ones();
         render_progress_overlay(f, "Stats", progress.cursor, total, progress.fraction(total));
     }
 
@@ -369,7 +369,7 @@ mod tests {
         app.filter_progress = Some(FilterProgress {
             expr: None,
             cursor: 0,
-            results: Vec::new(),
+            results: super::super::filter_bitmap::FilterBitmap::new(),
         });
         let dump = render_to_string(120, 30, |f| render(f, &mut app));
         assert!(dump.contains("Filtering"));

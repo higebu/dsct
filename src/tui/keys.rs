@@ -877,16 +877,16 @@ impl App {
         let file = std::fs::File::create(path)?;
 
         let link_type = self
-            .filtered_indices
+            .filtered
             .first()
-            .and_then(|&i| self.indices.get(i))
+            .and_then(|i| self.indices.get(i))
             .map(|idx| idx.link_type as u32)
             .unwrap_or(1);
 
         let mut writer = packet_dissector_pcap::PcapWriter::new(file, link_type)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
 
-        for &pkt_idx in &self.filtered_indices {
+        for pkt_idx in self.filtered.iter() {
             let index = &self.indices[pkt_idx];
             let data = match self.capture.packet_data(index) {
                 Some(d) => d,
@@ -1311,20 +1311,16 @@ impl App {
             if num == 0 {
                 return;
             }
-            // num is 1-based global packet number → find in filtered_indices.
+            // num is 1-based global packet number → find in the filter bitmap.
             let target_idx = num - 1; // 0-based index into `indices`
-            if let Some(pos) = self.filtered_indices.iter().position(|&i| i == target_idx) {
-                self.packet_list.selected = pos;
+            if self.filtered.contains(target_idx) {
+                self.packet_list.selected = self.filtered.rank(target_idx);
                 self.load_selected();
             } else if target_idx < self.indices.len() {
-                // Packet exists but not in current filter — jump to nearest.
-                let nearest = self
-                    .filtered_indices
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|&(_, &i)| (i as isize - target_idx as isize).unsigned_abs());
-                if let Some((pos, _)) = nearest {
-                    self.packet_list.selected = pos;
+                // Packet exists but not in current filter — jump to the nearest
+                // displayed packet (ties keep the lower packet index).
+                if let Some(nearest) = self.filtered.nearest(target_idx) {
+                    self.packet_list.selected = self.filtered.rank(nearest);
                     self.load_selected();
                 }
             }

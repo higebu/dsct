@@ -14,6 +14,7 @@ use packet_dissector_core::packet::{DissectBuffer, Packet};
 
 use crate::filter_expr::FilterExpr;
 
+use super::filter_bitmap::FilterBitmap;
 use super::state::{CaptureMap, PacketIndex};
 
 /// Number of packets processed by each worker per chunk.
@@ -29,8 +30,8 @@ type ChunkResult = (usize, Vec<usize>);
 pub(super) enum ScanPoll {
     /// Workers are still producing results.
     Running,
-    /// Scan finished; contains the ordered matching packet indices.
-    Complete(Vec<usize>),
+    /// Scan finished; contains the matching packets as a bitmap.
+    Complete(FilterBitmap),
     /// All workers exited before the scan completed (e.g. the capture file
     /// could not be reopened).  The caller must fall back to sequential
     /// scanning; the parallel scan can never finish.
@@ -132,7 +133,7 @@ impl ParallelFilterScan {
 
     /// Drain available results non-blockingly.
     ///
-    /// Returns [`ScanPoll::Complete`] with the ordered `filtered_indices` when
+    /// Returns [`ScanPoll::Complete`] with the matching packet bitmap when
     /// the scan is complete, [`ScanPoll::Running`] while workers are still
     /// producing results, or [`ScanPoll::Failed`] when every worker exited
     /// (channel disconnected) before all chunks were delivered — for example
@@ -160,11 +161,15 @@ impl ParallelFilterScan {
         }
 
         if self.chunks_done >= self.chunks_total {
-            // All chunks received — concatenate in order.
-            let mut result = Vec::new();
-            for matches in self.chunk_results.iter().flatten() {
-                result.extend_from_slice(matches);
-            }
+            // All chunks received — concatenate in order into a bitmap.  Chunk
+            // results arrive ordered and each chunk's matches are increasing,
+            // so the concatenation is strictly increasing (append-friendly).
+            let ordered = self
+                .chunk_results
+                .iter()
+                .flatten()
+                .flat_map(|matches| matches.iter().copied());
+            let result = FilterBitmap::from_sorted_indices(self.total, ordered);
             ScanPoll::Complete(result)
         } else if disconnected {
             // Workers are gone but chunks are missing — the scan can never
@@ -369,7 +374,7 @@ mod tests {
         )
         .unwrap();
 
-        let par_results = loop {
+        let par_bitmap = loop {
             match scan.drain() {
                 ScanPoll::Complete(r) => break r,
                 ScanPoll::Failed => panic!("parallel scan failed"),
@@ -377,11 +382,14 @@ mod tests {
             }
         };
 
+        let par_results: Vec<usize> = par_bitmap.iter().collect();
         assert_eq!(
             par_results, seq_results,
             "parallel and sequential must agree"
         );
         assert_eq!(par_results.len(), 10, "expected 10 UDP packets");
+        // The bitmap universe must cover every scanned packet.
+        assert_eq!(par_bitmap.universe(), 15);
     }
 
     #[test]
@@ -407,7 +415,11 @@ mod tests {
             }
         };
 
-        assert_eq!(results.len(), 20, "all 20 packets should match ipv4.src");
+        assert_eq!(
+            results.count_ones(),
+            20,
+            "all 20 packets should match ipv4.src"
+        );
     }
 
     #[test]
