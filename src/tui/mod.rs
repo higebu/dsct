@@ -20,6 +20,7 @@ mod live;
 #[doc(hidden)]
 pub mod loader;
 mod owned_packet;
+mod parallel_scan;
 mod state;
 mod stats_collect;
 mod stream;
@@ -68,7 +69,7 @@ pub fn run(file: PathBuf, decode_as_args: Vec<String>) -> Result<()> {
     // Start the TUI immediately with an empty index; packets will appear
     // incrementally as the background thread delivers results.
     let indices = Vec::new();
-    let mut app = app::App::new(capture, indices, registry, &file);
+    let mut app = app::App::new(capture, indices, registry, &file, decode_as_args);
     app.bg_indexer = Some(bg_indexer);
 
     let mut terminal = event::init_terminal()?;
@@ -136,7 +137,7 @@ pub fn run_live(decode_as_args: Vec<String>) -> Result<()> {
         let capture = state::CaptureMap::new_live(file)?;
         let indices = Vec::new();
 
-        let app = app::App::new_live(capture, indices, registry, copier);
+        let app = app::App::new_live(capture, indices, registry, copier, decode_as_args);
         event::run_event_loop(&mut terminal, app)
     })();
 

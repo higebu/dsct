@@ -90,6 +90,64 @@ impl FilterExpr {
             FilterExpr::Protocol(_) | FilterExpr::Where(_) => false,
         }
     }
+
+    /// Returns `true` if this expression is safe to evaluate in parallel across
+    /// independently opened capture file chunks.
+    ///
+    /// # Why some filters are unsafe for parallel evaluation
+    ///
+    /// The `DissectorRegistry` contains a `TcpReassemblyService` (behind a
+    /// `Mutex`) that tracks TCP stream state across packets.  Fields like
+    /// `tcp.stream_id` and `tcp.reassembly_in_progress` are assigned
+    /// sequentially in encounter order.  Upper-layer protocols over TCP (HTTP,
+    /// TLS, SIP, DNS-over-TCP, etc.) are dissected from reassembled stream data,
+    /// which means their fields are only meaningful when packets are processed in
+    /// order.  Splitting the capture into chunks and dissecting each chunk with
+    /// an independent registry changes `stream_id` assignment and may miss
+    /// reassembled data entirely.
+    ///
+    /// The conservative whitelist below contains only protocols whose dissection
+    /// is deterministic per-packet and never depends on reassembled TCP payload
+    /// or other cross-packet state: link layers (ethernet, sll, sll2), ARP,
+    /// LACP, IPv4, IPv6, ICMP, ICMPv6, IGMP, UDP, TCP itself (excluding its
+    /// stateful fields), and SCTP.
+    pub fn is_parallel_safe(&self) -> bool {
+        /// Protocols whose per-packet dissection is state-free and therefore
+        /// safe to run in any order across parallel chunks.
+        const SAFE_PROTOCOLS: &[&str] = &[
+            "ethernet", "sll", "sll2", "arp", "lacp", "ipv4", "ipv6", "icmp", "icmpv6", "igmp",
+            "udp", "tcp", "sctp",
+        ];
+        /// TCP fields that reflect cross-packet reassembly state; filtering on
+        /// these requires sequential processing.
+        const UNSAFE_TCP_FIELDS: &[&str] = &["stream_id", "reassembly_in_progress"];
+
+        match self {
+            FilterExpr::PacketNumber(_) => true,
+            FilterExpr::Not(e) => e.is_parallel_safe(),
+            FilterExpr::And(a, b) | FilterExpr::Or(a, b) => {
+                a.is_parallel_safe() && b.is_parallel_safe()
+            }
+            FilterExpr::Protocol(name) => {
+                let norm = crate::filter::normalize_protocol_name(name);
+                SAFE_PROTOCOLS.iter().any(|&s| s == norm)
+            }
+            FilterExpr::Where(clause) => {
+                // WhereClause::new already normalises the protocol name, but
+                // normalise again so this check does not silently depend on
+                // that constructor invariant (mirrors the Protocol arm).
+                let norm = crate::filter::normalize_protocol_name(&clause.protocol);
+                if !SAFE_PROTOCOLS.iter().any(|&s| s == norm) {
+                    return false;
+                }
+                // TCP stateful fields are unsafe even though TCP itself is safe.
+                if norm == "tcp" && UNSAFE_TCP_FIELDS.iter().any(|&f| f == clause.field) {
+                    return false;
+                }
+                true
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -462,5 +520,65 @@ mod tests {
         let buf = make_tcp_buf();
         let pkt = make_tcp_packet_ref(&buf);
         assert!(expr.matches(&pkt));
+    }
+
+    // --- is_parallel_safe ---
+
+    #[test]
+    fn parallel_safe_tcp() {
+        let expr = FilterExpr::parse("tcp").unwrap().unwrap();
+        assert!(expr.is_parallel_safe());
+    }
+
+    #[test]
+    fn parallel_safe_udp_and_ipv4() {
+        let expr = FilterExpr::parse("udp AND ipv4.src = '10.0.0.1'")
+            .unwrap()
+            .unwrap();
+        assert!(expr.is_parallel_safe());
+    }
+
+    #[test]
+    fn parallel_unsafe_http() {
+        let expr = FilterExpr::parse("http").unwrap().unwrap();
+        assert!(!expr.is_parallel_safe());
+    }
+
+    #[test]
+    fn parallel_unsafe_dns() {
+        let expr = FilterExpr::parse("dns").unwrap().unwrap();
+        assert!(!expr.is_parallel_safe());
+    }
+
+    #[test]
+    fn parallel_unsafe_tcp_stream_id() {
+        let expr = FilterExpr::parse("tcp.stream_id = 1").unwrap().unwrap();
+        assert!(!expr.is_parallel_safe());
+    }
+
+    #[test]
+    fn parallel_safe_not_tcp() {
+        let expr = FilterExpr::parse("NOT tcp").unwrap().unwrap();
+        assert!(expr.is_parallel_safe());
+    }
+
+    #[test]
+    fn parallel_unsafe_tcp_or_http() {
+        let expr = FilterExpr::parse("tcp OR http").unwrap().unwrap();
+        assert!(!expr.is_parallel_safe());
+    }
+
+    #[test]
+    fn parallel_safe_packet_number_between() {
+        let expr = FilterExpr::parse("packet_number BETWEEN 1 AND 10")
+            .unwrap()
+            .unwrap();
+        assert!(expr.is_parallel_safe());
+    }
+
+    #[test]
+    fn parallel_safe_tcp_dst_port() {
+        let expr = FilterExpr::parse("tcp.dst_port > 1024").unwrap().unwrap();
+        assert!(expr.is_parallel_safe());
     }
 }

@@ -8,6 +8,8 @@ use dsct::filter_expr;
 use dsct::input;
 use dsct::limits;
 use dsct::mcp;
+use dsct::parallel;
+use dsct::parallel_read;
 use dsct::schema;
 use dsct::serialize;
 use dsct::stats;
@@ -116,6 +118,15 @@ struct ReadOptions {
     /// lowercase hex string under the `raw_bytes` field of each record.
     #[arg(long)]
     raw_bytes: bool,
+
+    /// Number of worker threads for parallel filter evaluation.
+    /// Default: physical CPU count. Honoured only for file input with a
+    /// parallel-safe `--filter`. The `DSCT_THREADS` environment variable
+    /// is also honoured (flag takes precedence). Filters that require TCP
+    /// reassembly (HTTP, DNS-over-TCP, TLS, `tcp.stream_id`, etc.) and
+    /// stdin input always fall back to sequential processing.
+    #[arg(long)]
+    threads: Option<usize>,
 }
 
 /// Options for the `dsct stats` command.
@@ -309,6 +320,7 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
         decode_as: decode_as_args,
         esp_sa: esp_sa_args,
         raw_bytes,
+        threads,
     } = opts;
     // Resolve effective count: explicit --count, default limit, or unlimited.
     let (count, is_default_limit) = if no_limit {
@@ -326,10 +338,6 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
         Some(FieldConfig::default_config()?)
     };
 
-    let mut registry = DissectorRegistry::default();
-    decode_as::parse_and_apply(&mut registry, &decode_as_args).invalid_argument()?;
-    esp_sa::parse_and_apply(&registry, &esp_sa_args).invalid_argument()?;
-
     let sample_rate = match sample_rate {
         Some(0) => {
             return Err(DsctError::invalid_argument(
@@ -346,7 +354,6 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
         .transpose()
         .context("invalid --packet-number expression")
         .invalid_argument()?;
-    let pn_max = pn_filter.as_ref().and_then(PacketNumberFilter::max);
 
     // Parse filter expression
     let filter_expr = match filter_str.as_deref() {
@@ -355,6 +362,74 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
     };
 
     let is_stdin = file.as_os_str() == "-";
+
+    // Validate --decode-as / --esp-sa up front so both the parallel and the
+    // sequential path reject malformed arguments with a structured error.
+    // The sequential path reuses this registry; parallel workers build their
+    // own from the already-validated argument strings.
+    let mut registry = DissectorRegistry::default();
+    decode_as::parse_and_apply(&mut registry, &decode_as_args).invalid_argument()?;
+    esp_sa::parse_and_apply(&registry, &esp_sa_args).invalid_argument()?;
+
+    // Resolve thread count — always validate when a filter is present and input
+    // is a file (so that DSCT_THREADS=abc / --threads 0 errors deterministically).
+    let resolved_threads = if !is_stdin && filter_str.is_some() {
+        parallel::resolve_thread_count(threads).map_err(DsctError::invalid_argument)?
+    } else {
+        1 // not consulted; sequential path always used
+    };
+
+    // Determine whether the parallel path is eligible.
+    let use_parallel = !is_stdin
+        && resolved_threads > 1
+        && filter_expr
+            .as_ref()
+            .is_some_and(|e| !e.is_packet_number_only() && e.is_parallel_safe())
+        && esp_sa_args.is_empty();
+
+    if use_parallel {
+        // ------------------------------------------------------------------
+        // Parallel path
+        // ------------------------------------------------------------------
+        let filter_str_ref = filter_str.as_deref().unwrap_or("");
+        let stdout = io::stdout();
+        let mut writer = io::BufWriter::new(stdout.lock());
+        let start_time = Instant::now();
+
+        let outcome = parallel_read::run(
+            &parallel_read::ParallelReadOptions {
+                path: &file,
+                filter_str: filter_str_ref,
+                decode_as_args: &decode_as_args,
+                threads: resolved_threads,
+                sample_rate,
+                offset,
+                count,
+                pn_filter,
+                field_config: field_config.as_ref(),
+                raw_bytes,
+                progress_interval: progress.unwrap_or(0),
+            },
+            &mut writer,
+            &mut |number, message| emit_warning(number, message),
+            &mut |packets_processed, packets_written| {
+                emit_progress(packets_processed, packets_written, &start_time);
+            },
+        )?;
+
+        if is_default_limit && outcome.truncated_by_limit {
+            emit_truncation_warning(limits::DEFAULT_PACKET_COUNT);
+        }
+
+        writer.flush()?;
+        return Ok(());
+    }
+
+    // ------------------------------------------------------------------------
+    // Sequential path (unchanged from before)
+    // ------------------------------------------------------------------------
+    let pn_max = pn_filter.as_ref().and_then(PacketNumberFilter::max);
+
     let stdout = io::stdout();
     let mut writer: Box<dyn Write> = if is_stdin {
         Box::new(io::LineWriter::new(stdout.lock()))

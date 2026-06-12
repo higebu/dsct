@@ -35,6 +35,10 @@ pub mod mcp;
 #[doc(hidden)]
 pub mod output;
 #[doc(hidden)]
+pub mod parallel;
+#[doc(hidden)]
+pub mod parallel_read;
+#[doc(hidden)]
 pub mod schema;
 #[doc(hidden)]
 pub mod serialize;
