@@ -4,6 +4,12 @@
 //! to stdout.  Tool results include `structuredContent` (a JSON object) for
 //! machine consumption and a `content` text fallback for older clients.
 //!
+//! The server is dual-era: legacy clients (protocol `2025-11-25` and earlier)
+//! negotiate via the `initialize` handshake, while modern clients (protocol
+//! `2026-07-28` and later) declare the protocol version on every request via
+//! `params._meta` and may probe with `server/discover`.  Era is decided per
+//! request, so both kinds of clients can share one server process.
+//!
 //! For `dsct_read_packets`, packet objects are streamed directly into the
 //! `structuredContent` JSON object's `packets` array — no string escaping
 //! needed — so memory usage stays bounded regardless of capture size.
@@ -76,6 +82,40 @@ fn handle_message(req: &Value, limits: &ResourceLimits, w: &mut impl Write) -> R
         }
     };
 
+    // Per-request era selection: `initialize` always selects legacy
+    // semantics; anything else is modern iff it declares a protocol version
+    // in `params._meta`.  `server/discover` is the modern probe and is
+    // validated by modern rules even without the version key.
+    //
+    // Validation runs before method routing, so a modern-tagged request to an
+    // unknown method with malformed `_meta` reports -32602, not -32601.
+    let era = if method == "initialize" {
+        Era::Legacy
+    } else {
+        detect_era(req)
+    };
+    if (era == Era::Modern || method == "server/discover")
+        && let Err(e) = validate_modern_meta(req)
+    {
+        // No id → notification; JSON-RPC forbids replying even on error.
+        if let Some(id) = id {
+            match e {
+                MetaError::InvalidParams(msg) => write_error(w, id, -32602, msg)?,
+                MetaError::UnsupportedVersion(requested) => write_error_with_data(
+                    w,
+                    id,
+                    -32022,
+                    "unsupported protocol version",
+                    &serde_json::json!({
+                        "supported": all_supported_versions(),
+                        "requested": requested,
+                    }),
+                )?,
+            }
+        }
+        return Ok(());
+    }
+
     match method {
         "initialize" => {
             if let Some(id) = id {
@@ -89,17 +129,28 @@ fn handle_message(req: &Value, limits: &ResourceLimits, w: &mut impl Write) -> R
         "notifications/initialized" | "initialized" => {
             // notification — no response
         }
+        "server/discover" => {
+            if let Some(id) = id {
+                write_response(w, id, &server_discover_result())?;
+            }
+        }
         "tools/list" => {
             if let Some(id) = id {
-                write_response(w, id, &tools_list_result())?;
+                let result = match era {
+                    Era::Legacy => tools_list_result(),
+                    Era::Modern => modern_tools_list_result(),
+                };
+                write_response(w, id, &result)?;
             }
         }
         "tools/call" => {
             if let Some(id) = id {
-                handle_tool_call(req, id, limits, w)?;
+                handle_tool_call(req, id, era, limits, w)?;
             }
         }
-        "ping" => {
+        // `ping` was removed from the 2026-07-28 revision, so a modern-tagged
+        // ping is an unknown method; legacy clients keep the old behavior.
+        "ping" if era == Era::Legacy => {
             if let Some(id) = id {
                 write_response(w, id, &serde_json::json!({}))?;
             }
@@ -115,11 +166,145 @@ fn handle_message(req: &Value, limits: &ResourceLimits, w: &mut impl Write) -> R
 }
 
 // ---------------------------------------------------------------------------
-// initialize
+// Protocol versions and per-request era detection
 // ---------------------------------------------------------------------------
 
-/// Protocol versions this server is willing to speak, newest first.
+/// Legacy protocol versions negotiated via the `initialize` handshake,
+/// newest first.
 const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-03-26", "2024-11-05"];
+
+/// Modern stateless protocol versions (no `initialize` handshake; the version
+/// is declared per request in `params._meta`), newest first.
+const MODERN_PROTOCOL_VERSIONS: &[&str] = &["2026-07-28"];
+
+/// Reserved `_meta` key carrying the protocol version of a modern request.
+const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+/// Reserved `_meta` key carrying the client capabilities of a modern request.
+const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+/// Reserved `_meta` key identifying the server in modern results.
+const META_SERVER_INFO: &str = "io.modelcontextprotocol/serverInfo";
+
+/// Freshness hint for cacheable list results: the tool list is fixed per
+/// binary, so an hour is conservative.
+const TOOLS_LIST_TTL_MS: u64 = 3_600_000;
+/// The tool list does not vary per client, so shared caches may store it.
+const CACHE_SCOPE: &str = "public";
+
+/// Natural-language usage guidance shared by `initialize` and
+/// `server/discover` results.
+const SERVER_INSTRUCTIONS: &str = "dsct is an LLM-friendly packet dissector. \
+    Use tools to analyze pcap/pcapng capture files, \
+    list supported protocols, and inspect field schemas.";
+
+/// Which protocol era a request belongs to, decided per request.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Era {
+    /// Session negotiated via the `initialize` handshake (2025-11-25 and
+    /// earlier).  Response shapes are unchanged from previous dsct releases.
+    Legacy,
+    /// Stateless per-request metadata (2026-07-28 and later).  Results carry
+    /// `resultType` and `_meta` server info.
+    Modern,
+}
+
+/// Validation failure for the modern per-request `_meta` fields.
+#[derive(Debug)]
+enum MetaError {
+    /// A required `_meta` field is missing or has the wrong type → `-32602`.
+    InvalidParams(&'static str),
+    /// The requested protocol version is not supported → `-32022` with the
+    /// requested version echoed in `error.data.requested`.
+    UnsupportedVersion(String),
+}
+
+/// A request is modern iff it declares a protocol version in `params._meta`.
+fn detect_era(req: &Value) -> Era {
+    match request_meta(req).and_then(|m| m.get(META_PROTOCOL_VERSION)) {
+        Some(_) => Era::Modern,
+        None => Era::Legacy,
+    }
+}
+
+/// The `params._meta` object of a request, if present.
+fn request_meta(req: &Value) -> Option<&Value> {
+    req.get("params").and_then(|p| p.get("_meta"))
+}
+
+/// Validate the required modern `_meta` fields on a request.
+fn validate_modern_meta(req: &Value) -> std::result::Result<(), MetaError> {
+    let meta = request_meta(req).ok_or(MetaError::InvalidParams(
+        "invalid params: missing \"_meta\" object",
+    ))?;
+    let version = meta
+        .get(META_PROTOCOL_VERSION)
+        .and_then(Value::as_str)
+        .ok_or(MetaError::InvalidParams(
+            "invalid params: \"io.modelcontextprotocol/protocolVersion\" must be a string",
+        ))?;
+    if !meta
+        .get(META_CLIENT_CAPABILITIES)
+        .is_some_and(Value::is_object)
+    {
+        return Err(MetaError::InvalidParams(
+            "invalid params: \"io.modelcontextprotocol/clientCapabilities\" must be an object",
+        ));
+    }
+    if !MODERN_PROTOCOL_VERSIONS.contains(&version) {
+        return Err(MetaError::UnsupportedVersion(version.to_string()));
+    }
+    Ok(())
+}
+
+/// All protocol versions this server speaks, modern first, as a JSON array.
+fn all_supported_versions() -> Value {
+    Value::Array(
+        MODERN_PROTOCOL_VERSIONS
+            .iter()
+            .chain(SUPPORTED_PROTOCOL_VERSIONS)
+            .map(|&v| Value::String(v.to_string()))
+            .collect(),
+    )
+}
+
+/// The server's self-reported identity.
+fn server_info_value() -> Value {
+    serde_json::json!({
+        "name": "dsct",
+        "version": env!("CARGO_PKG_VERSION")
+    })
+}
+
+/// Add the modern result fields (`resultType` and `_meta` server info) to a
+/// result object.
+fn decorate_modern(mut result: Value) -> Value {
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert("resultType".into(), Value::String("complete".into()));
+        obj.insert(
+            "_meta".into(),
+            serde_json::json!({ META_SERVER_INFO: server_info_value() }),
+        );
+    }
+    result
+}
+
+/// Build the `server/discover` result.
+fn server_discover_result() -> Value {
+    serde_json::json!({
+        "resultType": "complete",
+        "supportedVersions": all_supported_versions(),
+        "capabilities": {
+            "tools": {}
+        },
+        "instructions": SERVER_INSTRUCTIONS,
+        "ttlMs": TOOLS_LIST_TTL_MS,
+        "cacheScope": CACHE_SCOPE,
+        "_meta": { META_SERVER_INFO: server_info_value() }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// initialize (legacy handshake)
+// ---------------------------------------------------------------------------
 
 /// Negotiate the protocol version: echo back the client's version if we
 /// support it; otherwise fall back to the latest version we support.
@@ -141,13 +326,8 @@ fn initialize_result(client_version: Option<&str>) -> Value {
         "capabilities": {
             "tools": {}
         },
-        "serverInfo": {
-            "name": "dsct",
-            "version": env!("CARGO_PKG_VERSION")
-        },
-        "instructions": "dsct is an LLM-friendly packet dissector. \
-            Use tools to analyze pcap/pcapng capture files, \
-            list supported protocols, and inspect field schemas."
+        "serverInfo": server_info_value(),
+        "instructions": SERVER_INSTRUCTIONS
     })
 }
 
@@ -228,6 +408,18 @@ fn tools_list_result() -> Value {
             }
         ]
     })
+}
+
+/// Modern `tools/list` result: the shared tool list plus the cacheability
+/// fields required by 2026-07-28 (`CacheableResult`) and the modern result
+/// decoration.
+fn modern_tools_list_result() -> Value {
+    let mut result = tools_list_result();
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert("ttlMs".into(), TOOLS_LIST_TTL_MS.into());
+        obj.insert("cacheScope".into(), CACHE_SCOPE.into());
+    }
+    decorate_modern(result)
 }
 
 fn read_packets_schema() -> Value {
@@ -368,6 +560,7 @@ fn get_schema_schema() -> Value {
 fn handle_tool_call(
     req: &Value,
     id: &Value,
+    era: Era,
     limits: &ResourceLimits,
     w: &mut impl Write,
 ) -> Result<()> {
@@ -382,32 +575,26 @@ fn handle_tool_call(
         .unwrap_or(Value::Object(Default::default()));
 
     match tool_name {
-        "dsct_read_packets" => handle_read_packets_streaming(id, &arguments, limits, w),
+        "dsct_read_packets" => handle_read_packets_streaming(id, era, &arguments, limits, w),
         "dsct_get_stats" => {
             let result = super::tools::do_get_stats(arguments, limits);
-            write_tool_result(w, id, result)
+            write_tool_result(w, id, era, result)
         }
         "dsct_list_protocols" => {
             let result =
                 super::tools::do_list_protocols().map(|v| serde_json::json!({ "protocols": v }));
-            write_tool_result(w, id, result)
+            write_tool_result(w, id, era, result)
         }
         "dsct_list_fields" => {
             let result =
                 super::tools::do_list_fields(arguments).map(|v| serde_json::json!({ "fields": v }));
-            write_tool_result(w, id, result)
+            write_tool_result(w, id, era, result)
         }
         "dsct_get_schema" => {
             let result = super::tools::do_get_schema(arguments);
-            write_tool_result(w, id, result)
+            write_tool_result(w, id, era, result)
         }
-        _ => {
-            let err_result = serde_json::json!({
-                "content": [{"type": "text", "text": format!("unknown tool: {tool_name}")}],
-                "isError": true
-            });
-            write_response(w, id, &err_result)
-        }
+        _ => write_tool_error(w, id, era, format!("unknown tool: {tool_name}")),
     }
 }
 
@@ -428,6 +615,7 @@ fn handle_tool_call(
 /// The `content` text fallback contains a summary (packet count).
 fn handle_read_packets_streaming(
     id: &Value,
+    era: Era,
     arguments: &Value,
     limits: &ResourceLimits,
     w: &mut impl Write,
@@ -471,10 +659,10 @@ fn handle_read_packets_streaming(
     //          JSON-RPC error response (no partial output on stdout).
     // ------------------------------------------------------------------
     if file.is_empty() {
-        return write_tool_error(w, id, "\"file\" parameter is required".to_string());
+        return write_tool_error(w, id, era, "\"file\" parameter is required".to_string());
     }
     if sample_rate == 0 {
-        return write_tool_error(w, id, "sample_rate must be at least 1".to_string());
+        return write_tool_error(w, id, era, "sample_rate must be at least 1".to_string());
     }
     let file_path = PathBuf::from(&file);
 
@@ -484,6 +672,7 @@ fn handle_read_packets_streaming(
             return write_tool_error(
                 w,
                 id,
+                era,
                 format!(
                     "file size ({} bytes) exceeds limit ({} bytes)",
                     meta.len(),
@@ -493,7 +682,7 @@ fn handle_read_packets_streaming(
         }
         Ok(_) => {}
         Err(e) => {
-            return write_tool_error(w, id, format!("failed to stat file: {e}"));
+            return write_tool_error(w, id, era, format!("failed to stat file: {e}"));
         }
     }
     let verbose = arguments
@@ -510,17 +699,17 @@ fn handle_read_packets_streaming(
         match FieldConfig::default_config() {
             Ok(c) => Some(c),
             Err(e) => {
-                return write_tool_error(w, id, format_error(&e));
+                return write_tool_error(w, id, era, format_error(&e));
             }
         }
     };
 
     let mut registry = DissectorRegistry::default();
     if let Err(e) = decode_as::parse_and_apply(&mut registry, &decode_as_strs) {
-        return write_tool_error(w, id, format_error(&e));
+        return write_tool_error(w, id, era, format_error(&e));
     }
     if let Err(e) = esp_sa::parse_and_apply(&registry, &esp_sa_strs) {
-        return write_tool_error(w, id, format_error(&e));
+        return write_tool_error(w, id, era, format_error(&e));
     }
 
     let effective_count = Some(count.unwrap_or(limits.default_packet_count));
@@ -533,21 +722,21 @@ fn handle_read_packets_streaming(
         .context("invalid packet_number expression")
     {
         Ok(f) => f,
-        Err(e) => return write_tool_error(w, id, format_error(&e)),
+        Err(e) => return write_tool_error(w, id, era, format_error(&e)),
     };
     let pn_max = pn_filter.as_ref().and_then(PacketNumberFilter::max);
 
     let filter_expr = match filter_str.as_deref() {
         Some(s) => match FilterExpr::parse(s) {
             Ok(expr) => expr,
-            Err(msg) => return write_tool_error(w, id, msg),
+            Err(msg) => return write_tool_error(w, id, era, msg),
         },
         None => None,
     };
 
     let reader = match CaptureReader::open(&file_path).context("failed to open capture file") {
         Ok(r) => r,
-        Err(e) => return write_tool_error(w, id, format_error(&e)),
+        Err(e) => return write_tool_error(w, id, era, format_error(&e)),
     };
 
     // ------------------------------------------------------------------
@@ -556,11 +745,7 @@ fn handle_read_packets_streaming(
     //          returning, even on error.
     // ------------------------------------------------------------------
     // Open the structuredContent JSON object with a "packets" array.
-    write!(
-        w,
-        r#"{{"jsonrpc":"2.0","id":{},"result":{{"structuredContent":{{"packets":["#,
-        id
-    )?;
+    write_streaming_result_prefix(w, id, era)?;
 
     let mut packets_written = 0u64;
     let mut filter_matches = 0u64;
@@ -665,13 +850,27 @@ fn handle_read_packets_streaming(
     Ok(())
 }
 
+/// Open the streaming JSON-RPC result envelope up to the `packets` array.
+///
+/// Modern additions go into this prefix only, so the closing literals in
+/// `handle_read_packets_streaming` stay byte-identical for both eras.
+fn write_streaming_result_prefix(w: &mut impl Write, id: &Value, era: Era) -> Result<()> {
+    write!(w, r#"{{"jsonrpc":"2.0","id":{id},"result":{{"#)?;
+    if era == Era::Modern {
+        // Serialise server info with serde_json — no hand-escaping.
+        let info = serde_json::to_string(&server_info_value())?;
+        write!(
+            w,
+            r#""resultType":"complete","_meta":{{"{META_SERVER_INFO}":{info}}},"#
+        )?;
+    }
+    write!(w, r#""structuredContent":{{"packets":["#)?;
+    Ok(())
+}
+
 /// Write a tool error response (for errors detected before streaming starts).
-fn write_tool_error(w: &mut impl Write, id: &Value, msg: String) -> Result<()> {
-    let err_result = serde_json::json!({
-        "content": [{"type": "text", "text": msg}],
-        "isError": true
-    });
-    write_response(w, id, &err_result)
+fn write_tool_error(w: &mut impl Write, id: &Value, era: Era, msg: String) -> Result<()> {
+    write_tool_result(w, id, era, Err(msg))
 }
 
 // ---------------------------------------------------------------------------
@@ -731,12 +930,36 @@ fn write_error(w: &mut impl Write, id: &Value, code: i64, message: &str) -> Resu
     Ok(())
 }
 
+/// Like [`write_error`], with an additional `error.data` payload.
+fn write_error_with_data(
+    w: &mut impl Write,
+    id: &Value,
+    code: i64,
+    message: &str,
+    data: &Value,
+) -> Result<()> {
+    let resp = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": code,
+            "message": message,
+            "data": data,
+        }
+    });
+    serde_json::to_writer(&mut *w, &resp)?;
+    writeln!(w)?;
+    w.flush()?;
+    Ok(())
+}
+
 fn write_tool_result(
     w: &mut impl Write,
     id: &Value,
+    era: Era,
     result: std::result::Result<Value, String>,
 ) -> Result<()> {
-    let tool_result = match result {
+    let mut tool_result = match result {
         Ok(value) => {
             let text = serde_json::to_string(&value)?;
             serde_json::json!({
@@ -749,6 +972,11 @@ fn write_tool_result(
             "isError": true
         }),
     };
+    if era == Era::Modern {
+        // Tool failures are still successful CallToolResults (isError inside
+        // the result), so they carry resultType "complete" as well.
+        tool_result = decorate_modern(tool_result);
+    }
     write_response(w, id, &tool_result)
 }
 
@@ -798,7 +1026,7 @@ mod tests {
         let mut buf = Vec::new();
         let id = serde_json::json!(1);
         let value = serde_json::json!({"key": "value"});
-        write_tool_result(&mut buf, &id, Ok(value.clone())).unwrap();
+        write_tool_result(&mut buf, &id, Era::Legacy, Ok(value.clone())).unwrap();
         let resp = parse_response(&buf);
         // structuredContent should be the JSON value directly.
         assert_eq!(resp["result"]["structuredContent"], value);
@@ -815,7 +1043,7 @@ mod tests {
     fn write_tool_result_err_has_no_structured_content() {
         let mut buf = Vec::new();
         let id = serde_json::json!(1);
-        write_tool_result(&mut buf, &id, Err("boom".to_string())).unwrap();
+        write_tool_result(&mut buf, &id, Era::Legacy, Err("boom".to_string())).unwrap();
         let resp = parse_response(&buf);
         assert_eq!(resp["result"]["isError"], true);
         assert_eq!(resp["result"]["content"][0]["text"], "boom");
@@ -826,7 +1054,7 @@ mod tests {
     fn write_tool_error_sets_is_error() {
         let mut buf = Vec::new();
         let id = serde_json::json!(7);
-        write_tool_error(&mut buf, &id, "something failed".to_string()).unwrap();
+        write_tool_error(&mut buf, &id, Era::Legacy, "something failed".to_string()).unwrap();
         let resp = parse_response(&buf);
         assert_eq!(resp["result"]["isError"], true);
         assert_eq!(resp["result"]["content"][0]["text"], "something failed");
@@ -1111,7 +1339,7 @@ mod tests {
             "params": {"name": "nonexistent_tool", "arguments": {}}
         });
         let id = serde_json::json!(10);
-        handle_tool_call(&req, &id, &limits, &mut buf).unwrap();
+        handle_tool_call(&req, &id, Era::Legacy, &limits, &mut buf).unwrap();
         let resp = parse_response(&buf);
         assert_eq!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
@@ -1126,7 +1354,7 @@ mod tests {
             "params": {"name": "dsct_list_protocols", "arguments": {}}
         });
         let id = serde_json::json!(11);
-        handle_tool_call(&req, &id, &limits, &mut buf).unwrap();
+        handle_tool_call(&req, &id, Era::Legacy, &limits, &mut buf).unwrap();
         let resp = parse_response(&buf);
         assert_eq!(resp["id"], 11);
         // structuredContent should be a JSON object with a "protocols" array.
@@ -1151,7 +1379,7 @@ mod tests {
             "params": {"name": "dsct_list_fields", "arguments": {"protocols": ["dns"]}}
         });
         let id = serde_json::json!(12);
-        handle_tool_call(&req, &id, &limits, &mut buf).unwrap();
+        handle_tool_call(&req, &id, Era::Legacy, &limits, &mut buf).unwrap();
         let resp = parse_response(&buf);
         // structuredContent should be a JSON object with a "fields" array.
         let sc = resp["result"]["structuredContent"]
@@ -1172,7 +1400,7 @@ mod tests {
             "params": {"name": "dsct_get_schema", "arguments": {"command": "read"}}
         });
         let id = serde_json::json!(13);
-        handle_tool_call(&req, &id, &limits, &mut buf).unwrap();
+        handle_tool_call(&req, &id, Era::Legacy, &limits, &mut buf).unwrap();
         let resp = parse_response(&buf);
         assert!(resp["result"]["structuredContent"].is_object());
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
@@ -1190,7 +1418,7 @@ mod tests {
             }
         });
         let id = serde_json::json!(14);
-        handle_tool_call(&req, &id, &limits, &mut buf).unwrap();
+        handle_tool_call(&req, &id, Era::Legacy, &limits, &mut buf).unwrap();
         let resp = parse_response(&buf);
         assert_eq!(resp["result"]["isError"], true);
     }
@@ -1203,7 +1431,7 @@ mod tests {
         let limits = ResourceLimits::default();
         let id = serde_json::json!(20);
         let args = serde_json::json!({"file": "/nonexistent/capture.pcap"});
-        handle_read_packets_streaming(&id, &args, &limits, &mut buf).unwrap();
+        handle_read_packets_streaming(&id, Era::Legacy, &args, &limits, &mut buf).unwrap();
         let resp = parse_response(&buf);
         assert_eq!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
@@ -1218,7 +1446,7 @@ mod tests {
         let limits = ResourceLimits::default();
         let id = serde_json::json!(99);
         let args = serde_json::json!({});
-        handle_read_packets_streaming(&id, &args, &limits, &mut buf).unwrap();
+        handle_read_packets_streaming(&id, Era::Legacy, &args, &limits, &mut buf).unwrap();
         let resp = parse_response(&buf);
         assert_eq!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
@@ -1231,7 +1459,7 @@ mod tests {
         let limits = ResourceLimits::default();
         let id = serde_json::json!(21);
         let args = serde_json::json!({"file": "/tmp/x.pcap", "packet_number": "abc!!"});
-        handle_read_packets_streaming(&id, &args, &limits, &mut buf).unwrap();
+        handle_read_packets_streaming(&id, Era::Legacy, &args, &limits, &mut buf).unwrap();
         let resp = parse_response(&buf);
         assert_eq!(resp["result"]["isError"], true);
     }
@@ -1242,7 +1470,7 @@ mod tests {
         let limits = ResourceLimits::default();
         let id = serde_json::json!(22);
         let args = serde_json::json!({"file": "/tmp/x.pcap", "decode_as": ["invalid"]});
-        handle_read_packets_streaming(&id, &args, &limits, &mut buf).unwrap();
+        handle_read_packets_streaming(&id, Era::Legacy, &args, &limits, &mut buf).unwrap();
         let resp = parse_response(&buf);
         assert_eq!(resp["result"]["isError"], true);
     }
@@ -1309,6 +1537,380 @@ mod tests {
         assert_eq!(resp2["id"], 2);
     }
 
+    // -- modern era (2026-07-28) --------------------------------------
+
+    /// Modern per-request `_meta` with the required fields.
+    fn modern_meta() -> Value {
+        serde_json::json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {}
+        })
+    }
+
+    #[test]
+    fn detect_era_modern_when_meta_version_present() {
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+            "params": {"_meta": modern_meta()}
+        });
+        assert_eq!(detect_era(&req), Era::Modern);
+    }
+
+    #[test]
+    fn detect_era_legacy_without_meta() {
+        let req = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+        assert_eq!(detect_era(&req), Era::Legacy);
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+            "params": {"_meta": {}}
+        });
+        assert_eq!(detect_era(&req), Era::Legacy);
+    }
+
+    #[test]
+    fn validate_modern_meta_missing_capabilities_is_invalid_params() {
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+            "params": {"_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+            }}
+        });
+        assert!(matches!(
+            validate_modern_meta(&req),
+            Err(MetaError::InvalidParams(_))
+        ));
+    }
+
+    #[test]
+    fn validate_modern_meta_non_string_version_is_invalid_params() {
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+            "params": {"_meta": {
+                "io.modelcontextprotocol/protocolVersion": 42,
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }}
+        });
+        assert!(matches!(
+            validate_modern_meta(&req),
+            Err(MetaError::InvalidParams(_))
+        ));
+    }
+
+    #[test]
+    fn validate_modern_meta_unknown_version_is_unsupported() {
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+            "params": {"_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2099-01-01",
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }}
+        });
+        match validate_modern_meta(&req) {
+            Err(MetaError::UnsupportedVersion(v)) => assert_eq!(v, "2099-01-01"),
+            other => panic!("expected UnsupportedVersion, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_modern_meta_accepts_valid_meta() {
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+            "params": {"_meta": modern_meta()}
+        });
+        assert!(validate_modern_meta(&req).is_ok());
+    }
+
+    #[test]
+    fn all_supported_versions_modern_first() {
+        let versions = all_supported_versions();
+        let versions = versions.as_array().unwrap();
+        assert_eq!(versions[0], "2026-07-28");
+        assert_eq!(versions[1], "2025-11-25");
+        assert_eq!(
+            versions.len(),
+            MODERN_PROTOCOL_VERSIONS.len() + SUPPORTED_PROTOCOL_VERSIONS.len()
+        );
+    }
+
+    #[test]
+    fn server_discover_returns_versions_capabilities_and_meta() {
+        let mut buf = Vec::new();
+        let limits = ResourceLimits::default();
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "server/discover",
+            "params": {"_meta": modern_meta()}
+        });
+        handle_message(&req, &limits, &mut buf).unwrap();
+        let resp = parse_response(&buf);
+        let result = &resp["result"];
+        assert_eq!(result["resultType"], "complete");
+        let versions = result["supportedVersions"].as_array().unwrap();
+        assert_eq!(versions[0], "2026-07-28");
+        assert!(versions.iter().any(|v| v == "2025-11-25"));
+        assert!(result["capabilities"]["tools"].is_object());
+        assert!(result["ttlMs"].is_u64());
+        assert_eq!(result["cacheScope"], "public");
+        let info = &result["_meta"]["io.modelcontextprotocol/serverInfo"];
+        assert_eq!(info["name"], "dsct");
+        assert!(info["version"].is_string());
+        assert!(result["instructions"].is_string());
+    }
+
+    #[test]
+    fn server_discover_without_meta_is_invalid_params() {
+        let mut buf = Vec::new();
+        let limits = ResourceLimits::default();
+        let req = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "server/discover"});
+        handle_message(&req, &limits, &mut buf).unwrap();
+        let resp = parse_response(&buf);
+        assert_eq!(resp["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn server_discover_unknown_version_returns_unsupported() {
+        let mut buf = Vec::new();
+        let limits = ResourceLimits::default();
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "server/discover",
+            "params": {"_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2099-01-01",
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }}
+        });
+        handle_message(&req, &limits, &mut buf).unwrap();
+        let resp = parse_response(&buf);
+        assert_eq!(resp["error"]["code"], -32022);
+        // The error data still carries the supported list, so discovery works.
+        let supported = resp["error"]["data"]["supported"].as_array().unwrap();
+        assert_eq!(supported[0], "2026-07-28");
+        assert_eq!(resp["error"]["data"]["requested"], "2099-01-01");
+    }
+
+    #[test]
+    fn modern_tools_list_has_result_type_ttl_and_meta() {
+        let mut buf = Vec::new();
+        let limits = ResourceLimits::default();
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/list",
+            "params": {"_meta": modern_meta()}
+        });
+        handle_message(&req, &limits, &mut buf).unwrap();
+        let resp = parse_response(&buf);
+        let result = &resp["result"];
+        assert_eq!(result["resultType"], "complete");
+        assert!(result["ttlMs"].is_u64());
+        assert_eq!(result["cacheScope"], "public");
+        assert_eq!(
+            result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            "dsct"
+        );
+        assert_eq!(result["tools"].as_array().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn legacy_tools_list_has_no_result_type() {
+        let mut buf = Vec::new();
+        let limits = ResourceLimits::default();
+        let req = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
+        handle_message(&req, &limits, &mut buf).unwrap();
+        let resp = parse_response(&buf);
+        assert!(resp["result"]["resultType"].is_null());
+        assert!(resp["result"]["ttlMs"].is_null());
+        assert!(resp["result"]["_meta"].is_null());
+    }
+
+    #[test]
+    fn modern_unsupported_version_returns_32022_with_data() {
+        let mut buf = Vec::new();
+        let limits = ResourceLimits::default();
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/list",
+            "params": {"_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2099-01-01",
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }}
+        });
+        handle_message(&req, &limits, &mut buf).unwrap();
+        let resp = parse_response(&buf);
+        assert_eq!(resp["id"], 3);
+        assert_eq!(resp["error"]["code"], -32022);
+        let supported = resp["error"]["data"]["supported"].as_array().unwrap();
+        assert!(supported.iter().any(|v| v == "2026-07-28"));
+        assert_eq!(resp["error"]["data"]["requested"], "2099-01-01");
+    }
+
+    #[test]
+    fn modern_missing_client_capabilities_returns_32602() {
+        let mut buf = Vec::new();
+        let limits = ResourceLimits::default();
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 4, "method": "tools/list",
+            "params": {"_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+            }}
+        });
+        handle_message(&req, &limits, &mut buf).unwrap();
+        let resp = parse_response(&buf);
+        assert_eq!(resp["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn modern_notification_with_bad_meta_produces_no_output() {
+        let mut buf = Vec::new();
+        let limits = ResourceLimits::default();
+        // No "id" → notification; JSON-RPC forbids replying even on error.
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "method": "tools/list",
+            "params": {"_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2099-01-01",
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }}
+        });
+        handle_message(&req, &limits, &mut buf).unwrap();
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn modern_tool_call_result_has_result_type_and_meta() {
+        let mut buf = Vec::new();
+        let limits = ResourceLimits::default();
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+            "params": {
+                "name": "dsct_list_protocols",
+                "arguments": {},
+                "_meta": modern_meta()
+            }
+        });
+        handle_message(&req, &limits, &mut buf).unwrap();
+        let resp = parse_response(&buf);
+        let result = &resp["result"];
+        assert_eq!(result["resultType"], "complete");
+        assert_eq!(
+            result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            "dsct"
+        );
+        assert!(result["structuredContent"]["protocols"].is_array());
+    }
+
+    #[test]
+    fn modern_tool_call_error_has_result_type() {
+        let mut buf = Vec::new();
+        let limits = ResourceLimits::default();
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+            "params": {
+                "name": "dsct_get_stats",
+                "arguments": {"file": "/nonexistent/file.pcap"},
+                "_meta": modern_meta()
+            }
+        });
+        handle_message(&req, &limits, &mut buf).unwrap();
+        let resp = parse_response(&buf);
+        // Tool failures are still CallToolResults: isError plus resultType.
+        assert_eq!(resp["result"]["isError"], true);
+        assert_eq!(resp["result"]["resultType"], "complete");
+    }
+
+    #[test]
+    fn modern_unknown_tool_error_has_result_type() {
+        let mut buf = Vec::new();
+        let limits = ResourceLimits::default();
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": {
+                "name": "nonexistent_tool",
+                "arguments": {},
+                "_meta": modern_meta()
+            }
+        });
+        handle_message(&req, &limits, &mut buf).unwrap();
+        let resp = parse_response(&buf);
+        assert_eq!(resp["result"]["isError"], true);
+        assert_eq!(resp["result"]["resultType"], "complete");
+    }
+
+    #[test]
+    fn modern_ping_returns_method_not_found() {
+        let mut buf = Vec::new();
+        let limits = ResourceLimits::default();
+        // ping was removed from the 2026-07-28 revision.
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 8, "method": "ping",
+            "params": {"_meta": modern_meta()}
+        });
+        handle_message(&req, &limits, &mut buf).unwrap();
+        let resp = parse_response(&buf);
+        assert_eq!(resp["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn initialize_with_modern_version_falls_back_to_legacy_latest() {
+        let mut buf = Vec::new();
+        let limits = ResourceLimits::default();
+        // 2026-07-28 has no initialize handshake, so initialize negotiation
+        // must not offer it and falls back to the newest legacy version.
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 9, "method": "initialize",
+            "params": {"protocolVersion": "2026-07-28", "capabilities": {}}
+        });
+        handle_message(&req, &limits, &mut buf).unwrap();
+        let resp = parse_response(&buf);
+        assert_eq!(resp["result"]["protocolVersion"], "2025-11-25");
+    }
+
+    #[test]
+    fn mixed_era_session_serves_both() {
+        let modern_line = format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{{"_meta":{}}}}}"#,
+            modern_meta()
+        );
+        let input = format!(
+            "{}\n{}\n{modern_line}\n",
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+        );
+        let mut output = Vec::new();
+        let limits = ResourceLimits::default();
+        run_on(input.as_bytes(), &mut output, &limits).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3);
+        let init: Value = serde_json::from_str(lines[0]).unwrap();
+        let legacy: Value = serde_json::from_str(lines[1]).unwrap();
+        let modern: Value = serde_json::from_str(lines[2]).unwrap();
+        assert_eq!(init["result"]["protocolVersion"], "2025-11-25");
+        assert!(legacy["result"]["resultType"].is_null());
+        assert_eq!(modern["result"]["resultType"], "complete");
+    }
+
+    #[test]
+    fn modern_read_packets_streaming_has_result_type_and_meta() {
+        let pcap_path = write_test_pcap("modern_stream");
+        let file = pcap_path.to_str().unwrap();
+        let mut buf = Vec::new();
+        let limits = ResourceLimits::default();
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 30, "method": "tools/call",
+            "params": {
+                "name": "dsct_read_packets",
+                "arguments": {"file": file},
+                "_meta": modern_meta()
+            }
+        });
+        handle_message(&req, &limits, &mut buf).unwrap();
+        std::fs::remove_file(&pcap_path).ok();
+        let resp = parse_response(&buf);
+        let result = &resp["result"];
+        assert_eq!(result["resultType"], "complete");
+        assert_eq!(
+            result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            "dsct"
+        );
+        let packets = result["structuredContent"]["packets"].as_array().unwrap();
+        assert_eq!(packets.len(), 1);
+    }
+
     // -- streaming with real pcap -------------------------------------
 
     /// Build a pcap with `n` Ethernet+IPv4+UDP packets.
@@ -1368,7 +1970,7 @@ mod tests {
         let mut buf = Vec::new();
         let limits = ResourceLimits::default();
         let id = serde_json::json!(1);
-        handle_read_packets_streaming(&id, &args, &limits, &mut buf).unwrap();
+        handle_read_packets_streaming(&id, Era::Legacy, &args, &limits, &mut buf).unwrap();
         let _ = std::fs::remove_file(&pcap_path);
 
         let output = String::from_utf8(buf).unwrap();
@@ -1489,7 +2091,7 @@ mod tests {
             }
         });
         let id = serde_json::json!(36);
-        handle_tool_call(&req, &id, &limits, &mut buf).unwrap();
+        handle_tool_call(&req, &id, Era::Legacy, &limits, &mut buf).unwrap();
         let _ = std::fs::remove_file(&pcap_path);
 
         let output = String::from_utf8(buf).unwrap();
@@ -1567,7 +2169,7 @@ mod tests {
             }
         });
         let id = serde_json::json!(102);
-        handle_tool_call(&req, &id, &limits, &mut buf).unwrap();
+        handle_tool_call(&req, &id, Era::Legacy, &limits, &mut buf).unwrap();
         let _ = std::fs::remove_file(&pcap_path);
 
         let resp = parse_response(&buf);
@@ -1600,7 +2202,7 @@ mod tests {
             "file": "/tmp/x.pcap",
             "esp_sa": ["not_valid_sa"]
         });
-        handle_read_packets_streaming(&id, &args, &limits, &mut buf).unwrap();
+        handle_read_packets_streaming(&id, Era::Legacy, &args, &limits, &mut buf).unwrap();
         let resp = parse_response(&buf);
         assert_eq!(resp["result"]["isError"], true);
     }
