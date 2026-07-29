@@ -228,6 +228,17 @@ Run `--help` on any command for the full option list.
 | `dsct_list_fields` | List available field names for protocols. Fields can be used with `dsct_read_packets` for filtering. |
 | `dsct_get_schema` | Get the JSON schema for command output formats (`read` or `stats`). |
 
+### Protocol versions
+
+The server speaks both protocol eras and picks one per request:
+
+- **`2026-07-28`** (stateless): declare the version on every request via
+  `params._meta` (`io.modelcontextprotocol/protocolVersion` and
+  `io.modelcontextprotocol/clientCapabilities` are required), and probe with
+  `server/discover`. `ping` is not served in this era.
+- **`2025-11-25` / `2025-03-26` / `2024-11-05`** (legacy): negotiate via the
+  `initialize` handshake as before.
+
 ### Key parameters
 
 **`dsct_read_packets`**: `file` (required), `filter`, `count`, `offset`, `packet_number`, `decode_as`, `esp_sa`, `verbose`

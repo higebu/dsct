@@ -299,3 +299,101 @@ fn mcp_initialize_then_tools_list_roundtrip() {
         );
     }
 }
+
+#[test]
+fn mcp_modern_stateless_discover_and_tools_list() {
+    // MCP 2026-07-28: no initialize handshake — every request carries its
+    // protocol version and client capabilities in params._meta.
+    let requests = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#,
+        "\n",
+    );
+
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args(["mcp"])
+        .write_stdin(requests)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "dsct mcp must exit 0; got {:?}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "expected exactly 2 JSON-RPC responses, got {lines:#?}"
+    );
+
+    // First line: server/discover response.
+    let discover: Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(discover["id"], 1);
+    assert_eq!(discover["result"]["resultType"], "complete");
+    let versions = discover["result"]["supportedVersions"]
+        .as_array()
+        .expect("supportedVersions must be an array");
+    assert!(versions.iter().any(|v| v == "2026-07-28"));
+    assert_eq!(
+        discover["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+        "dsct"
+    );
+
+    // Second line: modern tools/list response with cacheability fields.
+    let tools: Value = serde_json::from_str(lines[1]).unwrap();
+    assert_eq!(tools["id"], 2);
+    assert_eq!(tools["result"]["resultType"], "complete");
+    assert!(tools["result"]["ttlMs"].is_u64());
+    assert_eq!(tools["result"]["cacheScope"], "public");
+    let tool_names: Vec<&str> = tools["result"]["tools"]
+        .as_array()
+        .expect("tools/list result.tools must be an array")
+        .iter()
+        .filter_map(|t| t.get("name").and_then(Value::as_str))
+        .collect();
+    for expected in [
+        "dsct_read_packets",
+        "dsct_get_stats",
+        "dsct_list_protocols",
+        "dsct_list_fields",
+        "dsct_get_schema",
+    ] {
+        assert!(
+            tool_names.contains(&expected),
+            "{expected} must appear in tools/list; got {tool_names:?}"
+        );
+    }
+}
+
+#[test]
+fn mcp_modern_unsupported_version_yields_error() {
+    let requests = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2099-01-01","io.modelcontextprotocol/clientCapabilities":{}}}}"#,
+        "\n",
+    );
+
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args(["mcp"])
+        .write_stdin(requests)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let resp: Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(resp["id"], 1);
+    assert_eq!(resp["error"]["code"], -32022);
+    let supported = resp["error"]["data"]["supported"]
+        .as_array()
+        .expect("error.data.supported must be an array");
+    assert!(!supported.is_empty());
+    assert_eq!(resp["error"]["data"]["requested"], "2099-01-01");
+}
