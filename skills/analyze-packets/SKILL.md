@@ -72,7 +72,35 @@ non-alphanumeric characters stripped), so `HTTP/2` → `http2`,
 | `dsct_read_packets` | `file` | `filter`, `count`, `offset`, `packet_number`, `sample_rate`, `verbose`, `decode_as` |
 | `dsct_list_protocols` | — | — |
 | `dsct_list_fields` | — | `protocols` (always specify!) |
-| `dsct_get_schema` | — | `command` (`"read"` or `"stats"`) |
+| `dsct_get_schema` | — | `command` (`"read"`, `"stats"` or `"sql"`) |
+| `dsct_query_sql` | `file` | `sql`, `schema`, `count`, `db`, `no_build`, `decode_as` |
+
+## SQL queries
+
+`dsct_query_sql` runs a read-only `SELECT` against a SQLite index of the capture
+(built next to the file on first use, reused afterwards). Prefer it over
+repeated `dsct_read_packets` calls for aggregation, JOINs, tunnelled packets
+and stream analysis:
+
+1. Call `dsct_query_sql` with `schema: true` once to see the tables, columns
+   and usage hints.
+2. Every protocol has a table (`tcp`, `udp`, `ipv4`, `dns`, ...) with one row
+   per layer keyed by `packet_number`, `layer_index` and `depth`. `depth = 0`
+   is the outer packet; inner headers of VXLAN / GRE / GTP-U / IP-in-IP
+   packets have `depth >= 1`, and the `encapsulations` view names the carrier.
+3. Conversations live in `flows` / `conversations` (`flow_id`, `direction` on
+   `tcp` / `udp` / `sctp` rows); `tcp_segments` adds `seq_rel`, `ack_rel`,
+   `next_seq` and `payload_len` for following a stream in order.
+4. Array/Object fields are JSON text: use `json_extract(col, '$.name')` or
+   `json_each(col)`. Quote column names that collide with SQL keywords
+   (`"type"`, `"class"`).
+
+```sql
+SELECT protocol, COUNT(*) AS n FROM layers GROUP BY protocol ORDER BY n DESC
+SELECT * FROM conversations ORDER BY bytes DESC LIMIT 10
+SELECT packet_number, "src", "dst" FROM ipv4 WHERE depth = 1
+SELECT * FROM tcp_segments WHERE flow_id = 3 ORDER BY packet_number
+```
 
 ## Filter syntax
 

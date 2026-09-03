@@ -99,9 +99,38 @@ pub(crate) struct DsctListFieldsParams {
 /// Parameters for the `dsct_get_schema` tool.
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct DsctGetSchemaParams {
-    /// Command name: "read" or "stats" (defaults to "read").
+    /// Command name: "read", "stats" or "sql" (defaults to "read").
     #[serde(default)]
     pub command: Option<String>,
+}
+
+/// Parameters for the `dsct_query_sql` tool.
+#[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct DsctQuerySqlParams {
+    /// Path to the pcap/pcapng file or to an existing dsct SQLite index.
+    pub file: String,
+    /// Read-only SQL query. Omitted when `schema` is true.
+    #[serde(default)]
+    pub sql: Option<String>,
+    /// Return the index schema instead of running a query.
+    #[serde(default)]
+    pub schema: bool,
+    /// Maximum rows to return (defaults to the server's default count).
+    #[serde(default)]
+    pub count: Option<u64>,
+    /// Explicit index database path.
+    #[serde(default)]
+    pub db: Option<String>,
+    /// Fail instead of building the index when missing or stale.
+    #[serde(default)]
+    pub no_build: bool,
+    /// Override protocol dissection for a port when building.
+    #[serde(default)]
+    pub decode_as: Vec<String>,
+    /// ESP Security Association for decryption when building.
+    #[serde(default)]
+    pub esp_sa: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -256,10 +285,113 @@ fn do_get_schema_inner(params: DsctGetSchemaParams) -> DsctResult<serde_json::Va
     match cmd {
         "read" => Ok(crate::schema::read_schema()),
         "stats" => Ok(crate::schema::stats_schema()),
+        "sql" => Ok(crate::schema::sql_schema()),
         other => Err(DsctError::invalid_argument(format!(
-            "unknown command '{other}'. Available: read, stats"
+            "unknown command '{other}'. Available: read, stats, sql"
         ))),
     }
+}
+
+/// Run a read-only SQL query against the SQLite index of a capture.
+#[cfg(feature = "sqlite")]
+pub(crate) fn do_query_sql(
+    arguments: serde_json::Value,
+    limits: &ResourceLimits,
+) -> std::result::Result<serde_json::Value, String> {
+    let params: DsctQuerySqlParams =
+        serde_json::from_value(arguments).map_err(|e| format!("invalid arguments: {e}"))?;
+    do_query_sql_inner(params, limits).map_err(|e| format_error(&e))
+}
+
+#[cfg(feature = "sqlite")]
+fn do_query_sql_inner(
+    params: DsctQuerySqlParams,
+    limits: &ResourceLimits,
+) -> DsctResult<serde_json::Value> {
+    use crate::sqlite::ddl::protocol_tables;
+    use crate::sqlite::query::{describe_schema, open_read_only, run_query};
+    use crate::sqlite::{IndexRequest, resolve_index};
+
+    if params.file == "-" {
+        return Err(DsctError::invalid_argument(
+            "stdin input is not supported over MCP; pass a file path",
+        ));
+    }
+    if !params.schema && params.sql.is_none() {
+        return Err(DsctError::invalid_argument(
+            "'sql' is required unless 'schema' is true",
+        ));
+    }
+    let file = PathBuf::from(&params.file);
+    let file_meta =
+        std::fs::metadata(&file).context(format!("failed to stat file: {}", file.display()))?;
+    if file_meta.len() > limits.max_file_size {
+        return Err(DsctError::msg(format!(
+            "file size ({} bytes) exceeds limit ({} bytes)",
+            file_meta.len(),
+            limits.max_file_size
+        )));
+    }
+
+    let deadline = Instant::now() + limits.timeout;
+    let mut dissect_warnings = 0u64;
+    let resolved = resolve_index(
+        &IndexRequest {
+            file: &file,
+            db: params.db.as_ref().map(PathBuf::from),
+            force: false,
+            no_build: params.no_build,
+            progress_interval: 0,
+            decode_as: &params.decode_as,
+            esp_sa: &params.esp_sa,
+            deadline: Some(deadline),
+        },
+        &mut |_, _| dissect_warnings += 1,
+        &mut |_| {},
+    )?;
+
+    let conn = open_read_only(&resolved.db_path)?;
+    // Interrupt long-running queries once the tool deadline has passed.
+    conn.progress_handler(10_000, Some(move || Instant::now() > deadline))
+        .context("failed to install query timeout handler")?;
+
+    let mut index_info = serde_json::json!({
+        "db": resolved.db_path.display().to_string(),
+        "built": resolved.build.is_some(),
+    });
+    if let Some(reason) = &resolved.replaced_reason {
+        index_info["replaced_reason"] = serde_json::Value::String(reason.clone());
+    }
+    if let Some(b) = &resolved.build {
+        index_info["packets"] = serde_json::json!(b.packets);
+        index_info["flows"] = serde_json::json!(b.flows);
+        index_info["dissect_warnings"] = serde_json::json!(dissect_warnings);
+    }
+
+    if params.schema {
+        let registry = DissectorRegistry::default();
+        let mut schema = describe_schema(&conn, &protocol_tables(&registry))?;
+        schema["index"] = index_info;
+        return Ok(schema);
+    }
+
+    let sql = params.sql.unwrap_or_default();
+    let limit = params.count.unwrap_or(limits.default_packet_count);
+    let mut out: Vec<u8> = Vec::new();
+    let outcome = run_query(&conn, &sql, Some(limit), &mut out)?;
+    let rows: Vec<serde_json::Value> = out
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(serde_json::from_slice)
+        .collect::<std::result::Result<_, _>>()
+        .context("failed to re-parse query output")?;
+
+    Ok(serde_json::json!({
+        "rows": rows,
+        "row_count": outcome.rows_written,
+        "truncated": outcome.truncated_by_limit,
+        "index": index_info,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +468,147 @@ mod tests {
     fn get_schema_unknown_returns_error() {
         let result = do_get_schema(serde_json::json!({"command": "nonexistent"}));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_schema_sql() {
+        let result = do_get_schema(serde_json::json!({"command": "sql"}));
+        let value = result.expect("get_schema sql should succeed");
+        assert_eq!(value["title"], "dsct sql result row");
+    }
+
+    #[cfg(feature = "sqlite")]
+    mod query_sql {
+        use super::*;
+
+        fn udp_pcap(n: usize) -> Vec<u8> {
+            let pkt: [u8; 42] = [
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x08, 0x00,
+                0x45, 0x00, 0x00, 0x1C, 0x00, 0x00, 0x00, 0x00, 0x40, 0x11, 0x00, 0x00, 0x0A, 0x00,
+                0x00, 0x01, 0x0A, 0x00, 0x00, 0x02, 0x10, 0x00, 0x10, 0x01, 0x00, 0x08, 0x00, 0x00,
+            ];
+            let mut pcap = Vec::new();
+            pcap.extend_from_slice(&0xA1B2C3D4u32.to_le_bytes());
+            pcap.extend_from_slice(&2u16.to_le_bytes());
+            pcap.extend_from_slice(&4u16.to_le_bytes());
+            pcap.extend_from_slice(&0i32.to_le_bytes());
+            pcap.extend_from_slice(&0u32.to_le_bytes());
+            pcap.extend_from_slice(&65535u32.to_le_bytes());
+            pcap.extend_from_slice(&1u32.to_le_bytes());
+            for i in 0..n {
+                pcap.extend_from_slice(&(i as u32).to_le_bytes());
+                pcap.extend_from_slice(&0u32.to_le_bytes());
+                pcap.extend_from_slice(&42u32.to_le_bytes());
+                pcap.extend_from_slice(&42u32.to_le_bytes());
+                pcap.extend_from_slice(&pkt);
+            }
+            pcap
+        }
+
+        #[test]
+        fn query_sql_builds_index_and_returns_rows() {
+            let dir = tempfile::tempdir().unwrap();
+            let cap = dir.path().join("c.pcap");
+            std::fs::write(&cap, udp_pcap(3)).unwrap();
+            let limits = ResourceLimits::default();
+
+            let result = do_query_sql(
+                serde_json::json!({
+                    "file": cap.to_str().unwrap(),
+                    "sql": "SELECT number, stack FROM packets ORDER BY number",
+                    "count": 2,
+                }),
+                &limits,
+            )
+            .expect("query should succeed");
+            assert_eq!(result["row_count"], 2);
+            assert_eq!(result["truncated"], true);
+            assert_eq!(result["rows"][0]["number"], 1);
+            assert_eq!(result["rows"][0]["stack"], "Ethernet:IPv4:UDP");
+            assert_eq!(result["index"]["built"], true);
+            assert_eq!(result["index"]["packets"], 3);
+
+            // Second call reuses the index.
+            let again = do_query_sql(
+                serde_json::json!({
+                    "file": cap.to_str().unwrap(),
+                    "sql": "SELECT COUNT(*) AS n FROM udp",
+                }),
+                &limits,
+            )
+            .unwrap();
+            assert_eq!(again["rows"][0]["n"], 3);
+            assert_eq!(again["index"]["built"], false);
+            assert_eq!(again["truncated"], false);
+        }
+
+        #[test]
+        fn query_sql_schema_mode() {
+            let dir = tempfile::tempdir().unwrap();
+            let cap = dir.path().join("c.pcap");
+            std::fs::write(&cap, udp_pcap(1)).unwrap();
+            let limits = ResourceLimits::default();
+            let result = do_query_sql(
+                serde_json::json!({ "file": cap.to_str().unwrap(), "schema": true }),
+                &limits,
+            )
+            .unwrap();
+            assert!(result["tables"].is_array());
+            assert_eq!(result["index"]["built"], true);
+        }
+
+        #[test]
+        fn query_sql_rejects_writes_and_missing_args() {
+            let dir = tempfile::tempdir().unwrap();
+            let cap = dir.path().join("c.pcap");
+            std::fs::write(&cap, udp_pcap(1)).unwrap();
+            let limits = ResourceLimits::default();
+            let err = do_query_sql(
+                serde_json::json!({ "file": cap.to_str().unwrap(), "sql": "DROP TABLE packets" }),
+                &limits,
+            )
+            .unwrap_err();
+            assert!(err.contains("SELECT"));
+
+            let err = do_query_sql(
+                serde_json::json!({ "file": cap.to_str().unwrap() }),
+                &limits,
+            )
+            .unwrap_err();
+            assert!(err.contains("'sql' is required"));
+
+            let err = do_query_sql(
+                serde_json::json!({ "file": "-", "sql": "SELECT 1" }),
+                &limits,
+            )
+            .unwrap_err();
+            assert!(err.contains("stdin"));
+
+            let err = do_query_sql(
+                serde_json::json!({ "file": "/nonexistent/c.pcap", "sql": "SELECT 1" }),
+                &limits,
+            )
+            .unwrap_err();
+            assert!(err.contains("failed to stat file"));
+        }
+
+        #[test]
+        fn query_sql_no_build_without_index() {
+            let dir = tempfile::tempdir().unwrap();
+            let cap = dir.path().join("c.pcap");
+            std::fs::write(&cap, udp_pcap(1)).unwrap();
+            let limits = ResourceLimits::default();
+            let err = do_query_sql(
+                serde_json::json!({
+                    "file": cap.to_str().unwrap(),
+                    "sql": "SELECT 1",
+                    "no_build": true,
+                }),
+                &limits,
+            )
+            .unwrap_err();
+            assert!(err.contains("does not exist"));
+        }
     }
 
     #[test]

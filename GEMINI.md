@@ -12,7 +12,8 @@ Use the `analyze-packets` skill for full workflow guidance.
 | `dsct_read_packets` | Stream dissected packets as JSON with filtering and sampling |
 | `dsct_list_protocols` | List all supported protocols |
 | `dsct_list_fields` | List filterable field names for specific protocols |
-| `dsct_get_schema` | JSON Schema for `read` or `stats` output |
+| `dsct_get_schema` | JSON Schema for `read`, `stats` or `sql` output |
+| `dsct_query_sql` | Read-only SQL over a SQLite index of the capture (call with `schema: true` first) |
 
 ## Quick guidance
 

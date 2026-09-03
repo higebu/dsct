@@ -19,7 +19,8 @@ a structured findings summary. **Never return raw packet JSON to the caller.**
 | `dsct_read_packets` | Read packets with filtering, pagination, and sampling |
 | `dsct_list_fields` | List filterable fields for specific protocols |
 | `dsct_list_protocols` | List all supported protocol names |
-| `dsct_get_schema` | JSON schema for `read` or `stats` output |
+| `dsct_get_schema` | JSON schema for `read`, `stats` or `sql` output |
+| `dsct_query_sql` | Read-only SQL over a SQLite index of the capture (aggregation, JOINs, tunnelled packets, stream following) |
 
 ## Analysis workflow
 
@@ -65,6 +66,20 @@ Based on Step 4 findings:
 - Check additional protocols that appear relevant
 - Use `verbose: true` only when low-level details (checksums, header lengths,
   flags) are specifically needed
+
+### Step 5b — SQL for aggregation, tunnels and streams
+
+When the goal needs counts, JOINs, inner headers of encapsulated packets or
+stream-level ordering, use `dsct_query_sql` instead of paging through packets:
+
+- Call it once with `schema: true` to learn the tables (`packets`, `layers`,
+  one table per protocol, `flows`, `conversations`, `encapsulations`,
+  `tcp_segments`) and usage hints.
+- `depth = 0` rows are the outer packet; tunnelled inner headers have
+  `depth >= 1`. `flow_id` / `direction` group both directions of a conversation;
+  `tcp_segments` exposes `seq_rel`, `ack_rel`, `next_seq`, `payload_len`.
+- Keep `count` small (default 1000 rows) and aggregate in SQL rather than
+  returning raw rows.
 
 ### Step 6 — Synthesize and return
 
@@ -166,7 +181,8 @@ Protocol names are normalized (case-insensitive, non-alphanumeric stripped):
 | `dsct_read_packets` | `file` | `filter`, `count`, `offset`, `packet_number`, `sample_rate`, `verbose`, `decode_as` |
 | `dsct_list_protocols` | — | — |
 | `dsct_list_fields` | — | `protocols` (always specify!) |
-| `dsct_get_schema` | — | `command` (`"read"` or `"stats"`) |
+| `dsct_get_schema` | — | `command` (`"read"`, `"stats"` or `"sql"`) |
+| `dsct_query_sql` | `file` | `sql`, `schema`, `count`, `db`, `no_build`, `decode_as` |
 
 ## Error handling
 

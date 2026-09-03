@@ -164,6 +164,84 @@ struct StatsOptions {
     decode_as: Vec<String>,
 }
 
+/// Options for the `dsct index` command.
+#[cfg(feature = "sqlite")]
+#[derive(clap::Args)]
+struct IndexOptions {
+    /// Path to the pcap/pcapng file (use "-" for stdin; requires --db).
+    file: PathBuf,
+
+    /// Path of the SQLite index to write.
+    /// Default: `<FILE>.dsct.sqlite` next to the capture file.
+    #[arg(long)]
+    db: Option<PathBuf>,
+
+    /// Rebuild the index even when an up-to-date one exists.
+    #[arg(long)]
+    force: bool,
+
+    /// Report progress to stderr every N packets (as JSON).
+    #[arg(long)]
+    progress: Option<u64>,
+
+    /// Override protocol dissection for a port (see `dsct read --help`).
+    #[arg(short, long = "decode-as", num_args = 1)]
+    decode_as: Vec<String>,
+
+    /// ESP Security Association for decryption (see `dsct read --help`).
+    #[arg(long = "esp-sa", num_args = 1)]
+    esp_sa: Vec<String>,
+}
+
+/// Options for the `dsct sql` command.
+#[cfg(feature = "sqlite")]
+#[derive(clap::Args)]
+struct SqlOptions {
+    /// Path to the pcap/pcapng file, or to an existing dsct SQLite index.
+    /// Use "-" for stdin (requires --db; the index is always rebuilt).
+    file: PathBuf,
+
+    /// Read-only SQL query (SELECT / WITH). May be omitted with --schema.
+    /// Examples: "SELECT number, stack FROM packets LIMIT 10",
+    /// "SELECT * FROM ipv4 WHERE depth = 1",
+    /// "SELECT * FROM tcp_segments WHERE flow_id = 0 ORDER BY packet_number".
+    query: Option<String>,
+
+    /// Path of the SQLite index. Default: `<FILE>.dsct.sqlite` next to the
+    /// capture file. Ignored when FILE is itself a SQLite database.
+    #[arg(long)]
+    db: Option<PathBuf>,
+
+    /// Output at most N rows. Default: 1000. Use --no-limit to output all rows.
+    #[arg(short, long)]
+    count: Option<u64>,
+
+    /// Output all rows without the default 1000-row limit.
+    #[arg(long, conflicts_with = "count")]
+    no_limit: bool,
+
+    /// Fail instead of building the index when it is missing or stale.
+    #[arg(long)]
+    no_build: bool,
+
+    /// Print the index database schema (tables, columns, descriptions) as JSON
+    /// instead of running a query.
+    #[arg(long)]
+    schema: bool,
+
+    /// Report index-build progress to stderr every N packets (as JSON).
+    #[arg(long)]
+    progress: Option<u64>,
+
+    /// Override protocol dissection for a port when building the index.
+    #[arg(short, long = "decode-as", num_args = 1)]
+    decode_as: Vec<String>,
+
+    /// ESP Security Association for decryption when building the index.
+    #[arg(long = "esp-sa", num_args = 1)]
+    esp_sa: Vec<String>,
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Read and dissect a pcap/pcapng capture file.
@@ -171,6 +249,15 @@ enum Command {
 
     /// Show capture file statistics (protocol counts, timing, optional deep analysis).
     Stats(StatsOptions),
+
+    /// Build (or refresh) the SQLite index of a capture file for `dsct sql`.
+    #[cfg(feature = "sqlite")]
+    Index(IndexOptions),
+
+    /// Run a read-only SQL query against the SQLite index of a capture file,
+    /// building the index first when it is missing or stale.
+    #[cfg(feature = "sqlite")]
+    Sql(SqlOptions),
 
     /// List supported protocols.
     List,
@@ -215,6 +302,10 @@ fn main() {
     let result = match cli.command {
         Command::Read(opts) => cmd_read(opts),
         Command::Stats(opts) => cmd_stats(opts),
+        #[cfg(feature = "sqlite")]
+        Command::Index(opts) => cmd_index(opts),
+        #[cfg(feature = "sqlite")]
+        Command::Sql(opts) => cmd_sql(opts),
         Command::List => cmd_list(),
         Command::Fields { protocol } => cmd_fields(protocol),
         Command::Version => cmd_version(),
@@ -615,6 +706,162 @@ fn cmd_stats(opts: StatsOptions) -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// SQLite index commands
+// ---------------------------------------------------------------------------
+
+/// Emit a truncation warning when the default row limit is reached.
+#[cfg(feature = "sqlite")]
+fn emit_row_truncation_warning(limit: u64) {
+    let message = format!(
+        "output truncated at default limit of {limit} rows; \
+         use --count N or --no-limit to override"
+    );
+    let _ = serde_json::to_writer(
+        io::stderr(),
+        &serde_json::json!({"warning": {"message": message, "code": "default_limit_reached"}}),
+    );
+    eprintln!();
+}
+
+/// Emit a warning that an existing index was rebuilt.
+#[cfg(feature = "sqlite")]
+fn emit_index_rebuilt_warning(db: &std::path::Path, reason: &str) {
+    let message = format!("rebuilt index {}: {reason}", db.display());
+    let _ = serde_json::to_writer(
+        io::stderr(),
+        &serde_json::json!({"warning": {"message": message, "code": "index_rebuilt"}}),
+    );
+    eprintln!();
+}
+
+/// Resolve (and if needed build) the index, reporting warnings and progress
+/// on stderr like `dsct read`.
+#[cfg(feature = "sqlite")]
+fn resolve_index_cli(req: &dsct::sqlite::IndexRequest<'_>) -> Result<dsct::sqlite::ResolvedIndex> {
+    let start_time = Instant::now();
+    dsct::sqlite::resolve_index(
+        req,
+        &mut |number, message| emit_warning(number, message),
+        &mut |packets_processed| emit_progress(packets_processed, 0, &start_time),
+    )
+}
+
+#[cfg(feature = "sqlite")]
+fn cmd_index(opts: IndexOptions) -> Result<()> {
+    use dsct::sqlite::IndexRequest;
+    let IndexOptions {
+        file,
+        db,
+        force,
+        progress,
+        decode_as: decode_as_args,
+        esp_sa: esp_sa_args,
+    } = opts;
+
+    if file.as_os_str() != "-" && db.is_none() && dsct::sqlite::is_sqlite_file(&file)? {
+        return Err(DsctError::invalid_argument(format!(
+            "{} is already a SQLite database; pass the capture file instead",
+            file.display()
+        )));
+    }
+
+    let resolved = resolve_index_cli(&IndexRequest {
+        file: &file,
+        db,
+        force,
+        no_build: false,
+        progress_interval: progress.unwrap_or(0),
+        decode_as: &decode_as_args,
+        esp_sa: &esp_sa_args,
+        deadline: None,
+    })?;
+
+    let mut info = serde_json::json!({
+        "type": "index",
+        "db": resolved.db_path.display().to_string(),
+        "built": resolved.build.is_some(),
+        "replaced": resolved.replaced_reason.is_some(),
+    });
+    if let Some(b) = resolved.build {
+        info["packets"] = serde_json::json!(b.packets);
+        info["flows"] = serde_json::json!(b.flows);
+        info["elapsed_secs"] = serde_json::json!((b.elapsed_secs * 1000.0).round() / 1000.0);
+    }
+    println!("{}", serde_json::to_string(&info)?);
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn cmd_sql(opts: SqlOptions) -> Result<()> {
+    use dsct::sqlite::IndexRequest;
+    use dsct::sqlite::ddl::protocol_tables;
+    use dsct::sqlite::query::{describe_schema, open_read_only, run_query};
+    use packet_dissector::registry::DissectorRegistry;
+
+    let SqlOptions {
+        file,
+        query,
+        db,
+        count,
+        no_limit,
+        no_build,
+        schema: show_schema,
+        progress,
+        decode_as: decode_as_args,
+        esp_sa: esp_sa_args,
+    } = opts;
+
+    if !show_schema && query.is_none() {
+        return Err(DsctError::invalid_argument(
+            "a SQL query is required unless --schema is given",
+        ));
+    }
+    let (count, is_default_limit) = if no_limit {
+        (None, false)
+    } else if let Some(c) = count {
+        (Some(c), false)
+    } else {
+        (Some(limits::DEFAULT_PACKET_COUNT), true)
+    };
+
+    let resolved = resolve_index_cli(&IndexRequest {
+        file: &file,
+        db,
+        force: false,
+        no_build,
+        progress_interval: progress.unwrap_or(0),
+        decode_as: &decode_as_args,
+        esp_sa: &esp_sa_args,
+        deadline: None,
+    })?;
+    if let Some(reason) = &resolved.replaced_reason {
+        emit_index_rebuilt_warning(&resolved.db_path, reason);
+    }
+
+    let conn = open_read_only(&resolved.db_path)?;
+    let stdout = io::stdout();
+    let mut writer = io::BufWriter::new(stdout.lock());
+
+    if show_schema {
+        let registry = DissectorRegistry::default();
+        let tables = protocol_tables(&registry);
+        let value = describe_schema(&conn, &tables)?;
+        serde_json::to_writer_pretty(&mut writer, &value)?;
+        writeln!(writer)?;
+        writer.flush()?;
+        return Ok(());
+    }
+
+    let sql = query.unwrap_or_default();
+    let outcome = run_query(&conn, &sql, count, &mut writer)?;
+    writer.flush()?;
+    if is_default_limit && outcome.truncated_by_limit {
+        emit_row_truncation_warning(limits::DEFAULT_PACKET_COUNT);
+    }
+    Ok(())
+}
+
 fn cmd_fields(protocol_filter: Vec<String>) -> Result<()> {
     let registry = DissectorRegistry::default();
     let schemas = registry.all_field_schemas();
@@ -681,9 +928,10 @@ fn cmd_schema(command: Option<String>) -> Result<()> {
     let value = match cmd {
         "read" => schema::read_schema(),
         "stats" => schema::stats_schema(),
+        "sql" => schema::sql_schema(),
         other => {
             return Err(DsctError::invalid_argument(format!(
-                "unknown command '{other}'. Available: read, stats"
+                "unknown command '{other}'. Available: read, stats, sql"
             )));
         }
     };
@@ -755,6 +1003,12 @@ mod tests {
     #[test]
     fn test_cmd_schema_stats() {
         let result = cmd_schema(Some("stats".to_string()));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_cmd_schema_sql() {
+        let result = cmd_schema(Some("sql".to_string()));
         assert!(result.is_ok());
     }
 

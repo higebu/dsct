@@ -44,6 +44,9 @@ pub mod schema;
 pub mod serialize;
 #[doc(hidden)]
 pub mod sql_filter;
+#[cfg(feature = "sqlite")]
+#[doc(hidden)]
+pub mod sqlite;
 #[doc(hidden)]
 pub mod stats;
 #[cfg(feature = "tui")]

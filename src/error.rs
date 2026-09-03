@@ -151,6 +151,26 @@ impl From<packet_dissector_pcap::PcapError> for DsctError {
     }
 }
 
+#[cfg(feature = "sqlite")]
+impl From<rusqlite::Error> for DsctError {
+    fn from(error: rusqlite::Error) -> Self {
+        use rusqlite::ErrorCode;
+        let category = match &error {
+            rusqlite::Error::SqliteFailure(ffi, _) => match ffi.code {
+                ErrorCode::PermissionDenied => ErrorCategory::PermissionDenied,
+                ErrorCode::CannotOpen
+                | ErrorCode::ReadOnly
+                | ErrorCode::DiskFull
+                | ErrorCode::SystemIoFailure => ErrorCategory::Io,
+                ErrorCode::NotADatabase => ErrorCategory::InvalidFormat,
+                _ => ErrorCategory::Error,
+            },
+            _ => ErrorCategory::Error,
+        };
+        Self::with_source(category, error.to_string(), error)
+    }
+}
+
 #[cfg(feature = "tui")]
 impl From<rustix::io::Errno> for DsctError {
     fn from(error: rustix::io::Errno) -> Self {
@@ -346,6 +366,39 @@ mod tests {
         let parse_err: ParseIntError = "abc".parse::<u32>().expect_err("not a number should fail");
         let err: DsctError = parse_err.into();
         assert_eq!(err.category(), ErrorCategory::Error);
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn from_rusqlite_errors_map_to_categories() {
+        let not_db = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB),
+            Some("file is not a database".into()),
+        );
+        assert_eq!(
+            DsctError::from(not_db).category(),
+            ErrorCategory::InvalidFormat
+        );
+
+        let perm = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_PERM),
+            None,
+        );
+        assert_eq!(
+            DsctError::from(perm).category(),
+            ErrorCategory::PermissionDenied
+        );
+
+        let cant_open = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+            None,
+        );
+        assert_eq!(DsctError::from(cant_open).category(), ErrorCategory::Io);
+
+        let other = rusqlite::Error::QueryReturnedNoRows;
+        let err = DsctError::from(other);
+        assert_eq!(err.category(), ErrorCategory::Error);
+        assert!(StdErrorTrait::source(&err).is_some());
     }
 
     // ---------- ResultExt ----------

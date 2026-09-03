@@ -170,6 +170,17 @@ etc.).  Filters that require TCP reassembly such as `http`, `dns`, `tls`, and
 `tcp.stream_id` automatically fall back to sequential processing regardless of
 `--threads`.  Stdin input always uses the sequential path.
 
+Query a capture with SQL (the SQLite index is built on first use and reused
+afterwards):
+
+```bash
+dsct sql capture.pcap "SELECT number, stack FROM packets WHERE max_depth > 0 LIMIT 10"
+dsct sql capture.pcap "SELECT * FROM tcp_segments WHERE flow_id = 0 ORDER BY packet_number"
+dsct sql capture.pcap --schema
+```
+
+See [SQL queries](#sql-queries) for the database layout.
+
 Inspect available fields and schemas:
 
 ```bash
@@ -207,6 +218,8 @@ dsct stats capture.pcap --top-talkers
 | --- | --- |
 | `dsct read <FILE>` | Stream packet records as JSONL |
 | `dsct stats <FILE>` | Emit capture statistics as JSON |
+| `dsct index <FILE>` | Build (or refresh) the SQLite index used by `dsct sql` |
+| `dsct sql <FILE> <QUERY>` | Run a read-only SQL query against the capture's SQLite index, rows as JSONL |
 | `dsct list` | List supported protocols as JSON |
 | `dsct fields [PROTOCOL...]` | List filterable fields as JSON |
 | `dsct schema [COMMAND]` | Show JSON Schema for command output |
@@ -226,7 +239,8 @@ Run `--help` on any command for the full option list.
 | `dsct_get_stats` | Get protocol statistics from a capture file. Returns packet counts, timing, protocol distribution, and optional deep analysis. |
 | `dsct_list_protocols` | List all supported protocols with their specification references and layer information. |
 | `dsct_list_fields` | List available field names for protocols. Fields can be used with `dsct_read_packets` for filtering. |
-| `dsct_get_schema` | Get the JSON schema for command output formats (`read` or `stats`). |
+| `dsct_get_schema` | Get the JSON schema for command output formats (`read`, `stats` or `sql`). |
+| `dsct_query_sql` | Run a read-only SQL query against the capture's SQLite index (built on first use). Returns result rows plus index status; `schema: true` returns the table layout. |
 
 ### Protocol versions
 
@@ -247,7 +261,9 @@ The server speaks both protocol eras and picks one per request:
 
 **`dsct_list_fields`**: `protocol`
 
-**`dsct_get_schema`**: `command` (`"read"` or `"stats"`)
+**`dsct_get_schema`**: `command` (`"read"`, `"stats"` or `"sql"`)
+
+**`dsct_query_sql`**: `file` (required), `sql`, `schema`, `count`, `db`, `no_build`, `decode_as`, `esp_sa`
 
 ### Configuration example
 
@@ -292,7 +308,108 @@ Resource limits can be tuned via environment variables:
 {"number":1,"timestamp":"2024-01-15T10:30:00.123456Z","length":71,"original_length":71,"stack":"Ethernet:IPv4:UDP:DNS","layers":[{"protocol":"Ethernet","fields":{"dst":"ff:ff:ff:ff:ff:ff","src":"00:11:22:33:44:55","ethertype":2048,"ethertype_name":"IPv4"}},{"protocol":"IPv4","fields":{"ttl":64,"protocol":17,"src":"10.0.0.1","dst":"10.0.0.2"}},{"protocol":"UDP","fields":{"src_port":12345,"dst_port":53}},{"protocol":"DNS","fields":{"id":4660,"qr":0,"opcode":0,"rcode":0,"questions":[{"name":"example.com","type":1,"class":1}]}}]}
 ```
 
+`dsct sql` emits one JSON object per result row, keyed by column name:
+
+```jsonl
+{"packet_number":2,"depth":1,"carrier_protocol":"VXLAN","carrier_layer_index":3}
+```
+
+SQLite `INTEGER` and `REAL` values become JSON numbers, `TEXT` becomes a
+string, `BLOB` becomes a lowercase hex string and `NULL` becomes `null`.
+
 The other commands emit a single JSON object or array on stdout.
+
+## SQL queries
+
+`dsct sql` dissects a capture once, stores every layer in a SQLite database,
+and answers `SELECT` queries against it. The database is built on the first
+query (or explicitly with `dsct index`) and reused as long as the capture, the
+dsct version and the dissection options are unchanged; otherwise it is rebuilt
+and a `{"warning":{"code":"index_rebuilt",...}}` line is written to stderr.
+
+```bash
+dsct index capture.pcap                 # build now (prints {"type":"index",...})
+dsct sql capture.pcap --schema          # tables, columns, descriptions, hints
+dsct sql capture.pcap "SELECT protocol, COUNT(*) AS n FROM layers GROUP BY protocol ORDER BY n DESC"
+dsct sql capture.pcap.dsct.sqlite "SELECT COUNT(*) FROM packets"   # query an index directly
+tcpdump -w - -c 1000 | dsct sql - --db /tmp/live.sqlite "SELECT * FROM conversations"
+```
+
+- The index lives next to the capture as `<FILE>.dsct.sqlite`; override with
+  `--db PATH`. Reading from stdin requires `--db` and always rebuilds.
+- `--no-build` fails (exit code `2`) instead of building a missing or stale index.
+- `dsct index --force` rebuilds unconditionally.
+- Only read-only `SELECT` / `WITH` queries are accepted; the database is opened
+  read-only and anything else is rejected with exit code `2`.
+- Like `dsct read`, output stops after **1 000 rows** by default; use
+  `--count N` or `--no-limit`.
+- Expect the index to take roughly one to three times the size of the capture.
+  Flow tracking keeps one small entry per conversation in memory while building.
+
+### Tables
+
+| Table / view | Contents |
+| --- | --- |
+| `packets` | One row per packet: `number`, `timestamp`, `ts`, lengths, `link_type`, `stack`, `max_depth`, `dissect_error` |
+| `layers` | One row per dissected layer: `packet_number`, `layer_index`, `depth`, `protocol`, `protocol_name`, `offset`, `length` |
+| `<protocol>` | One table per protocol (`ipv4`, `tcp`, `dns`, `gtpv1u`, ...): one row per layer with a column per field, keyed by `packet_number`, `layer_index`, `depth` |
+| `flows` | One row per transport conversation per depth: endpoints, packet/byte counts, first/last packet and time, `tcp_stream_id` |
+| `packet_flows` | Maps transport layers to flows with `direction` (`0` = `addr_a` → `addr_b`, `1` = reverse) |
+| `encapsulations` | View: for every tunnelled depth of a packet, the carrier protocol (`VXLAN`, `GRE`, `GTPv1-U`, ...) |
+| `conversations` | View: `flows` plus `duration_secs` |
+| `tcp_segments` | View: TCP rows joined with `packets`, including `seq_rel`, `ack_rel`, `next_seq`, `payload_len`, `flags_name` |
+
+Protocol table names are the lowercase, alphanumeric form of the protocol name
+(`GTPv1-U` → `gtpv1u`, `HTTP/2` → `http2`). Field columns keep their `dsct read`
+names; fields with a display name also get a `<name>_name` text column
+(`flags_name`, `ethertype_name`). Quote column names that collide with SQL
+keywords (`"type"`, `"class"`, `"group"`, `"offset"`). Array and object fields
+are stored as JSON text. Run `dsct sql <FILE> --schema` to list everything.
+
+### Encapsulated and nested packets
+
+Every layer carries an encapsulation `depth`: `0` for the outer packet, `1`
+for the first tunnelled packet (VXLAN, Geneve, GRE, GTP-U, IP-in-IP, L2TP,
+MPLS, decrypted ESP, ...), `2` for a tunnel inside a tunnel, and so on. Inner
+headers are ordinary rows in the same protocol tables:
+
+```bash
+# Inner IPv4 headers carried inside tunnels
+dsct sql capture.pcap "SELECT packet_number, \"src\", \"dst\" FROM ipv4 WHERE depth = 1"
+
+# Which tunnel protocol carries each inner packet
+dsct sql capture.pcap "SELECT carrier_protocol, COUNT(*) FROM encapsulations GROUP BY carrier_protocol"
+
+# Inner TCP flows carried over GTP-U, joined with the outer tunnel endpoints
+dsct sql capture.pcap "SELECT t.packet_number, o.\"src\" AS outer_src, i.\"src\" AS inner_src, t.\"dst_port\" \
+  FROM tcp t JOIN ipv4 i ON i.packet_number = t.packet_number AND i.depth = t.depth \
+  JOIN ipv4 o ON o.packet_number = t.packet_number AND o.depth = 0 WHERE t.depth = 1"
+
+# Nested fields via SQLite JSON functions
+dsct sql capture.pcap "SELECT p.number, json_extract(q.value, '$.name') AS qname \
+  FROM dns d JOIN packets p ON p.number = d.packet_number, json_each(d.\"questions\") q"
+```
+
+### Following streams and sequences
+
+`tcp`, `udp` and `sctp` rows carry a dsct-assigned `flow_id` (per depth) and a
+`direction`; both directions of a conversation share one id. TCP rows also get
+`payload_len`, `seq_rel` / `ack_rel` (relative to the first segment seen in each
+direction) and `next_seq`:
+
+```bash
+# Busiest conversations
+dsct sql capture.pcap "SELECT * FROM conversations ORDER BY bytes DESC LIMIT 10"
+
+# Follow one TCP stream in order
+dsct sql capture.pcap "SELECT packet_number, direction, seq_rel, ack_rel, payload_len, flags_name \
+  FROM tcp_segments WHERE flow_id = 3 ORDER BY packet_number"
+
+# Retransmissions: a data segment that starts before the end of an earlier segment in the same direction
+dsct sql capture.pcap "SELECT DISTINCT a.packet_number FROM tcp_segments a JOIN tcp_segments b \
+  ON a.flow_id = b.flow_id AND a.direction = b.direction AND b.packet_number < a.packet_number \
+  WHERE a.payload_len > 0 AND b.payload_len > 0 AND a.seq_rel < b.seq_rel + b.payload_len"
+```
 
 ## Supported protocols
 
@@ -316,7 +433,7 @@ Exit codes:
 | --- | --- |
 | `0` | Success |
 | `1` | General error |
-| `2` | Invalid arguments |
+| `2` | Invalid arguments (including rejected or malformed SQL queries) |
 | `3` | File not found or permission denied |
 | `4` | Invalid capture format |
 
