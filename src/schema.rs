@@ -160,6 +160,20 @@ pub fn stats_schema() -> serde_json::Value {
     })
 }
 
+/// Return the JSON schema for the `dsct sql` output format (one row per line).
+pub fn sql_schema() -> serde_json::Value {
+    serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "dsct sql result row",
+        "description": "A single result row from dsct sql (JSONL mode: one per line). Keys are the result column names in SELECT order. Run 'dsct sql <FILE> --schema' to discover the tables and columns of the index database.",
+        "type": "object",
+        "additionalProperties": {
+            "description": "Column value. SQLite INTEGER and REAL become JSON numbers, TEXT becomes a string, BLOB becomes a lowercase hex string, NULL becomes null.",
+            "type": ["integer", "number", "string", "null"]
+        }
+    })
+}
+
 /// Convert a [`FieldType`] to a short machine-readable string.
 pub fn field_type_str(ft: FieldType) -> &'static str {
     match ft {
@@ -233,6 +247,14 @@ mod tests {
         assert_eq!(schema["title"], "dsct stats output");
         let required = schema["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v == "total_packets"));
+    }
+
+    #[test]
+    fn sql_schema_describes_rows() {
+        let schema = sql_schema();
+        assert_eq!(schema["title"], "dsct sql result row");
+        assert_eq!(schema["type"], "object");
+        assert!(schema["additionalProperties"]["type"].is_array());
     }
 
     #[test]
