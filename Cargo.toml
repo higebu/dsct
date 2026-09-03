@@ -18,6 +18,7 @@ path = "src/main.rs"
 
 [features]
 default = [
+  "sqlite",
   "ethernet",
   "linux_sll",
   "linux_sll2",
@@ -70,6 +71,7 @@ default = [
   "quic",
   "stun",
 ]
+sqlite = ["dep:rusqlite"]
 tui = [
   "dep:ratatui",
   "dep:crossterm",
@@ -151,6 +153,10 @@ rustix = { version = "1", features = ["stdio"], optional = true }
 lru = { version = "0.16", optional = true }
 num_cpus = "1"
 sqlparser = "0.61.0"
+rusqlite = { version = "0.40", features = [
+  "bundled",
+  "hooks",
+], optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"
