@@ -336,77 +336,142 @@ fn initialize_result(client_version: Option<&str>) -> Value {
 // ---------------------------------------------------------------------------
 
 fn tools_list_result() -> Value {
-    serde_json::json!({
-        "tools": [
-            {
-                "name": "dsct_read_packets",
-                "description": "Dissect packets from a pcap/pcapng capture file. Returns an object with a packets array of dissected packet objects with protocol layers and fields. IMPORTANT: Call dsct_get_stats first to understand capture size. Then use filter to narrow to relevant protocols and count (start with 50 or fewer) to keep output within context limits. For large captures, use sample_rate to get evenly-distributed packets across the timeline (e.g. sample_rate: total_packets / 50 yields ~50 representative packets).",
-                "annotations": { "readOnlyHint": true },
-                "inputSchema": read_packets_schema(),
-                "outputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "packets": { "type": "array" }
-                    },
-                    "required": ["packets"]
-                }
-            },
-            {
-                "name": "dsct_get_stats",
-                "description": "Get protocol statistics from a pcap/pcapng capture file. Returns packet counts, timing, protocol distribution, and optional deep analysis.",
-                "annotations": { "readOnlyHint": true },
-                "inputSchema": get_stats_schema(),
-                "outputSchema": {
-                    "type": "object",
-                    "required": ["type", "total_packets", "duration_secs", "protocols"],
-                    "properties": {
-                        "type": { "type": "string" },
-                        "total_packets": { "type": "integer" },
-                        "duration_secs": { "type": "number" },
-                        "protocols": { "type": "object" }
-                    }
-                }
-            },
-            {
-                "name": "dsct_list_protocols",
-                "description": "List all supported protocols with their specification references and layer information.",
-                "annotations": { "readOnlyHint": true },
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": false
+    #[allow(unused_mut)]
+    let mut tools = vec![
+        serde_json::json!({
+            "name": "dsct_read_packets",
+            "description": "Dissect packets from a pcap/pcapng capture file. Returns an object with a packets array of dissected packet objects with protocol layers and fields. IMPORTANT: Call dsct_get_stats first to understand capture size. Then use filter to narrow to relevant protocols and count (start with 50 or fewer) to keep output within context limits. For large captures, use sample_rate to get evenly-distributed packets across the timeline (e.g. sample_rate: total_packets / 50 yields ~50 representative packets).",
+            "annotations": { "readOnlyHint": true },
+            "inputSchema": read_packets_schema(),
+            "outputSchema": {
+                "type": "object",
+                "properties": {
+                    "packets": { "type": "array" }
                 },
-                "outputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "protocols": { "type": "array" }
-                    },
-                    "required": ["protocols"]
-                }
-            },
-            {
-                "name": "dsct_list_fields",
-                "description": "List available field names for protocols. Each entry includes a qualified_name (e.g. 'DNS.questions.name') that can be used directly as the field path in dsct_read_packets filter expressions. Nested fields are shown in a children array. IMPORTANT: Always specify protocols to avoid very large output (~56K tokens for all protocols).",
-                "annotations": { "readOnlyHint": true },
-                "inputSchema": list_fields_schema(),
-                "outputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "fields": { "type": "array" }
-                    },
-                    "required": ["fields"]
-                }
-            },
-            {
-                "name": "dsct_get_schema",
-                "description": "Get the JSON schema for dsct command output formats (read or stats).",
-                "annotations": { "readOnlyHint": true },
-                "inputSchema": get_schema_schema(),
-                "outputSchema": {
-                    "type": "object"
+                "required": ["packets"]
+            }
+        }),
+        serde_json::json!({
+            "name": "dsct_get_stats",
+            "description": "Get protocol statistics from a pcap/pcapng capture file. Returns packet counts, timing, protocol distribution, and optional deep analysis.",
+            "annotations": { "readOnlyHint": true },
+            "inputSchema": get_stats_schema(),
+            "outputSchema": {
+                "type": "object",
+                "required": ["type", "total_packets", "duration_secs", "protocols"],
+                "properties": {
+                    "type": { "type": "string" },
+                    "total_packets": { "type": "integer" },
+                    "duration_secs": { "type": "number" },
+                    "protocols": { "type": "object" }
                 }
             }
-        ]
+        }),
+        serde_json::json!({
+            "name": "dsct_list_protocols",
+            "description": "List all supported protocols with their specification references and layer information.",
+            "annotations": { "readOnlyHint": true },
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            },
+            "outputSchema": {
+                "type": "object",
+                "properties": {
+                    "protocols": { "type": "array" }
+                },
+                "required": ["protocols"]
+            }
+        }),
+        serde_json::json!({
+            "name": "dsct_list_fields",
+            "description": "List available field names for protocols. Each entry includes a qualified_name (e.g. 'DNS.questions.name') that can be used directly as the field path in dsct_read_packets filter expressions. Nested fields are shown in a children array. IMPORTANT: Always specify protocols to avoid very large output (~56K tokens for all protocols).",
+            "annotations": { "readOnlyHint": true },
+            "inputSchema": list_fields_schema(),
+            "outputSchema": {
+                "type": "object",
+                "properties": {
+                    "fields": { "type": "array" }
+                },
+                "required": ["fields"]
+            }
+        }),
+        serde_json::json!({
+            "name": "dsct_get_schema",
+            "description": "Get the JSON schema for dsct command output formats (read, stats or sql).",
+            "annotations": { "readOnlyHint": true },
+            "inputSchema": get_schema_schema(),
+            "outputSchema": {
+                "type": "object"
+            }
+        }),
+    ];
+    #[cfg(feature = "sqlite")]
+    tools.push(serde_json::json!({
+                "name": "dsct_query_sql",
+                "description": "Run a read-only SQL (SELECT) query against a SQLite index of the capture. The index is built on first use next to the capture file (<file>.dsct.sqlite) and reused while the capture is unchanged, so repeated queries, JOINs, GROUP BY and ORDER BY are cheap. Call with schema: true first to discover tables and columns. Every protocol has a table (tcp, udp, ipv4, dns, ...) with one row per layer keyed by packet_number, layer_index and depth (0 = outermost; tunnelled inner headers such as VXLAN/GRE/GTP-U payloads have depth >= 1; the encapsulations view names the carrier). Conversations are in flows / conversations (flow_id on tcp/udp/sctp rows, direction 0/1), and tcp_segments exposes relative sequence numbers (seq_rel, ack_rel, next_seq, payload_len) for following a stream. Array/Object fields are JSON text: use json_extract() / json_each(). Quote column names that collide with SQL keywords (\"type\", \"class\").",
+                "annotations": { "readOnlyHint": true },
+                "inputSchema": query_sql_schema(),
+                "outputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "rows": { "type": "array" },
+                        "row_count": { "type": "integer" },
+                        "truncated": { "type": "boolean" },
+                        "index": { "type": "object" }
+                    }
+                }
+    }));
+    serde_json::json!({ "tools": tools })
+}
+
+#[cfg(feature = "sqlite")]
+fn query_sql_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["file"],
+        "properties": {
+            "file": {
+                "type": "string",
+                "description": "Path to the pcap/pcapng file, or to an existing dsct SQLite index."
+            },
+            "sql": {
+                "type": "string",
+                "description": "Read-only SQL query (SELECT / WITH). Required unless schema is true. Examples: \"SELECT number, stack FROM packets WHERE max_depth > 0\", \"SELECT * FROM ipv4 WHERE depth = 1 AND \\\"src\\\" = '10.0.0.1'\", \"SELECT * FROM tcp_segments WHERE flow_id = 3 ORDER BY packet_number\", \"SELECT * FROM conversations ORDER BY bytes DESC LIMIT 10\"."
+            },
+            "schema": {
+                "type": "boolean",
+                "default": false,
+                "description": "Return the index schema (tables, columns, descriptions, usage hints) instead of running a query."
+            },
+            "count": {
+                "type": "integer",
+                "description": "Maximum number of rows to return (default: 1000)."
+            },
+            "db": {
+                "type": "string",
+                "description": "Explicit index database path (default: <file>.dsct.sqlite next to the capture)."
+            },
+            "no_build": {
+                "type": "boolean",
+                "default": false,
+                "description": "Fail instead of building the index when it is missing or stale."
+            },
+            "decode_as": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": [],
+                "description": "Override protocol dissection for a port when building the index (e.g. \"tcp.port=8080:http\")."
+            },
+            "esp_sa": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": [],
+                "description": "ESP Security Association for decryption when building the index."
+            }
+        },
+        "additionalProperties": false
     })
 }
 
@@ -546,7 +611,7 @@ fn get_schema_schema() -> Value {
         "properties": {
             "command": {
                 "type": "string",
-                "description": "Command name: \"read\" or \"stats\" (defaults to \"read\")."
+                "description": "Command name: \"read\", \"stats\" or \"sql\" (defaults to \"read\")."
             }
         },
         "additionalProperties": false
@@ -592,6 +657,11 @@ fn handle_tool_call(
         }
         "dsct_get_schema" => {
             let result = super::tools::do_get_schema(arguments);
+            write_tool_result(w, id, era, result)
+        }
+        #[cfg(feature = "sqlite")]
+        "dsct_query_sql" => {
+            let result = super::tools::do_query_sql(arguments, limits);
             write_tool_result(w, id, era, result)
         }
         _ => write_tool_error(w, id, era, format!("unknown tool: {tool_name}")),
@@ -989,6 +1059,9 @@ mod tests {
     use super::*;
 
     /// Parse the first JSON line from a byte buffer.
+    /// Number of tools advertised by this build.
+    const TOOL_COUNT: usize = if cfg!(feature = "sqlite") { 6 } else { 5 };
+
     fn parse_response(buf: &[u8]) -> Value {
         let s = std::str::from_utf8(buf).expect("valid UTF-8");
         let line = s.lines().next().expect("at least one line");
@@ -1134,7 +1207,7 @@ mod tests {
     fn tools_list_has_five_tools() {
         let result = tools_list_result();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), TOOL_COUNT);
     }
 
     #[test]
@@ -1147,6 +1220,7 @@ mod tests {
         assert!(names.contains(&"dsct_list_protocols"));
         assert!(names.contains(&"dsct_list_fields"));
         assert!(names.contains(&"dsct_get_schema"));
+        assert_eq!(names.contains(&"dsct_query_sql"), cfg!(feature = "sqlite"));
     }
 
     #[test]
@@ -1276,7 +1350,7 @@ mod tests {
         let resp = parse_response(&buf);
         assert_eq!(resp["id"], 2);
         let tools = resp["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), TOOL_COUNT);
     }
 
     #[test]
@@ -1704,7 +1778,7 @@ mod tests {
             result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
             "dsct"
         );
-        assert_eq!(result["tools"].as_array().unwrap().len(), 5);
+        assert_eq!(result["tools"].as_array().unwrap().len(), TOOL_COUNT);
     }
 
     #[test]
