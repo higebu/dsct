@@ -40,7 +40,8 @@ fn parse_hex(s: &str) -> Result<Vec<u8>> {
     }
 
     let mut out = Vec::with_capacity(raw.len() / 2);
-    for (idx, chunk) in raw.chunks_exact(2).enumerate() {
+    let (pairs, _) = raw.as_chunks::<2>();
+    for (idx, chunk) in pairs.iter().enumerate() {
         let hi = hex_val(chunk[0]).ok_or_else(|| {
             DsctError::invalid_argument(format!("invalid hex at byte offset {}", idx * 2))
         })?;
