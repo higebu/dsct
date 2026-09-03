@@ -173,7 +173,7 @@ fn write_hex_string<W: Write>(w: &mut W, bytes: &[u8]) -> Result<()> {
 /// When `field` is provided and has a [`FormatFn`](packet_dissector_core::field::FormatFn),
 /// that function is called to format the value. Otherwise the default
 /// formatting for each variant is used.
-fn write_field_value_json<W: Write>(
+pub(crate) fn write_field_value_json<W: Write>(
     w: &mut W,
     field: &Field<'_>,
     buf: &DissectBuffer<'_>,
@@ -234,7 +234,7 @@ fn write_raw_field_value_json<W: Write>(
 /// Write a field value as JSON, recursing into `Array`/`Object` sub-fields
 /// and applying `field_config` filtering to nested object entries.
 #[allow(clippy::too_many_arguments)]
-fn write_field_json<W: Write>(
+pub(crate) fn write_field_json<W: Write>(
     w: &mut W,
     protocol: &str,
     field_name: &str,
