@@ -65,11 +65,17 @@ impl DiameterStatsCollector {
             self.total_answers += 1;
         }
 
-        if let Some(name) = display_name(packet, diam, fields, "command_name", "command_code") {
+        if let Some(name) = display_name(packet, diam, fields, "command_code_name", "command_code")
+        {
             *self.command_codes.entry(name).or_insert(0) += 1;
         }
-        if let Some(name) = display_name(packet, diam, fields, "application_name", "application_id")
-        {
+        if let Some(name) = display_name(
+            packet,
+            diam,
+            fields,
+            "application_id_name",
+            "application_id",
+        ) {
             *self.application_ids.entry(name).or_insert(0) += 1;
         }
 

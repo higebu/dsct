@@ -399,7 +399,7 @@ fn write_layer_fields<W: Write>(
 ) -> Result<()> {
     let fields = buf.layer_fields(layer);
     let mut first = true;
-    for f in fields {
+    for f in crate::field_iter::top_level_fields(fields, layer.field_range.start) {
         let include_field = field_config.is_none_or(|cfg| cfg.should_include(layer.name, f.name()));
 
         if include_field {
@@ -449,6 +449,40 @@ pub fn write_packet_json<W: Write>(
     field_config: Option<&FieldConfig>,
     raw_bytes: bool,
 ) -> Result<()> {
+    write_packet_json_impl(w, meta, buf, data, field_config, raw_bytes, None)
+}
+
+/// Like [`write_packet_json`], but additionally restricts which layers
+/// appear in the `layers` array to those whose (normalized, per
+/// [`crate::filter::normalize_protocol_name`]) protocol name is in
+/// `layer_filter` — used to implement `dsct_read_packets`'s `layers`
+/// parameter. `layer_filter: None` behaves exactly like
+/// [`write_packet_json`] (no layer omitted).
+///
+/// The `stack` field is unaffected by `layer_filter`: it always names every
+/// layer actually present in the packet, so the caller can still see what
+/// was omitted from `layers`.
+pub(crate) fn write_packet_json_with_layer_filter<W: Write>(
+    w: &mut W,
+    meta: &PacketMeta,
+    buf: &DissectBuffer<'_>,
+    data: &[u8],
+    field_config: Option<&FieldConfig>,
+    raw_bytes: bool,
+    layer_filter: Option<&std::collections::HashSet<String>>,
+) -> Result<()> {
+    write_packet_json_impl(w, meta, buf, data, field_config, raw_bytes, layer_filter)
+}
+
+fn write_packet_json_impl<W: Write>(
+    w: &mut W,
+    meta: &PacketMeta,
+    buf: &DissectBuffer<'_>,
+    data: &[u8],
+    field_config: Option<&FieldConfig>,
+    raw_bytes: bool,
+    layer_filter: Option<&std::collections::HashSet<String>>,
+) -> Result<()> {
     // number
     write!(w, "{{\"number\":{},\"timestamp\":\"", meta.number)?;
     // timestamp (no String allocation)
@@ -459,7 +493,8 @@ pub fn write_packet_json<W: Write>(
         "\",\"length\":{},\"original_length\":{},\"stack\":\"",
         meta.captured_length, meta.original_length
     )?;
-    // stack — layer names joined by ':'
+    // stack — layer names joined by ':', always the full stack regardless
+    // of `layer_filter`.
     for (i, layer) in buf.layers().iter().enumerate() {
         if i > 0 {
             write!(w, ":")?;
@@ -468,10 +503,17 @@ pub fn write_packet_json<W: Write>(
     }
     // layers array
     write!(w, "\",\"layers\":[")?;
-    for (i, layer) in buf.layers().iter().enumerate() {
-        if i > 0 {
+    let mut first = true;
+    for layer in buf.layers() {
+        if let Some(allowed) = layer_filter
+            && !allowed.contains(&crate::filter::normalize_protocol_name(layer.name))
+        {
+            continue;
+        }
+        if !first {
             write!(w, ",")?;
         }
+        first = false;
         w.write_all(b"{\"protocol\":\"")?;
         w.write_all(layer.protocol_name().as_bytes())?;
         w.write_all(b"\",\"fields\":{")?;
@@ -767,6 +809,59 @@ mod tests {
     }
 
     #[test]
+    fn test_write_packet_json_with_layer_filter_restricts_layers_array() {
+        let buf = make_eth_ipv4_tcp_buf();
+        let data = [0u8; 100];
+        let meta = make_test_meta(1);
+        let config = FieldConfig::default_config().unwrap();
+
+        let allowed: std::collections::HashSet<String> =
+            ["ipv4".to_owned(), "tcp".to_owned()].into_iter().collect();
+
+        let mut out = Vec::new();
+        write_packet_json_with_layer_filter(
+            &mut out,
+            &meta,
+            &buf,
+            &data,
+            Some(&config),
+            false,
+            Some(&allowed),
+        )
+        .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
+
+        // stack still names every layer, including the omitted one.
+        assert_eq!(json["stack"], "Ethernet:IPv4:TCP");
+        let layers = json["layers"].as_array().unwrap();
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[0]["protocol"], "IPv4");
+        assert_eq!(layers[1]["protocol"], "TCP");
+    }
+
+    #[test]
+    fn test_write_packet_json_with_layer_filter_none_matches_default() {
+        let buf = make_eth_ipv4_tcp_buf();
+        let data = [0u8; 100];
+        let meta = make_test_meta(1);
+        let config = FieldConfig::default_config().unwrap();
+
+        let mut out = Vec::new();
+        write_packet_json_with_layer_filter(
+            &mut out,
+            &meta,
+            &buf,
+            &data,
+            Some(&config),
+            false,
+            None,
+        )
+        .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(json["layers"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
     fn test_write_packet_json_verbose() {
         let buf = make_eth_ipv4_tcp_buf();
         let data = [0u8; 100];
@@ -1045,6 +1140,38 @@ mod tests {
             "virtual type_name should be present"
         );
         assert_eq!(ie["value"], 1);
+    }
+
+    #[test]
+    fn test_verbose_mode_does_not_leak_nested_fields_to_layer_top_level() {
+        // DissectBuffer stores an Object's children contiguously right
+        // after the Object field itself, in the same flat per-layer field
+        // range. In verbose mode (no FieldConfig filtering), a naive
+        // `for f in layer_fields` walk therefore re-emits every nested
+        // child a second time as if it were a top-level layer field,
+        // producing duplicate/invalid JSON keys.
+        let buf = make_dns_buf();
+        let data = [0u8; 100];
+        let meta = make_test_meta(5);
+
+        let json = write_and_parse(&buf, &data, &meta, None);
+        let dns = &json["layers"][0]["fields"];
+        let keys: std::collections::BTreeSet<&str> = dns
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            std::collections::BTreeSet::from(["id", "qr", "questions"]),
+            "layer top level must only contain its own top-level fields, \
+             not the nested question's name/type/class: {dns}"
+        );
+
+        let questions = dns["questions"].as_array().unwrap();
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0]["name"], "example.com");
     }
 
     #[test]

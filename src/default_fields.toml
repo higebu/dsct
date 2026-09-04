@@ -295,20 +295,21 @@ fields = [
 fields = [
   # Command identification
   "command_code",
-  "command_name",
+  "command_code_name",
   "is_request",
   "application_id",
-  "application_name",
+  "application_id_name",
   # Correlation IDs
   "hop_by_hop_id",
   "end_to_end_id",
   # AVPs: show name, vendor_id (only present for vendor-specific AVPs), value, and
-  # result_code_name (only present on Result-Code AVP); omit numeric code, flags, and wire-level length
+  # value_name (Result-Code/Experimental-Result-Code name, only present on those
+  # AVPs); omit numeric code, flags, and wire-level length
   "avps",
   "avps.name",
   "avps.vendor_id",
   "avps.value",
-  "avps.result_code_name",
+  "avps.value_name",
 ]
 
 [GENEVE]
@@ -416,7 +417,7 @@ fields = [
   "withdrawn_routes_length",
   "withdrawn_routes",
   "path_attributes",
-  "path_attributes.type_name",
+  "path_attributes.type_code_name",
   "path_attributes.value",
   "nlri",
   "error_code_name",

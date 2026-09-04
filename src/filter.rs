@@ -248,15 +248,19 @@ impl WhereClause {
                 continue;
             }
             let fields = packet.layer_fields(layer);
-            // Direct field match
-            if let Some(field) = fields.iter().find(|f| f.name() == self.field)
+            let top_level = crate::field_iter::top_level_fields(fields, layer.field_range.start);
+            // Direct field match — restricted to the layer's own top-level
+            // fields, so e.g. "bgp.code" doesn't reach into a nested
+            // optional_parameters capability's "code" field.
+            if let Some(field) = top_level.clone().find(|f| f.name() == self.field)
                 && self.field_value_matches(field, packet, layer)
             {
                 return true;
             }
-            // Virtual _name field match (e.g., "protocol_name=UDP")
+            // Virtual _name field match (e.g., "protocol_name=UDP"),
+            // likewise restricted to top-level base fields.
             if let Some(base_name) = self.field.strip_suffix("_name")
-                && display_name_matches(fields, base_name, self.op, self.value())
+                && display_name_matches(top_level.clone(), fields, base_name, self.op, self.value())
             {
                 return true;
             }
@@ -329,7 +333,8 @@ impl WhereClause {
         match &field.value {
             FieldValue::Object(range) => {
                 let children = packet.nested_fields(range);
-                if let Some(child) = children.iter().find(|f| f.name() == head) {
+                let top_level_children = crate::field_iter::top_level_fields(children, range.start);
+                if let Some(child) = top_level_children.clone().find(|f| f.name() == head) {
                     match tail {
                         Some(rest) => self.nested_field_matches(child, rest, packet, layer),
                         None => self.field_value_matches(child, packet, layer),
@@ -337,7 +342,13 @@ impl WhereClause {
                 } else if tail.is_none() {
                     // Virtual _name fallback: resolve via display_fn
                     head.strip_suffix("_name").is_some_and(|base| {
-                        display_name_matches(children, base, self.op, self.value())
+                        display_name_matches(
+                            top_level_children.clone(),
+                            children,
+                            base,
+                            self.op,
+                            self.value(),
+                        )
                     })
                 } else {
                     false
@@ -355,20 +366,30 @@ impl WhereClause {
 /// Check if a virtual `_name` companion field matches by resolving via `display_fn`.
 ///
 /// When the filter references `X_name` and no real field with that name exists,
-/// this looks for field `X` among `fields`, invokes its `display_fn` with the
-/// sibling slice, and compares the result case-insensitively against `expected`.
+/// this looks for a top-level field `X` (via `top_level`, restricted to the
+/// layer's own direct fields so a nested container's same-named field
+/// can't be matched instead), invokes its `display_fn` with `siblings` —
+/// the full flat field slice, matching what the dissector's `display_fn`
+/// receives during normal serialization — and compares the result
+/// case-insensitively against `expected`.
 ///
 /// The `op` parameter controls how the comparison is performed.  For `Eq` and
 /// `Ne`, case-insensitive string equality is used.  Ordering operators (`Lt`,
 /// `Le`, `Gt`, `Ge`) return `false` because display names are unordered labels.
-fn display_name_matches(fields: &[Field], base_name: &str, op: CompareOp, expected: &str) -> bool {
-    let Some(base_field) = fields.iter().find(|f| f.name() == base_name) else {
+fn display_name_matches(
+    top_level: crate::field_iter::TopLevelFields<'_, '_>,
+    siblings: &[Field],
+    base_name: &str,
+    op: CompareOp,
+    expected: &str,
+) -> bool {
+    let Some(base_field) = top_level.into_iter().find(|f| f.name() == base_name) else {
         return false;
     };
     let Some(dfn) = base_field.descriptor.display_fn else {
         return false;
     };
-    let Some(display_value) = dfn(&base_field.value, fields) else {
+    let Some(display_value) = dfn(&base_field.value, siblings) else {
         return false;
     };
     op.cmp_eq_only(|| display_value.eq_ignore_ascii_case(expected))
@@ -957,6 +978,71 @@ mod tests {
         buf.push_field(
             test_desc_with_display_fn("type", "Type", ie_type_display_fn),
             FieldValue::U32(93), // Bearer Context, not Cause
+            0..0,
+        );
+        buf.end_container(obj);
+        buf.end_container(arr);
+        buf.end_layer();
+        assert!(!wc.matches_packet(&pkt_from(&buf)));
+    }
+
+    #[test]
+    fn test_direct_match_does_not_match_nested_only_field() {
+        // "code" only exists nested inside optional_parameters' capability
+        // objects, not as a top-level BGP field. A direct match on
+        // "bgp.code" must not reach into the nested container.
+        let wc = WhereClause::new("bgp".into(), "code".into(), CompareOp::Eq, "2".into());
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer("BGP", None, &[], 0..0);
+        let arr = buf.begin_container(
+            test_desc("optional_parameters", "Optional Parameters"),
+            FieldValue::Array(0..0),
+            0..0,
+        );
+        let obj = buf.begin_container(
+            test_desc("capability", "Capability"),
+            FieldValue::Object(0..0),
+            0..0,
+        );
+        buf.push_field(test_desc("code", "Code"), FieldValue::U8(2), 0..0);
+        buf.end_container(obj);
+        buf.end_container(arr);
+        buf.end_layer();
+        assert!(!wc.matches_packet(&pkt_from(&buf)));
+    }
+
+    #[test]
+    fn test_display_name_match_does_not_match_nested_only_field() {
+        // Same shape, but for the virtual "_name" companion match: a
+        // nested field's display_fn companion must not be reachable via a
+        // top-level "<field>_name" filter.
+        let wc = WhereClause::new(
+            "bgp".into(),
+            "code_name".into(),
+            CompareOp::Eq,
+            "Multiprotocol Extensions".into(),
+        );
+        fn code_display_fn(v: &FieldValue<'_>, _: &[Field<'_>]) -> Option<&'static str> {
+            match v {
+                FieldValue::U8(1) => Some("Multiprotocol Extensions"),
+                _ => None,
+            }
+        }
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer("BGP", None, &[], 0..0);
+        let arr = buf.begin_container(
+            test_desc("optional_parameters", "Optional Parameters"),
+            FieldValue::Array(0..0),
+            0..0,
+        );
+        let obj = buf.begin_container(
+            test_desc("capability", "Capability"),
+            FieldValue::Object(0..0),
+            0..0,
+        );
+        buf.push_field(
+            test_desc_with_display_fn("code", "Code", code_display_fn),
+            FieldValue::U8(1),
             0..0,
         );
         buf.end_container(obj);

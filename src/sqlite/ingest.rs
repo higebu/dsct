@@ -86,6 +86,17 @@ pub fn build_index(
     // capture is reported without leaving a temporary database behind.
     let reader = CaptureReader::open(opts.capture).context("failed to open capture file")?;
 
+    // `db_path`'s parent (the per-user cache directory by default, see
+    // `sqlite::default_db_path`) may not exist yet on first use.
+    if let Some(parent) = opts.db_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).context(format!(
+            "failed to create index database directory: {}",
+            parent.display()
+        ))?;
+    }
+
     let tmp = temp_path(opts.db_path);
     if tmp.exists() {
         std::fs::remove_file(&tmp).context(format!(
@@ -289,7 +300,7 @@ fn build_into(
 
             let fields = buf.layer_fields(layer);
             let mut extra: Option<serde_json::Map<String, serde_json::Value>> = None;
-            for f in fields {
+            for f in crate::field_iter::top_level_fields(fields, layer.field_range.start) {
                 let v = value::field_value(layer.name, f, buf, data, &layer.range, &mut scratch)?;
                 match spec.field_columns.get(f.name()) {
                     Some(&ci) if values[ci] == SqlValue::Null => {
@@ -521,6 +532,98 @@ mod tests {
         assert!(stored.complete);
         assert_eq!(stored.packet_count, 3);
         assert!(check_fresh(&cap, &db));
+    }
+
+    /// Ethernet / IPv4 / TCP frame carrying `payload` to TCP port 179
+    /// (BGP, RFC 4271), so the registry's port-based dispatch hands it to
+    /// the BGP dissector.
+    fn bgp_over_tcp_frame(payload: &[u8]) -> Vec<u8> {
+        let mut tcp = Vec::new();
+        tcp.extend_from_slice(&40000u16.to_be_bytes());
+        tcp.extend_from_slice(&179u16.to_be_bytes());
+        tcp.extend_from_slice(&0u32.to_be_bytes());
+        tcp.extend_from_slice(&0u32.to_be_bytes());
+        tcp.push(0x50);
+        tcp.push(0x18);
+        tcp.extend_from_slice(&0x2000u16.to_be_bytes());
+        tcp.extend_from_slice(&0u16.to_be_bytes());
+        tcp.extend_from_slice(&0u16.to_be_bytes());
+        tcp.extend_from_slice(payload);
+
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&[0xff; 6]);
+        frame.extend_from_slice(&[0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
+        frame.extend_from_slice(&0x0800u16.to_be_bytes());
+
+        let total_len: u16 = 20 + tcp.len() as u16;
+        frame.push(0x45);
+        frame.push(0x00);
+        frame.extend_from_slice(&total_len.to_be_bytes());
+        frame.extend_from_slice(&0u16.to_be_bytes());
+        frame.extend_from_slice(&0u16.to_be_bytes());
+        frame.push(64);
+        frame.push(6);
+        frame.extend_from_slice(&0u16.to_be_bytes());
+        frame.extend_from_slice(&[10, 0, 0, 1]);
+        frame.extend_from_slice(&[10, 0, 0, 2]);
+        frame.extend_from_slice(&tcp);
+        frame
+    }
+
+    /// Minimal BGP UPDATE message (RFC 4271, Section 4.3): no withdrawn
+    /// routes, a single ORIGIN (type code 1) path attribute, no NLRI. The
+    /// path attribute object's nested `flags`/`type_code`/`attr_length`
+    /// field names don't collide with any of BGP's top-level field
+    /// descriptors, so they're a clean probe for whether nested fields
+    /// leak into the `extra` JSON column under their bare names.
+    fn bgp_update_message() -> Vec<u8> {
+        let path_attrs: Vec<u8> = vec![
+            0x40, // flags
+            1,    // type code: ORIGIN
+            1,    // attribute length
+            0,    // value: IGP
+        ];
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&0u16.to_be_bytes()); // withdrawn routes length
+        body.extend_from_slice(&(path_attrs.len() as u16).to_be_bytes());
+        body.extend_from_slice(&path_attrs);
+
+        let mut msg = Vec::new();
+        msg.extend_from_slice(&[0xff; 16]);
+        let length = (19 + body.len()) as u16;
+        msg.extend_from_slice(&length.to_be_bytes());
+        msg.push(2); // type: UPDATE
+        msg.extend_from_slice(&body);
+        msg
+    }
+
+    /// Regression test: nested fields inside a container (here, a BGP
+    /// path attribute's `flags`/`type_code`/`attr_length`) must not leak
+    /// into the `extra` JSON column under their bare names — only genuine
+    /// unmapped *top-level* fields belong there.
+    #[test]
+    fn extra_column_does_not_contain_nested_field_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let frame = bgp_over_tcp_frame(&bgp_update_message());
+        let cap = write_capture(dir.path(), &[frame]);
+        let db = dir.path().join("cap.sqlite");
+        build(&cap, &db).unwrap();
+
+        let conn = Connection::open(&db).unwrap();
+        let extra: Option<String> = conn
+            .query_row("SELECT extra FROM bgp WHERE packet_number = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let extra = extra.unwrap_or_default();
+        for leaked in ["flags", "type_code", "attr_length"] {
+            assert!(
+                !extra.contains(&format!("\"{leaked}\"")),
+                "extra column must not contain nested field \"{leaked}\" at \
+                 the top level: {extra}"
+            );
+        }
     }
 
     fn check_fresh(cap: &Path, db: &Path) -> bool {

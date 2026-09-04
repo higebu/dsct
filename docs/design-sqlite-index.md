@@ -38,7 +38,7 @@ src/sqlite/ingest.rs -- build_index: 一時ファイルに構築して rename
 src/sqlite/query.rs  -- 読み取り専用実行、行の JSONL 出力、--schema 用のスキーマ記述
 ```
 
-## スキーマ（`schema_version = 1`）
+## スキーマ（`schema_version = 2`）
 
 - `meta(key, value)`: `schema_version`, `dsct_version`, `protocols`（ソート済み
   短名）, `source_path`, `source_size`, `source_mtime_ns`, `decode_as`, `esp_sa`,
@@ -52,7 +52,10 @@ src/sqlite/query.rs  -- 読み取り専用実行、行の JSONL 出力、--schem
   （基本テーブル名と衝突する場合は `proto_` 接頭辞）。列は
   `packet_number, layer_index, depth` + 最上位 `FieldDescriptor` ごとの列
   （`display_fn` を持つ列には `<name>_name TEXT` を追加）+ `extra TEXT`
-  （記述子に無い実行時フィールドの JSON）。予約名と衝突するフィールドは
+  （記述子に無い実行時フィールドの JSON。あくまで最上位フィールドのみが対象で、
+  Array/Object の子要素はここには含まれない — `field_iter::top_level_fields` で
+  ネストした子フィールドをスキップしてから列/`extra` への割り当てを行う）。
+  予約名と衝突するフィールドは
   `field_<name>`。`TCP`/`UDP`/`SCTP` には `flow_id, direction`、`TCP` にはさらに
   `payload_len, seq_rel, ack_rel, next_seq`
 - `flows(id PK, transport, depth, addr_a, port_a, addr_b, port_b,

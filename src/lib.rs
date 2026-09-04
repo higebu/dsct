@@ -21,6 +21,8 @@ pub mod field_config;
 #[doc(hidden)]
 pub mod field_format;
 #[doc(hidden)]
+pub mod field_iter;
+#[doc(hidden)]
 pub mod filter;
 #[doc(hidden)]
 pub mod filter_expr;

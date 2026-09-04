@@ -88,17 +88,46 @@ impl FieldConfig {
 
     fn from_toml(toml_str: &str) -> Result<Self> {
         let raw: RawConfig = toml::from_str(toml_str)?;
-        let mut protocols = HashMap::with_capacity(raw.protocols.len());
-
+        let mut protocols = Vec::with_capacity(raw.protocols.len());
         for (name, raw_proto) in raw.protocols {
             let fields = raw_proto.fields.ok_or_else(|| {
                 DsctError::msg(format!("protocol '{name}': must specify 'fields'"))
             })?;
-            let filter = parse_field_filter(fields)?;
-            protocols.insert(name, filter);
+            protocols.push((name, fields));
         }
+        Self::from_protocol_patterns(protocols)
+    }
 
-        Ok(Self { protocols })
+    /// Build a config directly from patterns already grouped by protocol
+    /// (using the same key a layer's `Layer::name` would have, e.g.
+    /// `"BGP"`, `"TCP"`), reusing the same per-protocol pattern syntax as
+    /// `default_fields.toml`'s `fields` lists.
+    ///
+    /// Used to build a [`FieldConfig`] on the fly from a request parameter
+    /// (e.g. `dsct_read_packets`'s `fields`) rather than from the embedded
+    /// TOML.
+    pub fn from_protocol_patterns<I>(protocols: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = (String, Vec<String>)>,
+    {
+        let mut map = HashMap::new();
+        for (name, patterns) in protocols {
+            let filter = parse_field_filter(patterns)?;
+            map.insert(name, filter);
+        }
+        Ok(Self { protocols: map })
+    }
+
+    /// Overwrite (or insert) this config's per-protocol filters with those
+    /// from `other`, keeping this config's existing filter for any
+    /// protocol `other` doesn't mention.
+    ///
+    /// Used to layer an explicit per-request override (e.g.
+    /// `dsct_read_packets`'s `fields` parameter) onto the default or
+    /// verbose field visibility without discarding it for protocols the
+    /// override doesn't name.
+    pub fn merge_overrides(&mut self, other: FieldConfig) {
+        self.protocols.extend(other.protocols);
     }
 
     /// Returns `true` if the given top-level field name should be shown.
@@ -245,6 +274,103 @@ fn parse_patterns(patterns: Vec<String>) -> Result<PatternSet> {
 mod tests {
     use super::*;
 
+    /// Every `_name` companion pattern in `default_fields.toml` must have a
+    /// corresponding base field in the dissector's descriptor tree.
+    ///
+    /// `_name` companion fields are synthesized by the serializer from a
+    /// descriptor's `display_fn` (see `emit_virtual_name_field` in
+    /// `serialize.rs`) as `"<base field name>_name"`. A pattern like
+    /// `"path_attributes.type_name"` only matches something real if the
+    /// dissector actually has a `path_attributes` child field named `type`
+    /// with a `display_fn` — otherwise the pattern is dead and the real
+    /// companion field (e.g. `type_code_name`) stays unmatched, so the
+    /// value the field is meant to disambiguate never appears in
+    /// non-verbose output. This walks every protocol's raw pattern list and
+    /// checks the base field exists among the corresponding descriptor's
+    /// children (or the protocol's top-level fields), catching drift
+    /// between `default_fields.toml` and the dissector crates it targets.
+    #[test]
+    fn name_patterns_have_existing_base_fields() {
+        use packet_dissector::registry::DissectorRegistry;
+
+        let raw: RawConfig = toml::from_str(DEFAULT_CONFIG).unwrap();
+        let registry = DissectorRegistry::default();
+        let schemas = registry.all_field_schemas();
+
+        let mut failures = Vec::new();
+
+        for (protocol, raw_proto) in &raw.protocols {
+            let Some(fields) = &raw_proto.fields else {
+                continue;
+            };
+            // Some config protocol keys (e.g. "GTPv1-U") don't match a
+            // compiled-in dissector short_name in every feature
+            // combination; skip protocols with no matching schema instead
+            // of failing, since feature-gating is out of scope here.
+            let Some(schema) = schemas.iter().find(|s| s.short_name == protocol) else {
+                continue;
+            };
+
+            for pattern in fields {
+                // Only check exact (non-wildcard) patterns whose last
+                // segment ends with "_name" — prefix/suffix wildcards
+                // (e.g. "*_timestamp", "flags_names") aren't `_name`
+                // companion references in the same sense.
+                let (parent, last_segment) = match pattern.split_once('.') {
+                    Some((p, c)) => (Some(p), c),
+                    None => (None, pattern.as_str()),
+                };
+                if last_segment.contains('*') {
+                    continue;
+                }
+                let Some(base) = last_segment.strip_suffix("_name") else {
+                    continue;
+                };
+                if base.is_empty() {
+                    continue;
+                }
+
+                let scope_children =
+                    || -> Option<&[packet_dissector_core::field::FieldDescriptor]> {
+                        match parent {
+                            None => Some(schema.fields),
+                            Some(parent_name) => schema
+                                .fields
+                                .iter()
+                                .find(|fd| fd.name == parent_name)
+                                .and_then(|fd| fd.children),
+                        }
+                    };
+
+                // A field literally named `last_segment` (e.g. DHCP's real
+                // "domain_name" option, or TLS's real "server_name"
+                // extension field) is not a synthesized `_name` companion
+                // pattern at all — skip it.
+                let is_real_field = scope_children()
+                    .is_some_and(|children| children.iter().any(|fd| fd.name == last_segment));
+                if is_real_field {
+                    continue;
+                }
+
+                let found = scope_children()
+                    .is_some_and(|children| children.iter().any(|fd| fd.name == base));
+
+                if !found {
+                    failures.push(format!(
+                        "[{protocol}] pattern \"{pattern}\" has no base field \"{base}\" in the {} descriptor tree",
+                        parent.unwrap_or(protocol.as_str())
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "default_fields.toml has _name patterns with no matching base field:\n{}",
+            failures.join("\n")
+        );
+    }
+
     #[test]
     fn default_config_parses() {
         let config = FieldConfig::default_config().unwrap();
@@ -340,6 +466,64 @@ mod tests {
         .unwrap();
         assert!(config.should_include("UnknownProto", "anything"));
         assert!(config.should_include_nested("UnknownProto", "parent", "child"));
+    }
+
+    #[test]
+    fn from_protocol_patterns_builds_a_working_config() {
+        let config = FieldConfig::from_protocol_patterns([
+            ("BGP".to_owned(), vec!["nlri".to_owned()]),
+            (
+                "TCP".to_owned(),
+                vec!["src_port".to_owned(), "*_port".to_owned()],
+            ),
+        ])
+        .unwrap();
+        assert!(config.should_include("BGP", "nlri"));
+        assert!(!config.should_include("BGP", "path_attributes"));
+        assert!(config.should_include("TCP", "dst_port"));
+        assert!(!config.should_include("TCP", "flags"));
+        // Untouched protocol: shows everything, same as an unknown protocol.
+        assert!(config.should_include("IPv4", "anything"));
+    }
+
+    #[test]
+    fn from_protocol_patterns_propagates_pattern_errors() {
+        let result = FieldConfig::from_protocol_patterns([(
+            "BGP".to_owned(),
+            vec!["path_attributes.foo.bar".to_owned()],
+        )]);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("only one level of dot nesting")
+        );
+    }
+
+    #[test]
+    fn merge_overrides_replaces_named_protocols_and_keeps_others() {
+        let mut base = FieldConfig::from_toml(
+            r#"
+            [BGP]
+            fields = ["type_name"]
+            [TCP]
+            fields = ["src_port", "dst_port"]
+            "#,
+        )
+        .unwrap();
+        let override_cfg =
+            FieldConfig::from_protocol_patterns([("BGP".to_owned(), vec!["nlri".to_owned()])])
+                .unwrap();
+
+        base.merge_overrides(override_cfg);
+
+        // BGP: fully replaced by the override.
+        assert!(base.should_include("BGP", "nlri"));
+        assert!(!base.should_include("BGP", "type_name"));
+        // TCP: untouched, still the original default.
+        assert!(base.should_include("TCP", "src_port"));
+        assert!(!base.should_include("TCP", "flags"));
     }
 
     #[test]

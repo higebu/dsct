@@ -116,6 +116,11 @@ pub(crate) struct DsctQuerySqlParams {
     /// Return the index schema instead of running a query.
     #[serde(default)]
     pub schema: bool,
+    /// With `schema: true`, restrict the schema to these table/view names
+    /// and return full column detail for them (instead of the default
+    /// compact summary of every table).
+    #[serde(default, deserialize_with = "string_or_vec")]
+    pub tables: Vec<String>,
     /// Maximum rows to return (defaults to the server's default count).
     #[serde(default)]
     pub count: Option<u64>,
@@ -370,7 +375,14 @@ fn do_query_sql_inner(
 
     if params.schema {
         let registry = DissectorRegistry::default();
-        let mut schema = describe_schema(&conn, &protocol_tables(&registry))?;
+        let table_filter = (!params.tables.is_empty()).then_some(params.tables.as_slice());
+        // Bare `schema: true` returns a compact summary (name/kind/
+        // column_count only) to stay within LLM context limits; passing
+        // `tables` switches to full column detail restricted to those
+        // tables/views.
+        let compact = table_filter.is_none();
+        let mut schema =
+            describe_schema(&conn, &protocol_tables(&registry), table_filter, compact)?;
         schema["index"] = index_info;
         return Ok(schema);
     }
@@ -508,6 +520,8 @@ mod tests {
         #[test]
         fn query_sql_builds_index_and_returns_rows() {
             let dir = tempfile::tempdir().unwrap();
+            let cache_dir = tempfile::tempdir().unwrap();
+            let _cache_guard = crate::sqlite::test_support::CacheDirGuard::set(cache_dir.path());
             let cap = dir.path().join("c.pcap");
             std::fs::write(&cap, udp_pcap(3)).unwrap();
             let limits = ResourceLimits::default();
@@ -545,6 +559,8 @@ mod tests {
         #[test]
         fn query_sql_schema_mode() {
             let dir = tempfile::tempdir().unwrap();
+            let cache_dir = tempfile::tempdir().unwrap();
+            let _cache_guard = crate::sqlite::test_support::CacheDirGuard::set(cache_dir.path());
             let cap = dir.path().join("c.pcap");
             std::fs::write(&cap, udp_pcap(1)).unwrap();
             let limits = ResourceLimits::default();
@@ -555,11 +571,57 @@ mod tests {
             .unwrap();
             assert!(result["tables"].is_array());
             assert_eq!(result["index"]["built"], true);
+
+            // Bare schema: true is compact — no columns array, just counts.
+            let entries = result["tables"].as_array().unwrap();
+            assert!(!entries.is_empty());
+            let udp = entries.iter().find(|t| t["name"] == "udp").unwrap();
+            assert!(udp["column_count"].as_u64().unwrap() > 0);
+            assert!(udp.get("columns").is_none(), "{udp}");
+        }
+
+        #[test]
+        fn query_sql_schema_mode_with_tables_returns_full_detail() {
+            let dir = tempfile::tempdir().unwrap();
+            let cache_dir = tempfile::tempdir().unwrap();
+            let _cache_guard = crate::sqlite::test_support::CacheDirGuard::set(cache_dir.path());
+            let cap = dir.path().join("c.pcap");
+            std::fs::write(&cap, udp_pcap(1)).unwrap();
+            let limits = ResourceLimits::default();
+
+            let result = do_query_sql(
+                serde_json::json!({
+                    "file": cap.to_str().unwrap(),
+                    "schema": true,
+                    "tables": "udp",
+                }),
+                &limits,
+            )
+            .unwrap();
+            let entries = result["tables"].as_array().unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0]["name"], "udp");
+            assert!(entries[0]["columns"].is_array());
+            assert!(!entries[0]["columns"].as_array().unwrap().is_empty());
+
+            // Unknown table name is a structured invalid-argument error.
+            let err = do_query_sql(
+                serde_json::json!({
+                    "file": cap.to_str().unwrap(),
+                    "schema": true,
+                    "tables": ["no_such_table"],
+                }),
+                &limits,
+            )
+            .unwrap_err();
+            assert!(err.contains("no_such_table"), "{err}");
         }
 
         #[test]
         fn query_sql_rejects_writes_and_missing_args() {
             let dir = tempfile::tempdir().unwrap();
+            let cache_dir = tempfile::tempdir().unwrap();
+            let _cache_guard = crate::sqlite::test_support::CacheDirGuard::set(cache_dir.path());
             let cap = dir.path().join("c.pcap");
             std::fs::write(&cap, udp_pcap(1)).unwrap();
             let limits = ResourceLimits::default();

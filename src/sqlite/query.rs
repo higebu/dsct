@@ -168,11 +168,30 @@ pub fn run_query(
     })
 }
 
-/// Describe the database layout as JSON for `dsct sql --schema`.
+/// Describe the database layout as JSON for `dsct sql --schema` /
+/// `dsct_query_sql`'s `schema: true`.
 ///
 /// `tables` are the protocol table specifications of the current build,
 /// used to attach field descriptions to columns.
-pub fn describe_schema(conn: &Connection, tables: &[TableSpec]) -> Result<serde_json::Value> {
+///
+/// `table_filter`, when `Some`, restricts the result to just those
+/// table/view names (an unknown name is a structured `invalid_argument`
+/// error listing the available names) and always returns full column
+/// detail for them regardless of `compact`. When `None`, every table/view
+/// is described.
+///
+/// `compact` drops each entry down to `name`, `kind` and `column_count`
+/// (no `columns` array, `description` or `protocol`) — the full
+/// per-column detail for every table is large enough (~100K characters
+/// across every protocol table) to be worth avoiding by default for
+/// callers, like `dsct_query_sql`, that just want to see what's there
+/// before asking for one table's columns via `table_filter`.
+pub fn describe_schema(
+    conn: &Connection,
+    tables: &[TableSpec],
+    table_filter: Option<&[String]>,
+    compact: bool,
+) -> Result<serde_json::Value> {
     let stored = meta::read(conn)?;
     let mut stmt = conn.prepare(
         "SELECT name, type FROM sqlite_master \
@@ -183,18 +202,58 @@ pub fn describe_schema(conn: &Connection, tables: &[TableSpec]) -> Result<serde_
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
 
+    if let Some(filter) = table_filter {
+        let known: std::collections::HashSet<&str> =
+            objects.iter().map(|(n, _)| n.as_str()).collect();
+        let mut unknown: Vec<&str> = filter
+            .iter()
+            .map(String::as_str)
+            .filter(|n| !known.contains(n))
+            .collect();
+        if !unknown.is_empty() {
+            unknown.sort_unstable();
+            unknown.dedup();
+            let mut available: Vec<&str> = known.into_iter().collect();
+            available.sort_unstable();
+            return Err(DsctError::invalid_argument(format!(
+                "unknown table(s) in \"tables\": {unknown:?}; available: {available:?}"
+            )));
+        }
+    }
+
+    // An explicit `table_filter` always gets full detail, regardless of
+    // `compact` — narrowing to specific tables is exactly how a caller
+    // that started with the compact summary asks for their columns.
+    let compact = compact && table_filter.is_none();
+
     let mut out = Vec::with_capacity(objects.len());
     for (name, kind) in objects {
+        if let Some(filter) = table_filter
+            && !filter.iter().any(|f| f == &name)
+        {
+            continue;
+        }
         let spec = tables.iter().find(|t| t.name == name);
         let mut cols_stmt =
             conn.prepare(&format!("PRAGMA table_info({})", ddl::quote_ident(&name)))?;
-        let columns: Vec<serde_json::Value> = cols_stmt
+        let raw_columns: Vec<(String, String)> = cols_stmt
             .query_map([], |r| {
                 let col: String = r.get(1)?;
                 let ty: String = r.get(2)?;
                 Ok((col, ty))
             })?
-            .collect::<rusqlite::Result<Vec<_>>>()?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        if compact {
+            out.push(serde_json::json!({
+                "name": name,
+                "kind": kind,
+                "column_count": raw_columns.len(),
+            }));
+            continue;
+        }
+
+        let columns: Vec<serde_json::Value> = raw_columns
             .into_iter()
             .map(|(col, ty)| {
                 let description = spec
@@ -414,7 +473,7 @@ mod tests {
         let tables = ddl::protocol_tables(&registry);
         let conn = Connection::open_in_memory().unwrap();
         ddl::create_schema(&conn, &tables).unwrap();
-        let schema = describe_schema(&conn, &tables).unwrap();
+        let schema = describe_schema(&conn, &tables, None, false).unwrap();
         let names: Vec<&str> = schema["tables"]
             .as_array()
             .unwrap()
@@ -458,5 +517,69 @@ mod tests {
         assert!(schema["hints"].is_array());
         // The meta table exists but nothing was written yet.
         assert_eq!(schema["index"]["complete"], false);
+    }
+
+    #[test]
+    fn describe_schema_compact_omits_columns() {
+        let registry = packet_dissector::registry::DissectorRegistry::default();
+        let tables = ddl::protocol_tables(&registry);
+        let conn = Connection::open_in_memory().unwrap();
+        ddl::create_schema(&conn, &tables).unwrap();
+
+        let schema = describe_schema(&conn, &tables, None, true).unwrap();
+        let entries = schema["tables"].as_array().unwrap();
+        assert!(!entries.is_empty());
+        let tcp = entries.iter().find(|t| t["name"] == "tcp").unwrap();
+        assert_eq!(tcp["kind"], "table");
+        assert!(
+            tcp["column_count"].as_u64().unwrap() > 0,
+            "column_count should be populated"
+        );
+        assert!(
+            tcp.get("columns").is_none(),
+            "compact mode must not include the columns array: {tcp}"
+        );
+        assert!(
+            tcp.get("description").is_none(),
+            "compact mode must not include description: {tcp}"
+        );
+    }
+
+    #[test]
+    fn describe_schema_table_filter_restricts_and_gives_full_detail() {
+        let registry = packet_dissector::registry::DissectorRegistry::default();
+        let tables = ddl::protocol_tables(&registry);
+        let conn = Connection::open_in_memory().unwrap();
+        ddl::create_schema(&conn, &tables).unwrap();
+
+        let filter = vec!["tcp".to_owned()];
+        // Even with compact = true, an explicit table_filter always gets
+        // full column detail.
+        let schema = describe_schema(&conn, &tables, Some(&filter), true).unwrap();
+        let entries = schema["tables"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["name"], "tcp");
+        assert!(entries[0]["columns"].is_array());
+        assert!(!entries[0]["columns"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn describe_schema_unknown_table_filter_is_invalid_argument() {
+        let registry = packet_dissector::registry::DissectorRegistry::default();
+        let tables = ddl::protocol_tables(&registry);
+        let conn = Connection::open_in_memory().unwrap();
+        ddl::create_schema(&conn, &tables).unwrap();
+
+        let filter = vec!["no_such_table".to_owned()];
+        let err = describe_schema(&conn, &tables, Some(&filter), false).unwrap_err();
+        assert_eq!(
+            err.category(),
+            crate::error::ErrorCategory::InvalidArguments
+        );
+        assert!(err.to_string().contains("no_such_table"));
+        assert!(
+            err.to_string().contains("tcp"),
+            "should list available names"
+        );
     }
 }

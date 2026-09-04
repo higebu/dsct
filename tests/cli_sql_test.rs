@@ -1,17 +1,39 @@
 //! CLI tests for `dsct index` and `dsct sql`.
 //!
 //! All captures are synthesized inline (no fixtures on disk).  Each test
-//! writes its capture into a private temporary directory so the sidecar
-//! `<capture>.dsct.sqlite` is removed together with it.
+//! writes its capture into a private temporary directory that is removed
+//! together with it. The index database itself now lives in a per-user
+//! cache directory rather than next to the capture (see
+//! `sqlite::default_db_path`), so every `dsct` invocation here is routed
+//! through [`dsct`]/[`sql`], which pin `DSCT_CACHE_DIR` to [`TEST_CACHE_DIR`]
+//! — an isolated directory under the system temp dir — instead of letting
+//! it fall through to the real `$HOME/.cache/dsct` of whatever machine runs
+//! the tests. Different captures never collide there (the cache file name
+//! embeds a hash of the capture's canonicalised absolute path), so sharing
+//! one directory across every test in this binary is safe.
 
 #![cfg(feature = "sqlite")]
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
+use std::sync::LazyLock;
 
 use assert_cmd::Command;
 use serde_json::Value;
 use tempfile::TempDir;
+
+/// Shared, isolated `DSCT_CACHE_DIR` for every `dsct` invocation in this
+/// test binary (see the module doc comment). Not explicitly cleaned up —
+/// statics aren't dropped at process exit — but it lives under the system
+/// temp directory, not a real user cache dir, so this is bounded to one
+/// leftover directory per test-binary run rather than accumulating in
+/// `$HOME/.cache/dsct`.
+static TEST_CACHE_DIR: LazyLock<TempDir> = LazyLock::new(|| {
+    tempfile::Builder::new()
+        .prefix("dsct-cli-sql-test-cache-")
+        .tempdir()
+        .expect("failed to create shared test cache dir")
+});
 
 // ---------------------------------------------------------------------------
 // Frame builders
@@ -181,17 +203,58 @@ fn build_pcap(frames: &[Vec<u8>]) -> Vec<u8> {
 }
 
 /// Write a capture into a fresh temporary directory.
+///
+/// The file name embeds a per-process-unique counter: all tests share one
+/// [`TEST_CACHE_DIR`], and cache-dir database file names are looked up by
+/// capture file name prefix (see [`db_candidates`]), so two tests both
+/// naming their capture e.g. `capture.pcap` would otherwise be
+/// indistinguishable there even though they live in different capture
+/// directories.
 fn write_capture(frames: &[Vec<u8>]) -> (TempDir, PathBuf) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("capture.pcap");
+    let path = dir.path().join(format!("capture-{n}.pcap"));
     std::fs::write(&path, build_pcap(frames)).unwrap();
     (dir, path)
 }
 
-fn sidecar(capture: &Path) -> PathBuf {
-    let mut s = capture.as_os_str().to_os_string();
-    s.push(".dsct.sqlite");
-    PathBuf::from(s)
+/// Cache-dir database files dsct has built for `capture` (matched by file
+/// name prefix + `.dsct.sqlite` suffix — see `sqlite::default_db_path`).
+/// Normally 0 or 1; more would mean a hash collision or leftover state
+/// from another test sharing [`TEST_CACHE_DIR`].
+fn db_candidates(capture: &Path) -> Vec<PathBuf> {
+    let prefix = format!("{}-", capture.file_name().unwrap().to_str().unwrap());
+    std::fs::read_dir(TEST_CACHE_DIR.path())
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".dsct.sqlite"))
+        })
+        .collect()
+}
+
+/// Whether dsct has built a cache-dir database for `capture`.
+fn db_exists_for(capture: &Path) -> bool {
+    !db_candidates(capture).is_empty()
+}
+
+/// The cache-dir database file dsct built for `capture`. Panics unless
+/// there is exactly one.
+fn db_path_for(capture: &Path) -> PathBuf {
+    let mut candidates = db_candidates(capture);
+    assert_eq!(
+        candidates.len(),
+        1,
+        "expected exactly one cache-dir db for {capture:?}, found {candidates:?}"
+    );
+    candidates.remove(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +265,7 @@ fn dsct(args: &[&str]) -> Output {
     Command::cargo_bin("dsct")
         .unwrap()
         .args(args)
+        .env("DSCT_CACHE_DIR", TEST_CACHE_DIR.path())
         .output()
         .unwrap()
 }
@@ -245,7 +309,7 @@ fn assert_invalid_arguments(output: &Output) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn sql_matches_read_output_and_builds_sidecar() {
+fn sql_matches_read_output_and_builds_cache_db() {
     let (_dir, cap) = write_capture(&[plain_udp_frame(), dns_frame(), gre_frame()]);
 
     let read = dsct(&["read", "--no-limit", cap.to_str().unwrap()]);
@@ -258,7 +322,7 @@ fn sql_matches_read_output_and_builds_sidecar() {
         assert_eq!(a["number"], b["number"]);
         assert_eq!(a["stack"], b["stack"]);
     }
-    assert!(sidecar(&cap).exists(), "sidecar index should be created");
+    assert!(db_exists_for(&cap), "cache-dir index should be created");
     // First build: no rebuild warning.
     assert!(
         stderr_json(&out)
@@ -272,7 +336,7 @@ fn second_query_reuses_index_and_changed_capture_rebuilds() {
     let (_dir, cap) = write_capture(&[plain_udp_frame()]);
     let first = rows(&sql(&cap, "SELECT COUNT(*) AS n FROM packets"));
     assert_eq!(first[0]["n"], 1);
-    let mtime = std::fs::metadata(sidecar(&cap))
+    let mtime = std::fs::metadata(db_path_for(&cap))
         .unwrap()
         .modified()
         .unwrap();
@@ -281,7 +345,7 @@ fn second_query_reuses_index_and_changed_capture_rebuilds() {
     assert_eq!(rows(&second)[0]["n"], 1);
     assert!(stderr_json(&second).is_empty(), "no warnings expected");
     assert_eq!(
-        std::fs::metadata(sidecar(&cap))
+        std::fs::metadata(db_path_for(&cap))
             .unwrap()
             .modified()
             .unwrap(),
@@ -307,7 +371,7 @@ fn no_build_without_index_is_invalid_arguments() {
     let (_dir, cap) = write_capture(&[plain_udp_frame()]);
     let out = dsct(&["sql", "--no-build", cap.to_str().unwrap(), "SELECT 1"]);
     assert_invalid_arguments(&out);
-    assert!(!sidecar(&cap).exists());
+    assert!(!db_exists_for(&cap));
 }
 
 #[test]
@@ -495,7 +559,8 @@ fn schema_flag_describes_database() {
     let out = dsct(&["sql", "--schema", cap.to_str().unwrap()]);
     assert!(out.status.success());
     let schema: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(schema["schema_version"], 1);
+    // Keep in sync with `sqlite::SCHEMA_VERSION` in src/sqlite/mod.rs.
+    assert_eq!(schema["schema_version"], 2);
     let tables = schema["tables"].as_array().unwrap();
     let names: Vec<&str> = tables.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
@@ -526,6 +591,37 @@ fn schema_flag_describes_database() {
     assert_eq!(schema["index"]["packets"], 1);
     assert_eq!(schema["index"]["complete"], true);
     assert!(schema["hints"].is_array());
+}
+
+#[test]
+fn schema_flag_with_tables_restricts_output() {
+    let (_dir, cap) = write_capture(&[plain_udp_frame()]);
+    let out = dsct(&[
+        "sql",
+        "--schema",
+        "--tables",
+        "tcp,udp",
+        cap.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{out:?}");
+    let schema: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let tables = schema["tables"].as_array().unwrap();
+    let names: Vec<&str> = tables.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(names.len(), 2);
+    assert!(names.contains(&"tcp"));
+    assert!(names.contains(&"udp"));
+    let tcp = tables.iter().find(|t| t["name"] == "tcp").unwrap();
+    // The CLI always prints full column detail, even restricted to --tables.
+    assert!(!tcp["columns"].as_array().unwrap().is_empty());
+
+    let bad = dsct(&[
+        "sql",
+        "--schema",
+        "--tables",
+        "no_such_table",
+        cap.to_str().unwrap(),
+    ]);
+    assert_invalid_arguments(&bad);
 }
 
 #[test]
@@ -577,7 +673,11 @@ fn existing_database_can_be_queried_directly() {
     assert_eq!(info["packets"], 2);
     assert_eq!(info["flows"], 2);
     let db = PathBuf::from(info["db"].as_str().unwrap());
-    assert_eq!(db, sidecar(&cap));
+    assert_eq!(db, db_path_for(&cap));
+    assert!(
+        db.starts_with(TEST_CACHE_DIR.path()),
+        "default db path should live in the cache dir: {db:?}"
+    );
 
     // Querying the database file itself never rebuilds, even after the
     // capture disappears.
@@ -627,7 +727,7 @@ fn index_with_custom_db_path_and_progress() {
     ]);
     assert!(out.status.success());
     assert!(db.exists());
-    assert!(!sidecar(&cap).exists());
+    assert!(!db_exists_for(&cap));
     let progress = stderr_json(&out);
     assert_eq!(progress.len(), 1);
     assert_eq!(progress[0]["progress"]["packets_processed"], 2);
@@ -698,10 +798,7 @@ fn invalid_capture_is_invalid_format() {
         stderr_json(&out).last().unwrap()["error"]["code"],
         "invalid_format"
     );
-    assert!(
-        !sidecar(&cap).exists(),
-        "no partial index may be left behind"
-    );
+    assert!(!db_exists_for(&cap), "no partial index may be left behind");
 }
 
 #[test]

@@ -172,7 +172,10 @@ struct IndexOptions {
     file: PathBuf,
 
     /// Path of the SQLite index to write.
-    /// Default: `<FILE>.dsct.sqlite` next to the capture file.
+    /// Default: `<name>-<hash>.dsct.sqlite` in the dsct cache directory
+    /// (`$DSCT_CACHE_DIR`, else `$XDG_CACHE_HOME/dsct`, else
+    /// `$HOME/.cache/dsct`; falls back to `<FILE>.dsct.sqlite` next to the
+    /// capture file if none of those can be determined).
     #[arg(long)]
     db: Option<PathBuf>,
 
@@ -207,8 +210,12 @@ struct SqlOptions {
     /// "SELECT * FROM tcp_segments WHERE flow_id = 0 ORDER BY packet_number".
     query: Option<String>,
 
-    /// Path of the SQLite index. Default: `<FILE>.dsct.sqlite` next to the
-    /// capture file. Ignored when FILE is itself a SQLite database.
+    /// Path of the SQLite index.
+    /// Default: `<name>-<hash>.dsct.sqlite` in the dsct cache directory
+    /// (`$DSCT_CACHE_DIR`, else `$XDG_CACHE_HOME/dsct`, else
+    /// `$HOME/.cache/dsct`; falls back to `<FILE>.dsct.sqlite` next to the
+    /// capture file if none of those can be determined).
+    /// Ignored when FILE is itself a SQLite database.
     #[arg(long)]
     db: Option<PathBuf>,
 
@@ -228,6 +235,14 @@ struct SqlOptions {
     /// instead of running a query.
     #[arg(long)]
     schema: bool,
+
+    /// With --schema, restrict the schema to these table/view names
+    /// (comma-separated or repeated). Full column detail is still printed
+    /// for the requested tables — this only narrows which ones appear.
+    /// An unknown name is an error listing the available names. Ignored
+    /// without --schema.
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
 
     /// Report index-build progress to stderr every N packets (as JSON).
     #[arg(long)]
@@ -807,6 +822,7 @@ fn cmd_sql(opts: SqlOptions) -> Result<()> {
         no_limit,
         no_build,
         schema: show_schema,
+        tables: table_filter,
         progress,
         decode_as: decode_as_args,
         esp_sa: esp_sa_args,
@@ -846,7 +862,13 @@ fn cmd_sql(opts: SqlOptions) -> Result<()> {
     if show_schema {
         let registry = DissectorRegistry::default();
         let tables = protocol_tables(&registry);
-        let value = describe_schema(&conn, &tables)?;
+        let filter = (!table_filter.is_empty()).then_some(table_filter.as_slice());
+        // The CLI always prints full column detail, restricted to
+        // `--tables` when given — unlike `dsct_query_sql`'s MCP tool,
+        // whose bare `schema: true` defaults to a compact summary to stay
+        // within LLM context limits. There is no size pressure printing
+        // to a terminal/pipe, so keep this backward compatible.
+        let value = describe_schema(&conn, &tables, filter, false)?;
         serde_json::to_writer_pretty(&mut writer, &value)?;
         writeln!(writer)?;
         writer.flush()?;

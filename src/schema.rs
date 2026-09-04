@@ -209,6 +209,9 @@ pub fn fd_to_json(
         "protocol": schema_short,
         "protocol_name": schema_name,
     });
+    if fd.display_fn.is_some() {
+        entry["name_field"] = serde_json::Value::String(format!("{}_name", fd.name));
+    }
     if let Some(children) = fd.children {
         let child_entries: Vec<serde_json::Value> = children
             .iter()
@@ -271,5 +274,32 @@ mod tests {
         assert_eq!(field_type_str(FieldType::Str), "str");
         assert_eq!(field_type_str(FieldType::Array), "array");
         assert_eq!(field_type_str(FieldType::Object), "object");
+    }
+
+    #[test]
+    fn fd_to_json_reports_name_field_when_display_fn_present() {
+        fn dummy_display_fn(
+            _v: &packet_dissector_core::field::FieldValue<'_>,
+            _siblings: &[packet_dissector_core::field::Field<'_>],
+        ) -> Option<&'static str> {
+            None
+        }
+
+        let with_display_fn = FieldDescriptor {
+            name: "type_code",
+            display_name: "Type Code",
+            field_type: FieldType::U8,
+            optional: false,
+            children: None,
+            display_fn: Some(dummy_display_fn),
+            format_fn: None,
+        };
+        let entry = fd_to_json(&with_display_fn, "path_attributes", "BGP", "BGP");
+        assert_eq!(entry["name_field"], "type_code_name");
+
+        let without_display_fn =
+            FieldDescriptor::new("attr_length", "Attribute Length", FieldType::U16);
+        let entry = fd_to_json(&without_display_fn, "path_attributes", "BGP", "BGP");
+        assert!(entry.get("name_field").is_none());
     }
 }

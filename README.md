@@ -235,12 +235,12 @@ Run `--help` on any command for the full option list.
 
 | Tool | Description |
 | --- | --- |
-| `dsct_read_packets` | Dissect packets from a pcap/pcapng capture file. Returns an array of dissected packet objects with protocol layers and fields. |
+| `dsct_read_packets` | Dissect packets from a pcap/pcapng capture file. Returns an array of dissected packet objects with protocol layers and fields; `layers`/`fields` trim large protocols (e.g. BGP) down to what you need. |
 | `dsct_get_stats` | Get protocol statistics from a capture file. Returns packet counts, timing, protocol distribution, and optional deep analysis. |
-| `dsct_list_protocols` | List all supported protocols with their specification references and layer information. |
-| `dsct_list_fields` | List available field names for protocols. Fields can be used with `dsct_read_packets` for filtering. |
+| `dsct_list_protocols` | List all supported protocols. Each entry has `name` (short protocol name, usable in filter expressions and as the `protocol` argument to `dsct_list_fields`) and `full_name` (the protocol's full name). |
+| `dsct_list_fields` | List available field names for protocols. Each entry has a `qualified_name` usable with `dsct_read_packets`'s `filter`/`fields`, and `name_field` when a `_name` companion is filterable. |
 | `dsct_get_schema` | Get the JSON schema for command output formats (`read`, `stats` or `sql`). |
-| `dsct_query_sql` | Run a read-only SQL query against the capture's SQLite index (built on first use). Returns result rows plus index status; `schema: true` returns the table layout. |
+| `dsct_query_sql` | Run a read-only SQL query against the capture's SQLite index (built on first use). Returns result rows plus index status; `schema: true` returns a compact table summary, or full column detail when `tables` is given. |
 
 ### Protocol versions
 
@@ -255,7 +255,25 @@ The server speaks both protocol eras and picks one per request:
 
 ### Key parameters
 
-**`dsct_read_packets`**: `file` (required), `filter`, `count`, `offset`, `packet_number`, `decode_as`, `esp_sa`, `verbose`
+**`dsct_read_packets`**: `file` (required), `filter`, `count`, `offset`, `packet_number`, `decode_as`, `esp_sa`, `verbose`, `layers`, `fields`
+
+- `layers` (string or array, e.g. `"BGP"` or `["IPv4", "TCP", "BGP"]`): only these
+  protocols (case-insensitive) appear in each packet's `layers` array; other
+  layers are omitted from that packet, but the packet itself and its `stack`
+  field are still returned in full. MCP-only (no CLI equivalent).
+- `fields` (string or array of qualified field paths, e.g. `"BGP.nlri"`,
+  `["BGP.path_attributes.type_code_name", "IPv4.src"]`): only these fields
+  (plus their parent container, when nested) are emitted for the protocols
+  named; protocols not mentioned keep their normal default (or `verbose`)
+  field set. Field paths use the same pattern syntax as
+  `src/default_fields.toml` (exact, `prefix*`, `*suffix`, one level of `.`
+  nesting) — see `dsct_list_fields`'s `qualified_name`/`name_field` for
+  discoverable paths. A malformed pattern is a structured error. MCP-only.
+
+Both are recommended for large protocols like BGP, where a single UPDATE
+message's default JSON can run tens of KB even with `count: 1` — e.g.
+`{"layers": "BGP", "fields": "BGP.path_attributes.type_code_name"}` keeps
+just the layer and field that matter.
 
 **`dsct_get_stats`**: `file` (required), `protocol`, `top_talkers`, `stream_summary`, `top`, `decode_as`, `esp_sa`
 
@@ -263,7 +281,13 @@ The server speaks both protocol eras and picks one per request:
 
 **`dsct_get_schema`**: `command` (`"read"`, `"stats"` or `"sql"`)
 
-**`dsct_query_sql`**: `file` (required), `sql`, `schema`, `count`, `db`, `no_build`, `decode_as`, `esp_sa`
+**`dsct_query_sql`**: `file` (required), `sql`, `schema`, `tables`, `count`, `db`, `no_build`, `decode_as`, `esp_sa`
+
+- `schema: true` alone returns a compact summary of every table/view (`name`,
+  `kind`, `column_count`) plus usage hints. Add `tables` (string or array,
+  e.g. `"tcp"` or `["tcp", "bgp"]`) to get full column detail (columns,
+  types, descriptions) restricted to those tables/views; an unknown name is
+  a structured error listing the available ones.
 
 ### Configuration example
 
@@ -299,6 +323,7 @@ Resource limits can be tuned via environment variables:
 | `DSCT_MCP_WRITE_BUFFER_SIZE` | 65536 | Stdout write buffer size in bytes |
 | `DSCT_MCP_MAX_FILE_SIZE` | 10737418240 | Maximum capture file size in bytes |
 | `DSCT_THREADS` | physical CPU count | Worker threads for `dsct read --filter` (see `--threads`) |
+| `DSCT_CACHE_DIR` | `$XDG_CACHE_HOME/dsct`, else `$HOME/.cache/dsct` | Directory for `dsct sql`/`dsct index` database files (see [SQL queries](#sql-queries)) |
 
 ## Output
 
@@ -331,12 +356,21 @@ and a `{"warning":{"code":"index_rebuilt",...}}` line is written to stderr.
 dsct index capture.pcap                 # build now (prints {"type":"index",...})
 dsct sql capture.pcap --schema          # tables, columns, descriptions, hints
 dsct sql capture.pcap "SELECT protocol, COUNT(*) AS n FROM layers GROUP BY protocol ORDER BY n DESC"
-dsct sql capture.pcap.dsct.sqlite "SELECT COUNT(*) FROM packets"   # query an index directly
+dsct sql ~/.cache/dsct/capture.pcap-3f2a9c1d8e4b0716.dsct.sqlite "SELECT COUNT(*) FROM packets"  # query an index directly
 tcpdump -w - -c 1000 | dsct sql - --db /tmp/live.sqlite "SELECT * FROM conversations"
 ```
 
-- The index lives next to the capture as `<FILE>.dsct.sqlite`; override with
-  `--db PATH`. Reading from stdin requires `--db` and always rebuilds.
+- The index database lives in a per-user cache directory, not next to the
+  capture: `$DSCT_CACHE_DIR` if set, else `$XDG_CACHE_HOME/dsct`, else
+  `$HOME/.cache/dsct` (falling back to the historical `<FILE>.dsct.sqlite`
+  sidecar next to the capture only if none of those can be determined). The
+  file name is `<capture file name>-<16 hex chars>.dsct.sqlite`, where the hex
+  suffix is a hash of the capture's canonicalised absolute path — stable for a
+  given capture and collision-free for captures that share a file name in
+  different directories. Override the location with `--db PATH`. Reading from
+  stdin requires `--db` and always rebuilds. The `index` object in
+  `dsct_query_sql`'s response (and `dsct index`'s own output) always reports
+  the resolved `db` path.
 - `--no-build` fails (exit code `2`) instead of building a missing or stale index.
 - `dsct index --force` rebuilds unconditionally.
 - Only read-only `SELECT` / `WITH` queries are accepted; the database is opened
