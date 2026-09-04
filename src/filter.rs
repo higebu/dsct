@@ -354,10 +354,14 @@ impl WhereClause {
                     false
                 }
             }
-            FieldValue::Array(range) => packet
-                .nested_fields(range)
-                .iter()
-                .any(|child| self.nested_field_matches(child, path, packet, layer)),
+            // An array's elements are its *direct* children only: walk
+            // them with `top_level_fields` so a nested container's own
+            // children (e.g. a BGP path attribute's `value.afi`) aren't
+            // treated as array elements and matched one level too high.
+            FieldValue::Array(range) => {
+                crate::field_iter::top_level_fields(packet.nested_fields(range), range.start)
+                    .any(|child| self.nested_field_matches(child, path, packet, layer))
+            }
             _ => false,
         }
     }
@@ -1009,6 +1013,70 @@ mod tests {
         buf.end_container(arr);
         buf.end_layer();
         assert!(!wc.matches_packet(&pkt_from(&buf)));
+    }
+
+    #[test]
+    fn test_array_path_does_not_reach_grandchildren() {
+        // `path_attributes` is an Array whose element Objects carry a
+        // nested `value` Object. A path that stops at the array
+        // ("bgp.path_attributes.afi") must only look at the elements'
+        // direct fields — the grandchild `afi` inside `value` must not be
+        // matched as if it were one of them. The full path
+        // ("bgp.path_attributes.value.afi") must still match it.
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer("BGP", None, &[], 0..0);
+        let arr = buf.begin_container(
+            test_desc("path_attributes", "Path Attributes"),
+            FieldValue::Array(0..0),
+            0..0,
+        );
+        let attr = buf.begin_container(
+            test_desc("attribute", "Attribute"),
+            FieldValue::Object(0..0),
+            0..0,
+        );
+        buf.push_field(
+            test_desc("type_code", "Type Code"),
+            FieldValue::U8(14),
+            0..0,
+        );
+        let value =
+            buf.begin_container(test_desc("value", "Value"), FieldValue::Object(0..0), 0..0);
+        buf.push_field(test_desc("afi", "AFI"), FieldValue::U16(1), 0..0);
+        buf.end_container(value);
+        buf.end_container(attr);
+        buf.end_container(arr);
+        buf.end_layer();
+        let packet = pkt_from(&buf);
+
+        let shallow = WhereClause::new(
+            "bgp".into(),
+            "path_attributes.afi".into(),
+            CompareOp::Eq,
+            "1".into(),
+        );
+        assert!(
+            !shallow.matches_packet(&packet),
+            "a grandchild inside a nested object must not match through the array path"
+        );
+
+        // A direct child of the array elements still matches.
+        let direct = WhereClause::new(
+            "bgp".into(),
+            "path_attributes.type_code".into(),
+            CompareOp::Eq,
+            "14".into(),
+        );
+        assert!(direct.matches_packet(&packet));
+
+        // And the grandchild matches via its full path.
+        let full = WhereClause::new(
+            "bgp".into(),
+            "path_attributes.value.afi".into(),
+            CompareOp::Eq,
+            "1".into(),
+        );
+        assert!(full.matches_packet(&packet));
     }
 
     #[test]

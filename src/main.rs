@@ -239,9 +239,9 @@ struct SqlOptions {
     /// With --schema, restrict the schema to these table/view names
     /// (comma-separated or repeated). Full column detail is still printed
     /// for the requested tables — this only narrows which ones appear.
-    /// An unknown name is an error listing the available names. Ignored
-    /// without --schema.
-    #[arg(long, value_delimiter = ',')]
+    /// An unknown name is an error listing the available names. Requires
+    /// --schema.
+    #[arg(long, value_delimiter = ',', requires = "schema")]
     tables: Vec<String>,
 
     /// Report index-build progress to stderr every N packets (as JSON).
@@ -781,6 +781,7 @@ fn cmd_index(opts: IndexOptions) -> Result<()> {
         )));
     }
 
+    let cache_dir = dsct::sqlite::cache_dir();
     let resolved = resolve_index_cli(&IndexRequest {
         file: &file,
         db,
@@ -790,6 +791,7 @@ fn cmd_index(opts: IndexOptions) -> Result<()> {
         decode_as: &decode_as_args,
         esp_sa: &esp_sa_args,
         deadline: None,
+        cache_dir: cache_dir.as_deref(),
     })?;
 
     let mut info = serde_json::json!({
@@ -841,6 +843,7 @@ fn cmd_sql(opts: SqlOptions) -> Result<()> {
         (Some(limits::DEFAULT_PACKET_COUNT), true)
     };
 
+    let cache_dir = dsct::sqlite::cache_dir();
     let resolved = resolve_index_cli(&IndexRequest {
         file: &file,
         db,
@@ -850,6 +853,7 @@ fn cmd_sql(opts: SqlOptions) -> Result<()> {
         decode_as: &decode_as_args,
         esp_sa: &esp_sa_args,
         deadline: None,
+        cache_dir: cache_dir.as_deref(),
     })?;
     if let Some(reason) = &resolved.replaced_reason {
         emit_index_rebuilt_warning(&resolved.db_path, reason);

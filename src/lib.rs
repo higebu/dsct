@@ -51,6 +51,8 @@ pub mod sql_filter;
 pub mod sqlite;
 #[doc(hidden)]
 pub mod stats;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 #[cfg(feature = "tui")]
 #[doc(hidden)]
 pub mod tui;

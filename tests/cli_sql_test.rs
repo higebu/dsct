@@ -624,6 +624,24 @@ fn schema_flag_with_tables_restricts_output() {
     assert_invalid_arguments(&bad);
 }
 
+/// `--tables` only narrows `--schema` output; without `--schema` it would
+/// silently do nothing, so clap rejects the combination (exit code 2).
+#[test]
+fn tables_flag_requires_schema_flag() {
+    let (_dir, cap) = write_capture(&[plain_udp_frame()]);
+    let out = dsct(&["sql", "--tables", "udp", cap.to_str().unwrap(), "SELECT 1"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--schema"),
+        "the error should name the required --schema flag: {stderr}"
+    );
+    assert!(
+        !db_exists_for(&cap),
+        "argument validation must reject the invocation before building an index"
+    );
+}
+
 #[test]
 fn query_required_without_schema_flag() {
     let (_dir, cap) = write_capture(&[plain_udp_frame()]);

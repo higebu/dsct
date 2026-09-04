@@ -340,7 +340,7 @@ fn tools_list_result() -> Value {
     let mut tools = vec![
         serde_json::json!({
             "name": "dsct_read_packets",
-            "description": "Dissect packets from a pcap/pcapng capture file. Returns an object with a packets array of dissected packet objects with protocol layers and fields. IMPORTANT: Call dsct_get_stats first to understand capture size. Then use filter to narrow to relevant protocols and count (start with 50 or fewer) to keep output within context limits. For large captures, use sample_rate to get evenly-distributed packets across the timeline (e.g. sample_rate: total_packets / 50 yields ~50 representative packets). For protocols with large per-packet output (e.g. BGP UPDATE messages), use layers to drop layers you don't need and/or fields to keep only specific qualified field paths (e.g. \"BGP.nlri\", \"BGP.path_attributes.type_code_name\") — a single BGP packet's JSON can otherwise run tens of KB even with count: 1.",
+            "description": "Dissect packets from a pcap/pcapng capture file. Returns an object with a packets array of dissected packet objects with protocol layers and fields. IMPORTANT: Call dsct_get_stats first to understand capture size. Then use filter to narrow to relevant protocols and count (start with 50 or fewer) to keep output within context limits. For large captures, use sample_rate to get evenly-distributed packets across the timeline (e.g. sample_rate: total_packets / 50 yields ~50 representative packets). For protocols with large per-packet output (e.g. BGP UPDATE messages), use layers to drop layers you don't need and/or fields to keep only specific qualified field paths at any depth (e.g. \"BGP.nlri\", \"BGP.path_attributes.type_code_name\", \"DNS.additionals.edns_options.code\") — a single BGP packet's JSON can otherwise run tens of KB even with count: 1.",
             "annotations": { "readOnlyHint": true },
             "inputSchema": read_packets_schema(),
             "outputSchema": {
@@ -410,7 +410,7 @@ fn tools_list_result() -> Value {
     #[cfg(feature = "sqlite")]
     tools.push(serde_json::json!({
                 "name": "dsct_query_sql",
-                "description": "Run a read-only SQL (SELECT) query against a SQLite index of the capture. The index is built on first use in the dsct cache directory ($DSCT_CACHE_DIR, else $XDG_CACHE_HOME/dsct, else $HOME/.cache/dsct) and reused while the capture is unchanged, so repeated queries, JOINs, GROUP BY and ORDER BY are cheap. Call with schema: true first to discover tables and columns (a bare schema: true returns a compact per-table summary; add tables to get full column detail for specific tables). Every protocol has a table (tcp, udp, ipv4, dns, ...) with one row per layer keyed by packet_number, layer_index and depth (0 = outermost; tunnelled inner headers such as VXLAN/GRE/GTP-U payloads have depth >= 1; the encapsulations view names the carrier). Conversations are in flows / conversations (flow_id on tcp/udp/sctp rows, direction 0/1), and tcp_segments exposes relative sequence numbers (seq_rel, ack_rel, next_seq, payload_len) for following a stream. Array/Object fields are JSON text: use json_extract() / json_each(). Quote column names that collide with SQL keywords (\"type\", \"class\").",
+                "description": "Run a read-only SQL (SELECT) query against a SQLite index of the capture. The index is built on first use in the dsct cache directory ($DSCT_CACHE_DIR, else $XDG_CACHE_HOME/dsct, else $HOME/.cache/dsct) and reused while the capture is unchanged, so repeated queries, JOINs, GROUP BY and ORDER BY are cheap. Call with schema: true first to discover tables and columns (a bare schema: true returns a compact per-table summary; add tables to get full column detail for specific tables — tables requires schema: true). Every protocol has a table (tcp, udp, ipv4, dns, ...) with one row per layer keyed by packet_number, layer_index and depth (0 = outermost; tunnelled inner headers such as VXLAN/GRE/GTP-U payloads have depth >= 1; the encapsulations view names the carrier). Conversations are in flows / conversations (flow_id on tcp/udp/sctp rows, direction 0/1), and tcp_segments exposes relative sequence numbers (seq_rel, ack_rel, next_seq, payload_len) for following a stream. Array/Object fields are JSON text: use json_extract() / json_each(). Quote column names that collide with SQL keywords (\"type\", \"class\").",
                 "annotations": { "readOnlyHint": true },
                 "inputSchema": query_sql_schema(),
                 "outputSchema": {
@@ -547,12 +547,12 @@ fn read_packets_schema() -> Value {
             "layers": {
                 "type": ["string", "array"],
                 "items": { "type": "string" },
-                "description": "Only include layers for these protocols (case-insensitive, e.g. \"BGP\" or [\"IPv4\", \"TCP\", \"BGP\"]) in each packet's `layers` array; other layers are omitted from that packet (the packet itself, and its `stack` field, are still returned in full). Recommended for large protocols like BGP to drop uninteresting layers (e.g. Ethernet, IPv4) you don't need."
+                "description": "Only include layers for these protocols (case-insensitive, e.g. \"BGP\" or [\"IPv4\", \"TCP\", \"BGP\"]) in each packet's `layers` array; other layers are omitted from that packet (the packet itself, and its `stack` field, are still returned in full). Names must be known protocol names (see dsct_list_protocols); an unknown name is a structured error listing the available ones. Recommended for large protocols like BGP to drop uninteresting layers (e.g. Ethernet, IPv4) you don't need."
             },
             "fields": {
                 "type": ["string", "array"],
                 "items": { "type": "string" },
-                "description": "Only include these qualified field paths (e.g. \"BGP.nlri\", \"BGP.path_attributes.type_code_name\", \"IPv4.src\", \"tcp.*_port\" — protocol names are case-insensitive; see dsct_list_fields for qualified_name/name_field values, and default_fields.toml-style patterns: exact, \"prefix*\", \"*suffix\") for every listed protocol; protocols not mentioned here keep their normal default (or verbose) field set. A malformed pattern (e.g. missing the \"<protocol>.\" prefix, an unknown protocol, or more than one level of \".\" nesting) is a structured error. Recommended for large protocols like BGP (e.g. \"BGP.path_attributes.type_code_name\") to cut a single packet from tens of KB down to the handful of fields you actually need."
+                "description": "Only include these qualified field paths (e.g. \"BGP.nlri\", \"BGP.path_attributes.type_code_name\", \"DNS.additionals.edns_options.code\", \"IPv4.src\", \"tcp.*_port\") for every listed protocol; protocols not mentioned here keep their normal default (or verbose) field set. Any qualified_name from dsct_list_fields works, at any nesting depth: the containers on the path are emitted too, but only with the requested child (their other fields stay hidden). Protocol names are case-insensitive; the last path segment may use default_fields.toml-style patterns (exact, \"prefix*\", \"*suffix\"), earlier segments must name containers exactly. A malformed entry (missing the \"<protocol>.\" prefix, an unknown protocol, an empty segment, or a wildcard outside the last segment) is a structured error. Recommended for large protocols like BGP (e.g. \"BGP.path_attributes.type_code_name\") to cut a single packet from tens of KB down to the handful of fields you actually need."
             }
         },
         "additionalProperties": false
@@ -714,7 +714,7 @@ fn handle_read_packets_streaming(
     use crate::decode_as;
     use crate::esp_sa;
     use crate::field_config::FieldConfig;
-    use crate::filter::{PacketNumberFilter, normalize_protocol_name};
+    use crate::filter::PacketNumberFilter;
     use crate::filter_expr::FilterExpr;
     use crate::input::CaptureReader;
     use crate::serialize::write_packet_json_with_layer_filter;
@@ -814,15 +814,15 @@ fn handle_read_packets_streaming(
 
     // `layers`: only these layers appear in each packet's `layers` array
     // (the packet itself, and its `stack`, are still returned in full).
-    let layer_filter: Option<std::collections::HashSet<String>> = if layers_strs.is_empty() {
+    // Unknown protocol names are rejected up front — silently accepting
+    // them would return empty `layers` arrays with no hint why.
+    let layer_filter: Option<Vec<String>> = if layers_strs.is_empty() {
         None
     } else {
-        Some(
-            layers_strs
-                .iter()
-                .map(|s| normalize_protocol_name(s))
-                .collect(),
-        )
+        match build_layer_filter(&layers_strs, &registry) {
+            Ok(filter) => Some(filter),
+            Err(msg) => return write_tool_error(w, id, era, msg),
+        }
     };
 
     let effective_count = Some(count.unwrap_or(limits.default_packet_count));
@@ -932,7 +932,7 @@ fn handle_read_packets_streaming(
             data,
             field_config.as_ref(),
             raw_bytes,
-            layer_filter.as_ref(),
+            layer_filter.as_deref(),
         )?;
         w.write_all(&pkt_buf)?;
         packets_written += 1;
@@ -1025,31 +1025,106 @@ fn extract_string_or_array(args: &Value, key: &str) -> Vec<String> {
     }
 }
 
+/// Resolve a protocol name taken from a request parameter against the
+/// registry's field schemas, case- and punctuation-insensitively (the same
+/// normalization filter expressions use, e.g. `"tcp"` matches the `"TCP"`
+/// layer).
+///
+/// `parameter` names the tool parameter and `entry` the whole offending
+/// value, so an unknown name yields a structured error naming both and
+/// listing the available protocols.
+fn resolve_protocol_name(
+    parameter: &str,
+    entry: &str,
+    protocol: &str,
+    schemas: &[packet_dissector::registry::ProtocolFieldSchema],
+) -> std::result::Result<&'static str, String> {
+    use crate::filter::normalize_protocol_name;
+
+    let normalized = normalize_protocol_name(protocol);
+    if let Some(schema) = schemas
+        .iter()
+        .find(|s| normalize_protocol_name(s.short_name) == normalized)
+    {
+        return Ok(schema.short_name);
+    }
+    let mut available: Vec<&str> = schemas.iter().map(|s| s.short_name).collect();
+    available.sort_unstable();
+    Err(format!(
+        "invalid {parameter:?} entry {entry:?}: unknown protocol {protocol:?}; \
+         available protocols: {available:?}"
+    ))
+}
+
+/// Build the layer filter for `dsct_read_packets`'s `layers` parameter:
+/// the normalized protocol names whose layers stay in each packet's
+/// `layers` array.
+///
+/// Every name is validated against `registry` (see
+/// [`resolve_protocol_name`]); an unknown one is a structured error rather
+/// than a silently empty `layers` array. A protocol that is only reachable
+/// through a heuristic dispatcher or `decode_as` (e.g. HTTP2) has no entry
+/// in `all_field_schemas` even though its layers do appear in output, so
+/// the registry's decode-as names are accepted as well.
+///
+/// The returned names are already normalized so the serializer can compare
+/// them without allocating (see
+/// [`crate::serialize::write_packet_json_with_layer_filter`]).
+fn build_layer_filter(
+    layers: &[String],
+    registry: &packet_dissector::registry::DissectorRegistry,
+) -> std::result::Result<Vec<String>, String> {
+    use crate::filter::normalize_protocol_name;
+
+    let schemas = registry.all_field_schemas();
+    let decode_as_names = registry.available_decode_as_protocols();
+    let mut normalized = Vec::with_capacity(layers.len());
+    for name in layers {
+        let canonical = match resolve_protocol_name("layers", name, name, &schemas) {
+            Ok(canonical) => normalize_protocol_name(canonical),
+            Err(message) => {
+                let candidate = normalize_protocol_name(name);
+                if !decode_as_names
+                    .iter()
+                    .any(|d| normalize_protocol_name(d) == candidate)
+                {
+                    return Err(message);
+                }
+                candidate
+            }
+        };
+        if !normalized.contains(&canonical) {
+            normalized.push(canonical);
+        }
+    }
+    Ok(normalized)
+}
+
 /// Build a [`crate::field_config::FieldConfig`] override from
 /// `dsct_read_packets`'s `fields` parameter: qualified field paths such as
-/// `"BGP.nlri"`, `"BGP.path_attributes.type_code_name"`, `"IPv4.src"`,
-/// `"tcp.*_port"`.
+/// `"BGP.nlri"`, `"BGP.path_attributes.type_code_name"`,
+/// `"DNS.additionals.edns_options.code"`, `"IPv4.src"`, `"tcp.*_port"`.
 ///
 /// The protocol prefix (everything before the first `.`) is resolved
-/// against `registry` case- and punctuation-insensitively (same
-/// normalization filter expressions use, e.g. `"tcp"` matches the `"TCP"`
-/// layer), and an unknown prefix is a structured error listing the
-/// available protocol names. The remainder is fed to
-/// [`crate::field_config::FieldConfig::from_protocol_patterns`] verbatim —
-/// so it follows the exact same pattern syntax as `default_fields.toml`
-/// (exact / `prefix*` / `*suffix`, one level of `.` nesting) and rejects
-/// the same malformed forms — except that for a nested pattern
-/// (`"parent.child"`) the parent container is automatically added as a
-/// top-level pattern too, since otherwise it would never be emitted at
-/// all (matching `default_fields.toml`'s own convention, e.g.
-/// `"path_attributes"` + `"path_attributes.type_code_name"`).
+/// against `registry` (see [`resolve_protocol_name`]); an unknown prefix is
+/// a structured error listing the available protocol names.
+///
+/// The remaining path segments accept any depth — exactly the
+/// `qualified_name` values `dsct_list_fields` reports. Since
+/// [`crate::field_config::FieldConfig`] keys nested patterns on the
+/// *immediate* parent field name, a path `a.b.c.d` is expanded into the
+/// top-level pattern `a` plus the nested patterns `a.b`, `b.c` and `c.d`:
+/// each level makes the next one visible, and every other field of the
+/// containers along the way stays hidden.
+///
+/// The last segment may use the same wildcards as `default_fields.toml`
+/// (exact, `prefix*`, `*suffix`); earlier segments name containers and must
+/// be exact.
 fn build_fields_override(
     fields: &[String],
     registry: &packet_dissector::registry::DissectorRegistry,
 ) -> std::result::Result<crate::field_config::FieldConfig, String> {
     use std::collections::HashMap;
-
-    use crate::filter::normalize_protocol_name;
 
     let schemas = registry.all_field_schemas();
 
@@ -1066,28 +1141,33 @@ fn build_fields_override(
                 "invalid \"fields\" entry {qualified:?}: protocol and field must not be empty"
             ));
         }
-        let normalized_prefix = normalize_protocol_name(prefix);
-        let canonical = schemas
-            .iter()
-            .find(|s| normalize_protocol_name(s.short_name) == normalized_prefix)
-            .map(|s| s.short_name);
-        let Some(canonical) = canonical else {
-            let mut available: Vec<&str> = schemas.iter().map(|s| s.short_name).collect();
-            available.sort_unstable();
+        let canonical = resolve_protocol_name("fields", qualified, prefix, &schemas)?;
+
+        let segments: Vec<&str> = rest.split('.').collect();
+        if segments.iter().any(|segment| segment.is_empty()) {
             return Err(format!(
-                "invalid \"fields\" entry {qualified:?}: unknown protocol {prefix:?}; \
-                 available protocols: {available:?}"
+                "invalid \"fields\" entry {qualified:?}: field path segments must not be empty"
             ));
-        };
+        }
+        // Only the last segment is a pattern; the earlier ones name the
+        // containers to descend through, so a wildcard there could never
+        // match a parent container's name.
+        let parents = segments.split_last().map_or(&[][..], |(_, rest)| rest);
+        if parents.iter().any(|segment| segment.contains('*')) {
+            return Err(format!(
+                "invalid \"fields\" entry {qualified:?}: wildcards are only supported in the \
+                 last segment of a field path (earlier segments name containers)"
+            ));
+        }
 
         let entry = grouped.entry(canonical.to_owned()).or_default();
-        if let Some((parent, _child)) = rest.split_once('.') {
-            let parent_pattern = parent.to_owned();
-            if !entry.contains(&parent_pattern) {
-                entry.push(parent_pattern);
-            }
+        // Top-level container (or the field itself for a one-segment path).
+        push_unique(entry, segments[0].to_owned());
+        // One nested pattern per parent/child pair, so each level of the
+        // path makes the next one visible.
+        for pair in segments.windows(2) {
+            push_unique(entry, format!("{}.{}", pair[0], pair[1]));
         }
-        entry.push(rest.to_owned());
     }
 
     crate::field_config::FieldConfig::from_protocol_patterns(grouped).map_err(|e| {
@@ -1096,6 +1176,13 @@ fn build_fields_override(
             crate::error::format_error(&e)
         )
     })
+}
+
+/// Push `value` onto `patterns` unless it is already there.
+fn push_unique(patterns: &mut Vec<String>, value: String) {
+    if !patterns.contains(&value) {
+        patterns.push(value);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2311,90 +2398,46 @@ mod tests {
 
     // -- streaming `layers` / `fields` parameters ----------------------
 
-    /// Build an Ethernet/IPv4/TCP frame carrying a minimal BGP UPDATE
-    /// message (RFC 4271) with a single ORIGIN path attribute, on TCP
-    /// port 179 so the registry's port-based dispatch hands it to the BGP
-    /// dissector. Mirrors `tests/bgp_field_test.rs`.
-    fn bgp_update_frame() -> Vec<u8> {
-        let path_attrs: [u8; 4] = [
-            0x40, // flags: well-known, transitive
-            1,    // type code: ORIGIN
-            1,    // attribute length
-            0,    // value: IGP
-        ];
-        let mut body = Vec::new();
-        body.extend_from_slice(&0u16.to_be_bytes()); // withdrawn routes length
-        body.extend_from_slice(&(path_attrs.len() as u16).to_be_bytes());
-        body.extend_from_slice(&path_attrs);
-
-        let mut bgp = Vec::new();
-        bgp.extend_from_slice(&[0xff; 16]); // marker
-        let length = (19 + body.len()) as u16;
-        bgp.extend_from_slice(&length.to_be_bytes());
-        bgp.push(2); // type: UPDATE
-        bgp.extend_from_slice(&body);
-
-        let mut tcp = Vec::new();
-        tcp.extend_from_slice(&40000u16.to_be_bytes());
-        tcp.extend_from_slice(&179u16.to_be_bytes());
-        tcp.extend_from_slice(&0u32.to_be_bytes());
-        tcp.extend_from_slice(&0u32.to_be_bytes());
-        tcp.push(0x50);
-        tcp.push(0x18);
-        tcp.extend_from_slice(&0x2000u16.to_be_bytes());
-        tcp.extend_from_slice(&0u16.to_be_bytes());
-        tcp.extend_from_slice(&0u16.to_be_bytes());
-        tcp.extend_from_slice(&bgp);
-
-        let mut frame = Vec::new();
-        frame.extend_from_slice(&[0xff; 6]);
-        frame.extend_from_slice(&[0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        frame.extend_from_slice(&0x0800u16.to_be_bytes());
-        let total_len: u16 = 20 + tcp.len() as u16;
-        frame.push(0x45);
-        frame.push(0x00);
-        frame.extend_from_slice(&total_len.to_be_bytes());
-        frame.extend_from_slice(&0u16.to_be_bytes());
-        frame.extend_from_slice(&0u16.to_be_bytes());
-        frame.push(64);
-        frame.push(6); // protocol: TCP
-        frame.extend_from_slice(&0u16.to_be_bytes());
-        frame.extend_from_slice(&[10, 0, 0, 1]);
-        frame.extend_from_slice(&[10, 0, 0, 2]);
-        frame.extend_from_slice(&tcp);
-        frame
+    /// Write a pcap containing `frame` as its only packet into a unique
+    /// temporary file and return its path.
+    fn write_single_packet_pcap(prefix: &str, frame: &[u8]) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "dsct_test_{prefix}_{}_{n}.pcap",
+            std::process::id()
+        ));
+        std::fs::write(&path, crate::test_fixtures::single_packet_pcap(frame))
+            .expect("write test pcap");
+        path
     }
 
     /// Write a pcap containing a single BGP-over-TCP packet, return its path.
     fn write_bgp_pcap() -> std::path::PathBuf {
-        let frame = bgp_update_frame();
-        let mut pcap = Vec::new();
-        pcap.extend_from_slice(&0xA1B2C3D4u32.to_le_bytes());
-        pcap.extend_from_slice(&2u16.to_le_bytes());
-        pcap.extend_from_slice(&4u16.to_le_bytes());
-        pcap.extend_from_slice(&0i32.to_le_bytes());
-        pcap.extend_from_slice(&0u32.to_le_bytes());
-        pcap.extend_from_slice(&65535u32.to_le_bytes());
-        pcap.extend_from_slice(&1u32.to_le_bytes());
-        pcap.extend_from_slice(&0u32.to_le_bytes());
-        pcap.extend_from_slice(&0u32.to_le_bytes());
-        pcap.extend_from_slice(&(frame.len() as u32).to_le_bytes());
-        pcap.extend_from_slice(&(frame.len() as u32).to_le_bytes());
-        pcap.extend_from_slice(&frame);
-
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static COUNTER: AtomicU32 = AtomicU32::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("dsct_test_bgp_{}_{n}.pcap", std::process::id()));
-        std::fs::write(&path, pcap).expect("write bgp test pcap");
-        path
+        write_single_packet_pcap("bgp", &crate::test_fixtures::bgp_update_frame())
     }
 
     /// Run `handle_read_packets_streaming` against the single-BGP-packet
     /// pcap and return the parsed response.
     fn run_bgp_streaming(extra_args: Value) -> Value {
-        let pcap_path = write_bgp_pcap();
+        run_streaming_on(write_bgp_pcap(), extra_args)
+    }
+
+    /// Run `handle_read_packets_streaming` against the single-DNS-packet
+    /// pcap (an EDNS(0) query, see `test_fixtures::dns_edns_query_frame`)
+    /// and return the parsed response.
+    fn run_dns_streaming(extra_args: Value) -> Value {
+        run_streaming_on(
+            write_single_packet_pcap("dns", &crate::test_fixtures::dns_edns_query_frame()),
+            extra_args,
+        )
+    }
+
+    /// Run `handle_read_packets_streaming` against `pcap_path` (removed
+    /// afterwards) with `extra_args` merged into the tool arguments, and
+    /// return the parsed response.
+    fn run_streaming_on(pcap_path: std::path::PathBuf, extra_args: Value) -> Value {
         let file = pcap_path.to_str().unwrap().to_string();
         let mut args = extra_args;
         args.as_object_mut()
@@ -2501,11 +2544,129 @@ mod tests {
     }
 
     #[test]
-    fn streaming_fields_filter_too_many_dots_returns_tool_error() {
-        let resp = run_bgp_streaming(serde_json::json!({"fields": ["BGP.a.b.c"]}));
+    fn streaming_fields_filter_supports_deep_paths() {
+        // `DNS.additionals.edns_options.code` is three levels deep:
+        // additionals[] -> edns_options[] -> code. Every container along
+        // the path must be emitted, but only with the requested leaf —
+        // their other fields stay hidden.
+        let resp = run_dns_streaming(serde_json::json!({
+            "fields": ["DNS.additionals.edns_options.code"]
+        }));
+        let packets = resp["result"]["structuredContent"]["packets"]
+            .as_array()
+            .unwrap();
+        let dns = packets[0]["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["protocol"] == "DNS")
+            .unwrap_or_else(|| panic!("no DNS layer: {}", packets[0]));
+        let fields = dns["fields"].as_object().unwrap();
+        assert_eq!(
+            fields.keys().collect::<Vec<_>>(),
+            vec!["additionals"],
+            "DNS fields should be restricted to the requested path: {fields:?}"
+        );
+
+        let additional = &fields["additionals"][0];
+        assert_eq!(
+            additional.as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec!["edns_options"],
+            "the additional record should only carry the requested container: {additional}"
+        );
+
+        let option = &additional["edns_options"][0];
+        assert_eq!(
+            option.as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec!["code"],
+            "the EDNS option should only carry the requested field: {option}"
+        );
+        assert_eq!(option["code"], 11, "{option}");
+    }
+
+    #[test]
+    fn streaming_fields_filter_deep_path_wildcard_on_last_segment() {
+        // A wildcard is still allowed on the leaf of a deep path.
+        let resp = run_dns_streaming(serde_json::json!({
+            "fields": ["DNS.additionals.edns_options.c*"]
+        }));
+        let packets = resp["result"]["structuredContent"]["packets"]
+            .as_array()
+            .unwrap();
+        let dns = packets[0]["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["protocol"] == "DNS")
+            .unwrap();
+        let option = &dns["fields"]["additionals"][0]["edns_options"][0];
+        let keys: Vec<&String> = option.as_object().unwrap().keys().collect();
+        assert_eq!(keys, vec!["code", "code_name"], "{option}");
+    }
+
+    #[test]
+    fn streaming_fields_filter_wildcard_in_parent_segment_returns_tool_error() {
+        let resp = run_bgp_streaming(serde_json::json!({"fields": ["BGP.path_*.type_code"]}));
         assert_eq!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("dot nesting"), "{text}");
+        assert!(text.contains("last segment"), "{text}");
+    }
+
+    #[test]
+    fn streaming_fields_filter_empty_path_segment_returns_tool_error() {
+        let resp = run_bgp_streaming(serde_json::json!({"fields": ["BGP.path_attributes..flags"]}));
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("must not be empty"), "{text}");
+    }
+
+    #[test]
+    fn build_layer_filter_normalizes_and_deduplicates() {
+        let registry = packet_dissector::registry::DissectorRegistry::default();
+        let filter = build_layer_filter(
+            &[
+                "IPv4".to_owned(),
+                "ipv4".to_owned(),
+                "GTPv2-C".to_owned(),
+                "bgp".to_owned(),
+            ],
+            &registry,
+        )
+        .expect("known protocol names should be accepted");
+        assert_eq!(filter, vec!["ipv4", "gtpv2c", "bgp"]);
+    }
+
+    #[test]
+    fn build_layer_filter_accepts_decode_as_only_protocols() {
+        // HTTP2 layers appear via the HTTP dispatcher / decode_as, but the
+        // dissector isn't in any dispatch table, so it has no field
+        // schema. Its layers must still be selectable.
+        let registry = packet_dissector::registry::DissectorRegistry::default();
+        assert_eq!(
+            build_layer_filter(&["HTTP2".to_owned()], &registry).unwrap(),
+            vec!["http2"]
+        );
+    }
+
+    #[test]
+    fn build_layer_filter_rejects_unknown_protocol() {
+        let registry = packet_dissector::registry::DissectorRegistry::default();
+        let err = build_layer_filter(&["NoSuchProto".to_owned()], &registry).unwrap_err();
+        assert!(err.contains("unknown protocol"), "{err}");
+        assert!(err.contains("available protocols"), "{err}");
+    }
+
+    #[test]
+    fn streaming_layers_filter_unknown_protocol_returns_tool_error() {
+        let resp = run_bgp_streaming(serde_json::json!({"layers": ["BGP", "NoSuchProto"]}));
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("unknown protocol"), "{text}");
+        assert!(text.contains("NoSuchProto"), "{text}");
+        assert!(
+            text.contains("available protocols"),
+            "the error should list the valid names: {text}"
+        );
     }
 
     // -- schema functions ---------------------------------------------

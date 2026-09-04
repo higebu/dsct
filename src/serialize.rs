@@ -245,13 +245,12 @@ pub(crate) fn write_field_json<W: Write>(
     field_config: Option<&FieldConfig>,
 ) -> Result<()> {
     // Recurse into Array: write each direct child element.
-    // Direct children are iterated by skipping over container sub-ranges.
+    // `top_level_fields` skips over each sub-container's own children so
+    // only the array's direct elements are written.
     if let FieldValue::Array(ref range) = field.value {
         write!(w, "[")?;
         let mut first = true;
-        let mut idx = range.start;
-        while idx < range.end {
-            let child = &buf.fields()[idx as usize];
+        for child in crate::field_iter::top_level_fields(buf.nested_fields(range), range.start) {
             if !first {
                 write!(w, ",")?;
             }
@@ -266,11 +265,6 @@ pub(crate) fn write_field_json<W: Write>(
                 layer_range,
                 field_config,
             )?;
-            // Skip over sub-container's children
-            idx = match &child.value {
-                FieldValue::Array(r) | FieldValue::Object(r) => r.end,
-                _ => idx + 1,
-            };
         }
         write!(w, "]")?;
         return Ok(());
@@ -278,14 +272,13 @@ pub(crate) fn write_field_json<W: Write>(
 
     // Recurse into Object: filter and write each named direct sub-field.
     // `field_name` is the parent container name (e.g., "answers").
-    // Direct children are iterated by skipping over container sub-ranges.
+    // `top_level_fields` skips over each sub-container's own children so
+    // only the object's direct sub-fields are considered.
     if let FieldValue::Object(ref range) = field.value {
         write!(w, "{{")?;
         let mut first = true;
         let children = buf.nested_fields(range);
-        let mut idx = range.start;
-        while idx < range.end {
-            let f = &buf.fields()[idx as usize];
+        for f in crate::field_iter::top_level_fields(children, range.start) {
             let include_field = field_config
                 .is_none_or(|cfg| cfg.should_include_nested(protocol, field_name, f.name()));
 
@@ -319,12 +312,6 @@ pub(crate) fn write_field_json<W: Write>(
                 },
                 &mut first,
             )?;
-
-            // Skip over sub-container's children
-            idx = match &f.value {
-                FieldValue::Array(r) | FieldValue::Object(r) => r.end,
-                _ => idx + 1,
-            };
         }
         write!(w, "}}")?;
         return Ok(());
@@ -453,11 +440,15 @@ pub fn write_packet_json<W: Write>(
 }
 
 /// Like [`write_packet_json`], but additionally restricts which layers
-/// appear in the `layers` array to those whose (normalized, per
-/// [`crate::filter::normalize_protocol_name`]) protocol name is in
-/// `layer_filter` — used to implement `dsct_read_packets`'s `layers`
+/// appear in the `layers` array to those matching one of `layer_filter`'s
+/// protocol names — used to implement `dsct_read_packets`'s `layers`
 /// parameter. `layer_filter: None` behaves exactly like
 /// [`write_packet_json`] (no layer omitted).
+///
+/// Names in `layer_filter` are compared with
+/// [`crate::filter::protocol_names_match`], which normalizes both sides
+/// (case- and punctuation-insensitively) without allocating, so no
+/// `String` is built per layer per packet on this hot path.
 ///
 /// The `stack` field is unaffected by `layer_filter`: it always names every
 /// layer actually present in the packet, so the caller can still see what
@@ -469,7 +460,7 @@ pub(crate) fn write_packet_json_with_layer_filter<W: Write>(
     data: &[u8],
     field_config: Option<&FieldConfig>,
     raw_bytes: bool,
-    layer_filter: Option<&std::collections::HashSet<String>>,
+    layer_filter: Option<&[String]>,
 ) -> Result<()> {
     write_packet_json_impl(w, meta, buf, data, field_config, raw_bytes, layer_filter)
 }
@@ -481,7 +472,7 @@ fn write_packet_json_impl<W: Write>(
     data: &[u8],
     field_config: Option<&FieldConfig>,
     raw_bytes: bool,
-    layer_filter: Option<&std::collections::HashSet<String>>,
+    layer_filter: Option<&[String]>,
 ) -> Result<()> {
     // number
     write!(w, "{{\"number\":{},\"timestamp\":\"", meta.number)?;
@@ -506,7 +497,9 @@ fn write_packet_json_impl<W: Write>(
     let mut first = true;
     for layer in buf.layers() {
         if let Some(allowed) = layer_filter
-            && !allowed.contains(&crate::filter::normalize_protocol_name(layer.name))
+            && !allowed
+                .iter()
+                .any(|name| crate::filter::protocol_names_match(layer.name, name))
         {
             continue;
         }
@@ -815,8 +808,7 @@ mod tests {
         let meta = make_test_meta(1);
         let config = FieldConfig::default_config().unwrap();
 
-        let allowed: std::collections::HashSet<String> =
-            ["ipv4".to_owned(), "tcp".to_owned()].into_iter().collect();
+        let allowed = ["ipv4".to_owned(), "tcp".to_owned()];
 
         let mut out = Vec::new();
         write_packet_json_with_layer_filter(

@@ -260,15 +260,21 @@ The server speaks both protocol eras and picks one per request:
 - `layers` (string or array, e.g. `"BGP"` or `["IPv4", "TCP", "BGP"]`): only these
   protocols (case-insensitive) appear in each packet's `layers` array; other
   layers are omitted from that packet, but the packet itself and its `stack`
-  field are still returned in full. MCP-only (no CLI equivalent).
+  field are still returned in full. Names must be known protocol names (see
+  `dsct_list_protocols`); an unknown one is a structured error listing the
+  available names. MCP-only (no CLI equivalent).
 - `fields` (string or array of qualified field paths, e.g. `"BGP.nlri"`,
   `["BGP.path_attributes.type_code_name", "IPv4.src"]`): only these fields
-  (plus their parent container, when nested) are emitted for the protocols
-  named; protocols not mentioned keep their normal default (or `verbose`)
-  field set. Field paths use the same pattern syntax as
-  `src/default_fields.toml` (exact, `prefix*`, `*suffix`, one level of `.`
-  nesting) — see `dsct_list_fields`'s `qualified_name`/`name_field` for
-  discoverable paths. A malformed pattern is a structured error. MCP-only.
+  are emitted for the protocols named; protocols not mentioned keep their
+  normal default (or `verbose`) field set. Any `qualified_name` from
+  `dsct_list_fields` works, at any nesting depth (e.g.
+  `"DNS.additionals.edns_options.code"`): the containers along the path are
+  emitted too, but only with the requested child — their other fields stay
+  hidden. The last segment may use the same patterns as
+  `src/default_fields.toml` (exact, `prefix*`, `*suffix`); earlier segments
+  name containers and must be exact. A malformed entry — a missing
+  `"<protocol>."` prefix, an unknown protocol, an empty segment, or a
+  wildcard outside the last segment — is a structured error. MCP-only.
 
 Both are recommended for large protocols like BGP, where a single UPDATE
 message's default JSON can run tens of KB even with `count: 1` — e.g.
@@ -287,7 +293,9 @@ just the layer and field that matter.
   `kind`, `column_count`) plus usage hints. Add `tables` (string or array,
   e.g. `"tcp"` or `["tcp", "bgp"]`) to get full column detail (columns,
   types, descriptions) restricted to those tables/views; an unknown name is
-  a structured error listing the available ones.
+  a structured error listing the available ones. `tables` requires
+  `schema: true` — passing it with a query is a structured error rather
+  than a silently ignored argument.
 
 ### Configuration example
 
@@ -375,6 +383,9 @@ tcpdump -w - -c 1000 | dsct sql - --db /tmp/live.sqlite "SELECT * FROM conversat
 - `dsct index --force` rebuilds unconditionally.
 - Only read-only `SELECT` / `WITH` queries are accepted; the database is opened
   read-only and anything else is rejected with exit code `2`.
+- `--schema` prints the table, column and view definitions instead of running a
+  query; `--tables tcp,udp` narrows that output to the named tables/views and
+  therefore requires `--schema` (exit code `2` without it).
 - Like `dsct read`, output stops after **1 000 rows** by default; use
   `--count N` or `--no-limit`.
 - Expect the index to take roughly one to three times the size of the capture.
