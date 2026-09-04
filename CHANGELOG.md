@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.2.11] - 2026-09-03
+
+### 🚀 Features
+
+- Add thread pool sizing and filter parallel-safety check
+- *(tui)* Parallelize filter scan with per-worker registries
+- *(read)* Parallelize filter evaluation for file input
+- *(mcp)* Add MCP 2026-07-28 protocol support
+- *(sqlite)* Add SQLite index build and read-only query modules
+- *(cli)* Add index and sql subcommands
+- *(mcp)* Add dsct_query_sql tool
+
+### 🐛 Bug Fixes
+
+- *(read)* Align progress and serialization error semantics with sequential path
+- *(esp_sa)* Use as_chunks to satisfy clippy
+
+### 💼 Other
+
+- Add parallel filter scan benchmark
+
+### 📚 Documentation
+
+- Install dsct from crates.io
+- Document SQL index and query commands
+
+### ⚡ Performance
+
+- *(tui)* Replace filter result Vec<usize> with bitmap
+- *(tui)* Fill whole words in push_set_range
+
+### ⚙️ Miscellaneous Tasks
+
+- Update packet-dissector crates to 0.3.3
+
+### 📦 Dependencies
+
+- *(deps)* Add rusqlite behind sqlite feature
 ## [0.2.10] - 2026-04-23
 
 ### 🚀 Features
