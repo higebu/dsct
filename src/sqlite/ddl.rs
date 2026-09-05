@@ -217,7 +217,9 @@ pub fn sql_type_for(ft: FieldType) -> &'static str {
         FieldType::U8 | FieldType::U16 | FieldType::U32 | FieldType::U64 | FieldType::I32 => {
             "INTEGER"
         }
-        FieldType::Bytes => "BLOB",
+        // BLOB affinity stores every value as-is (no coercion), which is what
+        // a field whose runtime type varies per packet needs.
+        FieldType::Bytes | FieldType::Any => "BLOB",
         FieldType::Ipv4Addr
         | FieldType::Ipv6Addr
         | FieldType::MacAddr
@@ -261,6 +263,8 @@ pub fn table_for_schema(schema: &ProtocolFieldSchema) -> TableSpec {
         let mut description = format!("{} ({})", fd.display_name, field_type_str(fd.field_type));
         if matches!(fd.field_type, FieldType::Array | FieldType::Object) {
             description.push_str("; JSON text, query with json_extract()/json_each()");
+        } else if fd.field_type == FieldType::Any {
+            description.push_str("; type varies per packet, structured values are JSON text");
         }
         if fd.optional {
             description.push_str("; optional");
@@ -586,6 +590,7 @@ mod tests {
     fn sql_types() {
         assert_eq!(sql_type_for(FieldType::U64), "INTEGER");
         assert_eq!(sql_type_for(FieldType::Bytes), "BLOB");
+        assert_eq!(sql_type_for(FieldType::Any), "BLOB");
         assert_eq!(sql_type_for(FieldType::Ipv6Addr), "TEXT");
         assert_eq!(sql_type_for(FieldType::Array), "TEXT");
     }

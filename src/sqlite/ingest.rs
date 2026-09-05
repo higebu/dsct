@@ -86,6 +86,17 @@ pub fn build_index(
     // capture is reported without leaving a temporary database behind.
     let reader = CaptureReader::open(opts.capture).context("failed to open capture file")?;
 
+    // `db_path`'s parent (the per-user cache directory by default, see
+    // `sqlite::default_db_path`) may not exist yet on first use.
+    if let Some(parent) = opts.db_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).context(format!(
+            "failed to create index database directory: {}",
+            parent.display()
+        ))?;
+    }
+
     let tmp = temp_path(opts.db_path);
     if tmp.exists() {
         std::fs::remove_file(&tmp).context(format!(
@@ -289,7 +300,7 @@ fn build_into(
 
             let fields = buf.layer_fields(layer);
             let mut extra: Option<serde_json::Map<String, serde_json::Value>> = None;
-            for f in fields {
+            for f in crate::field_iter::top_level_fields(fields, layer.field_range.start) {
                 let v = value::field_value(layer.name, f, buf, data, &layer.range, &mut scratch)?;
                 match spec.field_columns.get(f.name()) {
                     Some(&ci) if values[ci] == SqlValue::Null => {
@@ -521,6 +532,35 @@ mod tests {
         assert!(stored.complete);
         assert_eq!(stored.packet_count, 3);
         assert!(check_fresh(&cap, &db));
+    }
+
+    /// Regression test: nested fields inside a container (here, a BGP
+    /// path attribute's `flags`/`type_code`/`attr_length`, see
+    /// `test_fixtures::bgp_update_message`) must not leak into the `extra`
+    /// JSON column under their bare names — only genuine unmapped
+    /// *top-level* fields belong there.
+    #[test]
+    fn extra_column_does_not_contain_nested_field_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let frame = crate::test_fixtures::bgp_update_frame();
+        let cap = write_capture(dir.path(), &[frame]);
+        let db = dir.path().join("cap.sqlite");
+        build(&cap, &db).unwrap();
+
+        let conn = Connection::open(&db).unwrap();
+        let extra: Option<String> = conn
+            .query_row("SELECT extra FROM bgp WHERE packet_number = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let extra = extra.unwrap_or_default();
+        for leaked in ["flags", "type_code", "attr_length"] {
+            assert!(
+                !extra.contains(&format!("\"{leaked}\"")),
+                "extra column must not contain nested field \"{leaked}\" at \
+                 the top level: {extra}"
+            );
+        }
     }
 
     fn check_fresh(cap: &Path, db: &Path) -> bool {

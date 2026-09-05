@@ -21,6 +21,8 @@ pub mod field_config;
 #[doc(hidden)]
 pub mod field_format;
 #[doc(hidden)]
+pub mod field_iter;
+#[doc(hidden)]
 pub mod filter;
 #[doc(hidden)]
 pub mod filter_expr;
@@ -49,6 +51,8 @@ pub mod sql_filter;
 pub mod sqlite;
 #[doc(hidden)]
 pub mod stats;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 #[cfg(feature = "tui")]
 #[doc(hidden)]
 pub mod tui;

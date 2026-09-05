@@ -116,6 +116,11 @@ pub(crate) struct DsctQuerySqlParams {
     /// Return the index schema instead of running a query.
     #[serde(default)]
     pub schema: bool,
+    /// With `schema: true`, restrict the schema to these table/view names
+    /// and return full column detail for them (instead of the default
+    /// compact summary of every table).
+    #[serde(default, deserialize_with = "string_or_vec")]
+    pub tables: Vec<String>,
     /// Maximum rows to return (defaults to the server's default count).
     #[serde(default)]
     pub count: Option<u64>,
@@ -322,6 +327,12 @@ fn do_query_sql_inner(
             "'sql' is required unless 'schema' is true",
         ));
     }
+    if !params.schema && !params.tables.is_empty() {
+        return Err(DsctError::invalid_argument(
+            "'tables' requires 'schema': true (it restricts which tables the \
+             schema covers, not which tables a query reads)",
+        ));
+    }
     let file = PathBuf::from(&params.file);
     let file_meta =
         std::fs::metadata(&file).context(format!("failed to stat file: {}", file.display()))?;
@@ -335,6 +346,7 @@ fn do_query_sql_inner(
 
     let deadline = Instant::now() + limits.timeout;
     let mut dissect_warnings = 0u64;
+    let cache_dir = crate::sqlite::cache_dir();
     let resolved = resolve_index(
         &IndexRequest {
             file: &file,
@@ -345,6 +357,7 @@ fn do_query_sql_inner(
             decode_as: &params.decode_as,
             esp_sa: &params.esp_sa,
             deadline: Some(deadline),
+            cache_dir: cache_dir.as_deref(),
         },
         &mut |_, _| dissect_warnings += 1,
         &mut |_| {},
@@ -370,7 +383,14 @@ fn do_query_sql_inner(
 
     if params.schema {
         let registry = DissectorRegistry::default();
-        let mut schema = describe_schema(&conn, &protocol_tables(&registry))?;
+        let table_filter = (!params.tables.is_empty()).then_some(params.tables.as_slice());
+        // Bare `schema: true` returns a compact summary (name/kind/
+        // column_count only) to stay within LLM context limits; passing
+        // `tables` switches to full column detail restricted to those
+        // tables/views.
+        let compact = table_filter.is_none();
+        let mut schema =
+            describe_schema(&conn, &protocol_tables(&registry), table_filter, compact)?;
         schema["index"] = index_info;
         return Ok(schema);
     }
@@ -477,6 +497,14 @@ mod tests {
         assert_eq!(value["title"], "dsct sql result row");
     }
 
+    /// `dsct_query_sql` tests.
+    ///
+    /// Every test passes an explicit `db` inside its own temporary
+    /// directory, so no test here depends on (or writes into) the
+    /// environment-derived cache directory. Default cache-directory
+    /// resolution is covered by `sqlite::resolve_cache_dir`'s unit tests
+    /// and by `tests/cli_sql_test.rs`, which sets `DSCT_CACHE_DIR` on the
+    /// child `dsct` process.
     #[cfg(feature = "sqlite")]
     mod query_sql {
         use super::*;
@@ -509,12 +537,14 @@ mod tests {
         fn query_sql_builds_index_and_returns_rows() {
             let dir = tempfile::tempdir().unwrap();
             let cap = dir.path().join("c.pcap");
+            let db = dir.path().join("c.sqlite");
             std::fs::write(&cap, udp_pcap(3)).unwrap();
             let limits = ResourceLimits::default();
 
             let result = do_query_sql(
                 serde_json::json!({
                     "file": cap.to_str().unwrap(),
+                    "db": db.to_str().unwrap(),
                     "sql": "SELECT number, stack FROM packets ORDER BY number",
                     "count": 2,
                 }),
@@ -532,6 +562,7 @@ mod tests {
             let again = do_query_sql(
                 serde_json::json!({
                     "file": cap.to_str().unwrap(),
+                    "db": db.to_str().unwrap(),
                     "sql": "SELECT COUNT(*) AS n FROM udp",
                 }),
                 &limits,
@@ -546,32 +577,114 @@ mod tests {
         fn query_sql_schema_mode() {
             let dir = tempfile::tempdir().unwrap();
             let cap = dir.path().join("c.pcap");
+            let db = dir.path().join("c.sqlite");
             std::fs::write(&cap, udp_pcap(1)).unwrap();
             let limits = ResourceLimits::default();
             let result = do_query_sql(
-                serde_json::json!({ "file": cap.to_str().unwrap(), "schema": true }),
+                serde_json::json!({
+                    "file": cap.to_str().unwrap(),
+                    "db": db.to_str().unwrap(),
+                    "schema": true,
+                }),
                 &limits,
             )
             .unwrap();
             assert!(result["tables"].is_array());
             assert_eq!(result["index"]["built"], true);
+
+            // Bare schema: true is compact — no columns array, just counts.
+            let entries = result["tables"].as_array().unwrap();
+            assert!(!entries.is_empty());
+            let udp = entries.iter().find(|t| t["name"] == "udp").unwrap();
+            assert!(udp["column_count"].as_u64().unwrap() > 0);
+            assert!(udp.get("columns").is_none(), "{udp}");
+        }
+
+        #[test]
+        fn query_sql_schema_mode_with_tables_returns_full_detail() {
+            let dir = tempfile::tempdir().unwrap();
+            let cap = dir.path().join("c.pcap");
+            let db = dir.path().join("c.sqlite");
+            std::fs::write(&cap, udp_pcap(1)).unwrap();
+            let limits = ResourceLimits::default();
+
+            let result = do_query_sql(
+                serde_json::json!({
+                    "file": cap.to_str().unwrap(),
+                    "db": db.to_str().unwrap(),
+                    "schema": true,
+                    "tables": "udp",
+                }),
+                &limits,
+            )
+            .unwrap();
+            let entries = result["tables"].as_array().unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0]["name"], "udp");
+            assert!(entries[0]["columns"].is_array());
+            assert!(!entries[0]["columns"].as_array().unwrap().is_empty());
+
+            // Unknown table name is a structured invalid-argument error.
+            let err = do_query_sql(
+                serde_json::json!({
+                    "file": cap.to_str().unwrap(),
+                    "db": db.to_str().unwrap(),
+                    "schema": true,
+                    "tables": ["no_such_table"],
+                }),
+                &limits,
+            )
+            .unwrap_err();
+            assert!(err.contains("no_such_table"), "{err}");
+        }
+
+        /// `tables` only restricts `schema: true` output; combining it
+        /// with a query would silently ignore it, so it is rejected.
+        #[test]
+        fn query_sql_tables_without_schema_is_invalid_argument() {
+            let dir = tempfile::tempdir().unwrap();
+            let cap = dir.path().join("c.pcap");
+            let db = dir.path().join("c.sqlite");
+            std::fs::write(&cap, udp_pcap(1)).unwrap();
+            let limits = ResourceLimits::default();
+
+            let err = do_query_sql(
+                serde_json::json!({
+                    "file": cap.to_str().unwrap(),
+                    "db": db.to_str().unwrap(),
+                    "sql": "SELECT 1",
+                    "tables": ["udp"],
+                }),
+                &limits,
+            )
+            .unwrap_err();
+            assert!(err.contains("'tables' requires 'schema'"), "{err}");
+            assert!(
+                !db.exists(),
+                "argument validation must run before the index is built"
+            );
         }
 
         #[test]
         fn query_sql_rejects_writes_and_missing_args() {
             let dir = tempfile::tempdir().unwrap();
             let cap = dir.path().join("c.pcap");
+            let db = dir.path().join("c.sqlite");
             std::fs::write(&cap, udp_pcap(1)).unwrap();
             let limits = ResourceLimits::default();
             let err = do_query_sql(
-                serde_json::json!({ "file": cap.to_str().unwrap(), "sql": "DROP TABLE packets" }),
+                serde_json::json!({
+                    "file": cap.to_str().unwrap(),
+                    "db": db.to_str().unwrap(),
+                    "sql": "DROP TABLE packets",
+                }),
                 &limits,
             )
             .unwrap_err();
             assert!(err.contains("SELECT"));
 
             let err = do_query_sql(
-                serde_json::json!({ "file": cap.to_str().unwrap() }),
+                serde_json::json!({ "file": cap.to_str().unwrap(), "db": db.to_str().unwrap() }),
                 &limits,
             )
             .unwrap_err();
@@ -596,11 +709,13 @@ mod tests {
         fn query_sql_no_build_without_index() {
             let dir = tempfile::tempdir().unwrap();
             let cap = dir.path().join("c.pcap");
+            let db = dir.path().join("c.sqlite");
             std::fs::write(&cap, udp_pcap(1)).unwrap();
             let limits = ResourceLimits::default();
             let err = do_query_sql(
                 serde_json::json!({
                     "file": cap.to_str().unwrap(),
+                    "db": db.to_str().unwrap(),
                     "sql": "SELECT 1",
                     "no_build": true,
                 }),

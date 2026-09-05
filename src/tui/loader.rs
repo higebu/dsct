@@ -246,7 +246,14 @@ fn extract_gtpv2c_cause(buf: &DissectBuffer<'_>, layer: &Layer) -> Option<&'stat
     None
 }
 
-/// Extract result_code_name from a Diameter layer's AVPs.
+/// Extract the Result-Code / Experimental-Result-Code name from a Diameter
+/// layer's AVPs.
+///
+/// The dissector does not emit a literal `result_code_name` field: the name is
+/// a virtual `value_name` companion produced by the `display_fn` of the AVP
+/// `value` descriptor, which only yields a name for Result-Code (268) and
+/// Experimental-Result-Code (297) AVPs. Resolve it the same way the JSON
+/// serializer does.
 fn extract_diameter_result_code<'a>(buf: &'a DissectBuffer<'_>, layer: &Layer) -> Option<&'a str> {
     let avps_field = buf.field_by_name(layer, "avps")?;
     let avps_range = match &avps_field.value {
@@ -256,19 +263,13 @@ fn extract_diameter_result_code<'a>(buf: &'a DissectBuffer<'_>, layer: &Layer) -
     for elem in buf.nested_fields(avps_range) {
         if let FieldValue::Object(obj_range) = &elem.value {
             let fields = buf.nested_fields(obj_range);
-            let is_rc = fields.iter().any(|f| {
-                f.name() == "name"
-                    && matches!(&f.value, FieldValue::Str(s)
-                        if *s == "Result-Code" || *s == "Experimental-Result-Code")
-            });
-            if is_rc {
-                for f in fields {
-                    if f.name() == "result_code_name"
-                        && let FieldValue::Str(s) = &f.value
-                    {
-                        return Some(*s);
-                    }
-                }
+            let name = fields
+                .iter()
+                .find(|f| f.name() == "value")
+                .and_then(|f| f.descriptor.display_fn.map(|df| df(&f.value, fields)))
+                .flatten();
+            if name.is_some() {
+                return name;
             }
         }
     }
@@ -931,12 +932,16 @@ pub(crate) mod tests {
         let avps_idx =
             buf.begin_container(test_desc("avps", "AVPs"), FieldValue::Array(0..0), 0..0);
         let avp_obj = buf.begin_container(test_desc("avp", "AVP"), FieldValue::Object(0..0), 0..0);
+        // Use the real AVP child descriptors: the Result-Code name is a
+        // display_fn companion of `value`, keyed on the sibling `code`.
+        let avp_fds = dia_fds
+            .iter()
+            .find(|fd| fd.name == "avps")
+            .and_then(|fd| fd.children)
+            .unwrap();
+        push_real_field(&mut buf, avp_fds, "code", FieldValue::U32(268));
         push_field(&mut buf, "name", FieldValue::Str("Result-Code"));
-        push_field(
-            &mut buf,
-            "result_code_name",
-            FieldValue::Str("DIAMETER_SUCCESS"),
-        );
+        push_real_field(&mut buf, avp_fds, "value", FieldValue::U32(2001));
         buf.end_container(avp_obj);
         buf.end_container(avps_idx);
         buf.end_layer();

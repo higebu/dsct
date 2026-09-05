@@ -35,19 +35,132 @@ use meta::{Freshness, IndexMeta};
 ///
 /// Bump whenever the generated schema changes incompatibly; existing
 /// databases with a different version are rebuilt.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// v2: fixed `extra` column ingest to skip nested container children when
+/// walking a layer's fields (see `field_iter::top_level_fields`) — nested
+/// fields (e.g. a BGP capability's `code`/`value`) no longer leak into
+/// `extra` under their bare names.
+pub const SCHEMA_VERSION: u32 = 2;
 
-/// File-name suffix appended to the capture path for the sidecar database.
+/// File-name suffix appended to the capture path (or used inside the cache
+/// directory) for the database file.
 pub const DB_SUFFIX: &str = ".dsct.sqlite";
 
 /// The 16-byte header every SQLite 3 database starts with.
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 
-/// Default sidecar database path for a capture file (`<capture>.dsct.sqlite`).
+/// Resolve the per-user cache directory dsct's database files live in from
+/// explicit values, without touching process environment.
+///
+/// Resolution order: `dsct_cache_dir` as given, else `xdg_cache_home/dsct`,
+/// else `home/.cache/dsct`. An empty string for any of these is treated as
+/// unset (a variable set to `""` should not silently relocate the cache to
+/// the process's current directory). Returns `None` when none can be
+/// determined, in which case callers fall back to the historical sidecar
+/// path next to the capture.
+fn resolve_cache_dir(
+    dsct_cache_dir: Option<&str>,
+    xdg_cache_home: Option<&str>,
+    home: Option<&str>,
+) -> Option<PathBuf> {
+    if let Some(dir) = dsct_cache_dir.filter(|s| !s.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    if let Some(dir) = xdg_cache_home.filter(|s| !s.is_empty()) {
+        return Some(PathBuf::from(dir).join("dsct"));
+    }
+    if let Some(home) = home.filter(|s| !s.is_empty()) {
+        return Some(PathBuf::from(home).join(".cache").join("dsct"));
+    }
+    None
+}
+
+/// The per-user cache directory for dsct's database files, derived from the
+/// process environment.
+///
+/// Resolution order: `$DSCT_CACHE_DIR`, else `$XDG_CACHE_HOME/dsct`, else
+/// `$HOME/.cache/dsct`. `None` when none of these environment variables is
+/// set.
+///
+/// This is the only place the environment is read: callers (the CLI and the
+/// MCP server) call it once and pass the result to [`IndexRequest::cache_dir`],
+/// so the resolution itself stays a pure function of its inputs and tests can
+/// point the cache at a temporary directory without mutating process-wide
+/// state.
+pub fn cache_dir() -> Option<PathBuf> {
+    let dsct_cache_dir = std::env::var("DSCT_CACHE_DIR").ok();
+    let xdg_cache_home = std::env::var("XDG_CACHE_HOME").ok();
+    let home = std::env::var("HOME").ok();
+    resolve_cache_dir(
+        dsct_cache_dir.as_deref(),
+        xdg_cache_home.as_deref(),
+        home.as_deref(),
+    )
+}
+
+/// FNV-1a 64-bit hash (<https://datatracker.ietf.org/doc/html/draft-eastlake-fnv>).
+///
+/// Dependency-free and stable across platforms/runs for identical byte
+/// input — used to derive a collision-resistant, deterministic suffix for
+/// cache database file names.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET_BASIS;
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
+/// Build the database path for `capture` given an explicit cache directory
+/// (or `None` to fall back to the sidecar path next to the capture).
+///
+/// Callers pass the cache directory explicitly (see [`cache_dir`]) so path
+/// construction never reads the environment itself.
+pub fn db_path_in(capture: &Path, cache_dir: Option<&Path>) -> PathBuf {
+    let Some(dir) = cache_dir else {
+        let mut name = capture.as_os_str().to_os_string();
+        name.push(DB_SUFFIX);
+        return PathBuf::from(name);
+    };
+
+    // Canonicalise when the capture exists (resolves symlinks/`..`/relative
+    // components so the same capture always hashes to the same path);
+    // otherwise fall back to a purely lexical absolute path so a
+    // not-yet-existing `--db`-less target (e.g. before the first build)
+    // still resolves deterministically.
+    let abs = std::fs::canonicalize(capture)
+        .or_else(|_| std::path::absolute(capture))
+        .unwrap_or_else(|_| capture.to_path_buf());
+    let hash = fnv1a64(abs.as_os_str().as_encoded_bytes());
+
+    let file_name = capture
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "capture".to_owned());
+
+    dir.join(format!("{file_name}-{hash:016x}{DB_SUFFIX}"))
+}
+
+/// Default database path for a capture file.
+///
+/// When a cache directory can be determined (`$DSCT_CACHE_DIR`, else
+/// `$XDG_CACHE_HOME/dsct`, else `$HOME/.cache/dsct`), the
+/// database lives there as `<capture file name>-<16 hex chars>.dsct.sqlite`,
+/// where the hex suffix is an FNV-1a 64 hash of the canonicalised absolute
+/// capture path — stable for a given capture and collision-free across
+/// captures that share a file name in different directories. Otherwise,
+/// falls back to the historical sidecar path next to the capture
+/// (`<capture>.dsct.sqlite`).
+///
+/// This is [`cache_dir`] + [`db_path_in`] in one call, for callers that
+/// want the environment-derived default. [`resolve_index`] does not use it:
+/// it takes the cache directory from [`IndexRequest::cache_dir`] instead,
+/// so the environment is read once, by the CLI or MCP entry point.
 pub fn default_db_path(capture: &Path) -> PathBuf {
-    let mut name = capture.as_os_str().to_os_string();
-    name.push(DB_SUFFIX);
-    PathBuf::from(name)
+    db_path_in(capture, cache_dir().as_deref())
 }
 
 /// Return `true` when the file at `path` starts with the SQLite 3 magic header.
@@ -90,6 +203,12 @@ pub struct IndexRequest<'a> {
     pub esp_sa: &'a [String],
     /// Abort a build once this instant has passed.
     pub deadline: Option<Instant>,
+    /// Cache directory the default database path is derived from when `db`
+    /// is `None`; `None` falls back to the sidecar path next to the capture.
+    ///
+    /// The CLI and the MCP server pass [`cache_dir()`], tests pass a
+    /// temporary directory.
+    pub cache_dir: Option<&'a Path>,
 }
 
 /// Outcome of [`resolve_index`].
@@ -143,7 +262,10 @@ pub fn resolve_index(
                 replaced_reason: None,
             });
         }
-        let db_path = req.db.clone().unwrap_or_else(|| default_db_path(req.file));
+        let db_path = req
+            .db
+            .clone()
+            .unwrap_or_else(|| db_path_in(req.file, req.cache_dir));
 
         // Validate dissection options up front (they also determine freshness).
         let mut registry = DissectorRegistry::default();
@@ -205,11 +327,130 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn default_db_path_appends_suffix() {
+    fn default_db_path_falls_back_to_sidecar_without_cache_dir() {
         assert_eq!(
-            default_db_path(Path::new("/tmp/cap.pcap")),
+            db_path_in(Path::new("/tmp/cap.pcap"), None),
             PathBuf::from("/tmp/cap.pcap.dsct.sqlite")
         );
+    }
+
+    #[test]
+    fn default_db_path_lives_in_cache_dir_when_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let capture = dir.path().join("cap.pcap");
+        std::fs::write(&capture, b"not a real pcap, just needs to exist").unwrap();
+
+        let cache = Path::new("/tmp/dsct-cache-test");
+        let db = db_path_in(&capture, Some(cache));
+
+        assert_eq!(db.parent(), Some(cache));
+        let name = db.file_name().unwrap().to_str().unwrap();
+        assert!(
+            name.starts_with("cap.pcap-"),
+            "expected name to start with the capture's file name: {name}"
+        );
+        assert!(
+            name.ends_with(DB_SUFFIX),
+            "expected name to end with {DB_SUFFIX}: {name}"
+        );
+        // "cap.pcap-" + 16 hex chars + ".dsct.sqlite"
+        assert_eq!(name.len(), "cap.pcap-".len() + 16 + DB_SUFFIX.len());
+    }
+
+    #[test]
+    fn default_db_path_is_stable_for_the_same_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let capture = dir.path().join("cap.pcap");
+        std::fs::write(&capture, b"contents").unwrap();
+
+        let cache = Path::new("/tmp/dsct-cache-test");
+        assert_eq!(
+            db_path_in(&capture, Some(cache)),
+            db_path_in(&capture, Some(cache))
+        );
+    }
+
+    #[test]
+    fn default_db_path_does_not_collide_across_directories() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let cap_a = dir_a.path().join("cap.pcap");
+        let cap_b = dir_b.path().join("cap.pcap");
+        std::fs::write(&cap_a, b"a").unwrap();
+        std::fs::write(&cap_b, b"b").unwrap();
+
+        let cache = Path::new("/tmp/dsct-cache-test");
+        let db_a = db_path_in(&cap_a, Some(cache));
+        let db_b = db_path_in(&cap_b, Some(cache));
+
+        assert_ne!(
+            db_a, db_b,
+            "captures with the same file name in different directories must \
+             not collide in the cache dir"
+        );
+    }
+
+    #[test]
+    fn default_db_path_handles_a_capture_that_does_not_exist_yet() {
+        // Canonicalize fails when the path doesn't exist; db_path_in must
+        // still resolve deterministically via the lexical-absolute fallback
+        // rather than panicking or erroring.
+        let cache = Path::new("/tmp/dsct-cache-test");
+        let db = db_path_in(Path::new("does-not-exist.pcap"), Some(cache));
+        assert_eq!(db.parent(), Some(cache));
+        assert!(
+            db.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("does-not-exist.pcap-")
+        );
+    }
+
+    #[test]
+    fn resolve_cache_dir_prefers_dsct_cache_dir() {
+        assert_eq!(
+            resolve_cache_dir(Some("/custom/cache"), Some("/xdg/cache"), Some("/home/u")),
+            Some(PathBuf::from("/custom/cache"))
+        );
+    }
+
+    #[test]
+    fn resolve_cache_dir_falls_back_to_xdg_cache_home() {
+        assert_eq!(
+            resolve_cache_dir(None, Some("/xdg/cache"), Some("/home/u")),
+            Some(PathBuf::from("/xdg/cache/dsct"))
+        );
+    }
+
+    #[test]
+    fn resolve_cache_dir_falls_back_to_home() {
+        assert_eq!(
+            resolve_cache_dir(None, None, Some("/home/u")),
+            Some(PathBuf::from("/home/u/.cache/dsct"))
+        );
+    }
+
+    #[test]
+    fn resolve_cache_dir_none_when_nothing_set() {
+        assert_eq!(resolve_cache_dir(None, None, None), None);
+    }
+
+    #[test]
+    fn resolve_cache_dir_treats_empty_string_as_unset() {
+        assert_eq!(
+            resolve_cache_dir(Some(""), Some(""), Some("/home/u")),
+            Some(PathBuf::from("/home/u/.cache/dsct"))
+        );
+        assert_eq!(resolve_cache_dir(Some(""), Some(""), Some("")), None);
+    }
+
+    #[test]
+    fn fnv1a64_matches_known_test_vectors() {
+        // Standard FNV-1a 64 test vectors.
+        assert_eq!(fnv1a64(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a64(b"foobar"), 0x8594_4171_f739_67e8);
     }
 
     #[test]
@@ -252,7 +493,10 @@ mod tests {
         pcap
     }
 
-    fn request<'a>(file: &'a Path, db: Option<PathBuf>) -> IndexRequest<'a> {
+    /// Build a request whose default database path resolves inside
+    /// `cache_dir` — an explicit temporary directory, so tests never touch
+    /// (or race on) the real `$DSCT_CACHE_DIR`/`$HOME/.cache/dsct`.
+    fn request<'a>(file: &'a Path, db: Option<PathBuf>, cache_dir: &'a Path) -> IndexRequest<'a> {
         IndexRequest {
             file,
             db,
@@ -262,6 +506,7 @@ mod tests {
             decode_as: &[],
             esp_sa: &[],
             deadline: None,
+            cache_dir: Some(cache_dir),
         }
     }
 
@@ -272,33 +517,34 @@ mod tests {
     #[test]
     fn resolve_builds_reuses_and_rebuilds() {
         let dir = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
         let cap = dir.path().join("c.pcap");
         std::fs::write(&cap, udp_pcap(1)).unwrap();
 
-        let first = resolve(&request(&cap, None)).unwrap();
-        assert_eq!(first.db_path, default_db_path(&cap));
+        let first = resolve(&request(&cap, None, cache.path())).unwrap();
+        assert_eq!(first.db_path, db_path_in(&cap, Some(cache.path())));
         assert_eq!(first.build.as_ref().map(|b| b.packets), Some(1));
         assert!(first.replaced_reason.is_none());
 
-        let second = resolve(&request(&cap, None)).unwrap();
+        let second = resolve(&request(&cap, None, cache.path())).unwrap();
         assert!(second.build.is_none());
         assert!(second.replaced_reason.is_none());
 
-        let mut forced = request(&cap, None);
+        let mut forced = request(&cap, None, cache.path());
         forced.force = true;
         let third = resolve(&forced).unwrap();
         assert!(third.build.is_some());
         assert_eq!(third.replaced_reason.as_deref(), Some("--force"));
 
         std::fs::write(&cap, udp_pcap(2)).unwrap();
-        let mut no_build = request(&cap, None);
+        let mut no_build = request(&cap, None, cache.path());
         no_build.no_build = true;
         let err = resolve(&no_build).unwrap_err();
         assert_eq!(
             err.category(),
             crate::error::ErrorCategory::InvalidArguments
         );
-        let fourth = resolve(&request(&cap, None)).unwrap();
+        let fourth = resolve(&request(&cap, None, cache.path())).unwrap();
         assert_eq!(fourth.build.as_ref().map(|b| b.packets), Some(2));
         assert!(fourth.replaced_reason.is_some());
     }
@@ -306,22 +552,24 @@ mod tests {
     #[test]
     fn resolve_database_file_is_used_directly() {
         let dir = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
         let cap = dir.path().join("c.pcap");
         std::fs::write(&cap, udp_pcap(1)).unwrap();
-        let built = resolve(&request(&cap, None)).unwrap();
+        let built = resolve(&request(&cap, None, cache.path())).unwrap();
 
-        let direct = resolve(&request(&built.db_path, None)).unwrap();
+        let direct = resolve(&request(&built.db_path, None, cache.path())).unwrap();
         assert_eq!(direct.db_path, built.db_path);
         assert!(direct.build.is_none());
 
-        let mut forced = request(&built.db_path, None);
+        let mut forced = request(&built.db_path, None, cache.path());
         forced.force = true;
         assert!(resolve(&forced).is_err());
     }
 
     #[test]
     fn resolve_stdin_rules() {
-        let mut req = request(Path::new("-"), None);
+        let cache = tempfile::tempdir().unwrap();
+        let mut req = request(Path::new("-"), None, cache.path());
         assert!(resolve(&req).is_err());
         req.no_build = true;
         req.db = Some(PathBuf::from("/tmp/x.sqlite"));
@@ -331,13 +579,14 @@ mod tests {
     #[test]
     fn resolve_no_build_missing_index() {
         let dir = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
         let cap = dir.path().join("c.pcap");
         std::fs::write(&cap, udp_pcap(1)).unwrap();
-        let mut req = request(&cap, None);
+        let mut req = request(&cap, None, cache.path());
         req.no_build = true;
         let err = resolve(&req).unwrap_err();
         assert!(err.to_string().contains("does not exist"));
-        assert!(!default_db_path(&cap).exists());
+        assert!(!db_path_in(&cap, Some(cache.path())).exists());
     }
 
     #[test]
