@@ -76,6 +76,49 @@ pub(crate) fn bgp_update_frame() -> Vec<u8> {
     bgp_over_tcp_frame(&bgp_update_message())
 }
 
+/// BGP UPDATE message carrying a single MP_REACH_NLRI (RFC 4760, Section 3)
+/// path attribute for AFI 2 (IPv6) / SAFI 1 (unicast) with a 16-byte next
+/// hop and one NLRI prefix (`2001:db8:1::/48`).
+///
+/// Used to check that the address family of an UPDATE is exposed as the
+/// BGP layer's top-level `afi` / `safi` fields (mirrored from the MP
+/// attribute), so filters such as `bgp.safi = 1` and the `safi` column of
+/// the SQLite index work for UPDATE messages.
+pub(crate) fn bgp_update_mp_reach_message() -> Vec<u8> {
+    let mut value = Vec::new();
+    value.extend_from_slice(&2u16.to_be_bytes()); // AFI: IPv6
+    value.push(1); // SAFI: unicast
+    value.push(16); // next hop length
+    value.extend_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]); // next hop 2001:db8::1
+    value.push(0); // reserved
+    value.push(48); // prefix length (bits)
+    value.extend_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0x00, 0x01]); // 2001:db8:1::/48
+
+    let mut path_attrs = Vec::new();
+    path_attrs.push(0x80); // flags: optional, non-transitive
+    path_attrs.push(14); // type code: MP_REACH_NLRI
+    path_attrs.push(value.len() as u8);
+    path_attrs.extend_from_slice(&value);
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&0u16.to_be_bytes()); // withdrawn routes length
+    body.extend_from_slice(&(path_attrs.len() as u16).to_be_bytes());
+    body.extend_from_slice(&path_attrs);
+
+    let mut msg = Vec::new();
+    msg.extend_from_slice(&[0xff; 16]); // marker
+    let length = (19 + body.len()) as u16;
+    msg.extend_from_slice(&length.to_be_bytes());
+    msg.push(2); // type: UPDATE
+    msg.extend_from_slice(&body);
+    msg
+}
+
+/// [`bgp_over_tcp_frame`] wrapping [`bgp_update_mp_reach_message`].
+pub(crate) fn bgp_update_mp_reach_frame() -> Vec<u8> {
+    bgp_over_tcp_frame(&bgp_update_mp_reach_message())
+}
+
 /// Ethernet / IPv4 / UDP:53 frame carrying a DNS query for `example.com`
 /// with an EDNS(0) OPT record (RFC 6891) in the additional section.
 ///
