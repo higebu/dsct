@@ -189,6 +189,7 @@ pub fn field_type_str(ft: FieldType) -> &'static str {
         FieldType::Str => "str",
         FieldType::Array => "array",
         FieldType::Object => "object",
+        FieldType::Any => "any",
     }
 }
 
@@ -274,6 +275,7 @@ mod tests {
         assert_eq!(field_type_str(FieldType::Str), "str");
         assert_eq!(field_type_str(FieldType::Array), "array");
         assert_eq!(field_type_str(FieldType::Object), "object");
+        assert_eq!(field_type_str(FieldType::Any), "any");
     }
 
     #[test]
