@@ -61,3 +61,44 @@ fn bgp_path_attributes_type_code_name_visible_in_default_mode() {
          non-verbose mode: {bgp}"
     );
 }
+
+/// An UPDATE's address family must be filterable through the BGP layer's
+/// top-level `safi` (mirrored from MP_REACH_NLRI by packet-dissector 0.4.1),
+/// not only through `path_attributes.value.safi`.
+#[test]
+fn bgp_update_top_level_safi_filterable() {
+    let pcap = test_fixtures::single_packet_pcap(&test_fixtures::bgp_update_mp_reach_frame());
+    let mut tmp = NamedTempFile::with_suffix(".pcap").unwrap();
+    tmp.write_all(&pcap).unwrap();
+
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args([
+            "read",
+            tmp.path().to_str().unwrap(),
+            "--filter",
+            "bgp.safi = 1 AND bgp.afi = 2",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "filter on top-level afi/safi should match: {stdout}"
+    );
+
+    let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    let bgp = v["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["protocol"] == "BGP")
+        .unwrap_or_else(|| panic!("no BGP layer in {v}"));
+    assert_eq!(bgp["fields"]["afi"], 2, "{bgp}");
+    assert_eq!(bgp["fields"]["safi"], 1, "{bgp}");
+    assert_eq!(bgp["fields"]["safi_name"], "Unicast", "{bgp}");
+}
