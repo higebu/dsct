@@ -55,6 +55,58 @@ fn list_outputs_valid_json_array_with_core_protocols() {
     }
 }
 
+#[test]
+fn list_entries_carry_layer_and_references() {
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args(["list"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let value: Value = serde_json::from_str(stdout.trim()).unwrap();
+    let arr = value.as_array().expect("list output must be a JSON array");
+
+    // `references` is always present (possibly empty); `layer`, when
+    // present, is one of the documented stack positions.
+    for entry in arr {
+        let refs = entry
+            .get("references")
+            .and_then(Value::as_array)
+            .expect("each list entry must have a `references` array");
+        for r in refs {
+            assert!(r.get("id").and_then(Value::as_str).is_some());
+            assert!(r.get("title").and_then(Value::as_str).is_some());
+            assert!(r.get("url").and_then(Value::as_str).is_some());
+        }
+        if let Some(layer) = entry.get("layer") {
+            let layer = layer.as_str().expect("`layer` must be a string");
+            assert!(
+                ["link", "network", "transport", "tunnel", "application"].contains(&layer),
+                "unexpected layer {layer:?}"
+            );
+        }
+    }
+
+    let find = |name: &str| {
+        arr.iter()
+            .find(|e| e.get("name").and_then(Value::as_str) == Some(name))
+            .unwrap_or_else(|| panic!("{name} must appear in `dsct list`"))
+    };
+
+    assert_eq!(find("Ethernet")["layer"], "link");
+
+    let bgp = find("BGP");
+    assert_eq!(bgp["layer"], "application");
+    let refs = bgp["references"].as_array().unwrap();
+    assert!(
+        refs.iter()
+            .any(|r| r["id"].as_str().is_some_and(|id| id.starts_with("RFC"))),
+        "BGP must list at least one RFC reference; got {refs:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // fields
 // ---------------------------------------------------------------------------

@@ -224,18 +224,7 @@ fn do_get_stats_inner(
 
 /// List supported protocols as a JSON array value.
 pub(crate) fn do_list_protocols() -> std::result::Result<serde_json::Value, String> {
-    let registry = DissectorRegistry::default();
-    let schemas = registry.all_field_schemas();
-    let entries: Vec<serde_json::Value> = schemas
-        .iter()
-        .map(|s| {
-            serde_json::json!({
-                "name": s.short_name,
-                "full_name": s.name,
-            })
-        })
-        .collect();
-    Ok(serde_json::Value::Array(entries))
+    Ok(serde_json::Value::Array(crate::schema::protocol_list_json()))
 }
 
 pub(crate) fn do_list_fields(
@@ -431,6 +420,51 @@ mod tests {
         let first = &arr[0];
         assert!(first.get("name").is_some());
         assert!(first.get("full_name").is_some());
+    }
+
+    #[test]
+    fn list_protocols_reports_layer_and_references() {
+        let value = do_list_protocols().expect("list_protocols should succeed");
+        let arr = value.as_array().expect("should be a JSON array");
+        let find = |name: &str| {
+            arr.iter()
+                .find(|e| e["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("{name} should be listed"))
+        };
+
+        // Key order is part of the contract: name, full_name, layer, references.
+        let bgp = find("BGP");
+        let keys: Vec<&str> = bgp
+            .as_object()
+            .expect("entry should be an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, ["name", "full_name", "layer", "references"]);
+
+        assert_eq!(bgp["layer"], "application");
+        let refs = bgp["references"]
+            .as_array()
+            .expect("references should be an array");
+        assert!(
+            refs.iter()
+                .any(|r| r["id"].as_str().is_some_and(|id| id.starts_with("RFC"))),
+            "BGP should carry an RFC reference; got {refs:?}"
+        );
+        let first = &refs[0];
+        assert!(first["title"].as_str().is_some());
+        assert!(first["url"].as_str().is_some());
+
+        assert_eq!(find("Ethernet")["layer"], "link");
+
+        // Every entry carries `references`, empty when the dissector
+        // declares none.
+        for entry in arr {
+            assert!(
+                entry["references"].is_array(),
+                "{entry:?} should have a references array"
+            );
+        }
     }
 
     #[test]

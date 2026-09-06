@@ -369,7 +369,7 @@ fn tools_list_result() -> Value {
         }),
         serde_json::json!({
             "name": "dsct_list_protocols",
-            "description": "List all supported protocols. Each entry has `name` (short protocol name, usable in filter expressions and as the `protocol` argument to dsct_list_fields) and `full_name` (the protocol's full name).",
+            "description": "List all supported protocols. Each entry has `name` (short protocol name, usable in filter expressions and as the `protocol` argument to dsct_list_fields), `full_name` (the protocol's full name), `layer` (stack position: link, network, transport, tunnel or application; omitted when the dissector declares none) and `references` (specifications the dissector implements, each with `id` (e.g. 'RFC 4271'), `title` and `url`; empty when none are declared).",
             "annotations": { "readOnlyHint": true },
             "inputSchema": {
                 "type": "object",
@@ -379,7 +379,33 @@ fn tools_list_result() -> Value {
             "outputSchema": {
                 "type": "object",
                 "properties": {
-                    "protocols": { "type": "array" }
+                    "protocols": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string" },
+                                "full_name": { "type": "string" },
+                                "layer": {
+                                    "type": "string",
+                                    "enum": ["link", "network", "transport", "tunnel", "application"]
+                                },
+                                "references": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": { "type": "string" },
+                                            "title": { "type": "string" },
+                                            "url": { "type": "string" }
+                                        },
+                                        "required": ["id", "title", "url"]
+                                    }
+                                }
+                            },
+                            "required": ["name", "full_name", "references"]
+                        }
+                    }
                 },
                 "required": ["protocols"]
             }
@@ -515,7 +541,7 @@ fn read_packets_schema() -> Value {
             },
             "filter": {
                 "type": "string",
-                "description": "SQL-style filter expression (e.g. \"dns\", \"tcp AND ipv4.src = '10.0.0.1'\", \"tcp.dst_port > 1024\", \"(tcp OR udp) AND NOT dns\", \"dns.questions.name = 'example.com'\", \"packet_number BETWEEN 1 AND 100\"). Supports: protocol.field (nested via dots, e.g. dns.questions.name), comparison operators (=, !=, <>, <, <=, >, >=), AND/OR/NOT, parentheses, BETWEEN, IN. The _name suffix resolves display names (e.g. gtpv2c.ies.type_name = 'Cause'). Use dsct_list_protocols to discover protocol names and dsct_list_fields to discover field paths (qualified_name)."
+                "description": "SQL-style filter expression (e.g. \"dns\", \"tcp AND ipv4.src = '10.0.0.1'\", \"tcp.dst_port > 1024\", \"(tcp OR udp) AND NOT dns\", \"dns.questions.name = 'example.com'\", \"packet_number BETWEEN 1 AND 100\"). Supports: protocol.field (nested via dots, e.g. dns.questions.name; the leading segment matches the top-level field and any nested container of that name, e.g. bgp.nlri.route_type reaches MP_REACH NLRI), comparison operators (=, !=, <>, <, <=, >, >=), AND/OR/NOT, parentheses, BETWEEN, IN. The _name suffix resolves display names (e.g. gtpv2c.ies.type_name = 'Cause'). Use dsct_list_protocols to discover protocol names and dsct_list_fields to discover field paths (qualified_name)."
             },
             "decode_as": {
                 "type": "array",
