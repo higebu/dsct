@@ -136,6 +136,10 @@ dsct read capture.pcap -f "dns OR (tcp AND ipv4.src = '10.0.0.1')"
 dsct read capture.pcap -f "tcp.dst_port > 1024 AND NOT dns"
 ```
 
+Nested fields are addressed with dots (`dns.questions.name`); the leading
+segment matches the top-level field and any nested container of that name, so
+`bgp.nlri.route_type` reaches MP_REACH NLRI.
+
 Sample evenly across the capture:
 
 ```bash
@@ -220,7 +224,7 @@ dsct stats capture.pcap --top-talkers
 | `dsct stats <FILE>` | Emit capture statistics as JSON |
 | `dsct index <FILE>` | Build (or refresh) the SQLite index used by `dsct sql` |
 | `dsct sql <FILE> <QUERY>` | Run a read-only SQL query against the capture's SQLite index, rows as JSONL |
-| `dsct list` | List supported protocols as JSON |
+| `dsct list` | List supported protocols as JSON (`name`, `full_name`, `layer`, spec `references`) |
 | `dsct fields [PROTOCOL...]` | List filterable fields as JSON |
 | `dsct schema [COMMAND]` | Show JSON Schema for command output |
 | `dsct version` | Show version and capability information as JSON |
@@ -237,7 +241,7 @@ Run `--help` on any command for the full option list.
 | --- | --- |
 | `dsct_read_packets` | Dissect packets from a pcap/pcapng capture file. Returns an array of dissected packet objects with protocol layers and fields. |
 | `dsct_get_stats` | Get protocol statistics from a capture file. Returns packet counts, timing, protocol distribution, and optional deep analysis. |
-| `dsct_list_protocols` | List all supported protocols (`name`, `full_name`). |
+| `dsct_list_protocols` | List all supported protocols (`name`, `full_name`, `layer`, and spec `references` with `id`/`title`/`url`). |
 | `dsct_list_fields` | List available field names for protocols. `qualified_name` is the path to use in `dsct_read_packets` `filter`/`fields`. |
 | `dsct_get_schema` | Get the JSON schema for command output formats (`read`, `stats` or `sql`). |
 | `dsct_query_sql` | Run a read-only SQL query against the capture's SQLite index (built on first use). Returns result rows plus index status; `schema: true` returns the table layout. |
@@ -422,7 +426,9 @@ dsct sql capture.pcap "SELECT DISTINCT a.packet_number FROM tcp_segments a JOIN 
 
 The default build currently includes 50+ protocol dissectors across link, network, transport, tunneling, and application layers.
 
-Use `dsct list` to see the exact protocol set in your build.
+Use `dsct list` to see the exact protocol set in your build; each entry reports
+the protocol's `layer` (`link`, `network`, `transport`, `tunnel`,
+`application`) and the specifications it is implemented against.
 
 ## Errors
 

@@ -913,18 +913,7 @@ fn cmd_fields(protocol_filter: Vec<String>) -> Result<()> {
 }
 
 fn cmd_list() -> Result<()> {
-    let registry = DissectorRegistry::default();
-    let schemas = registry.all_field_schemas();
-
-    let entries: Vec<serde_json::Value> = schemas
-        .iter()
-        .map(|s| {
-            serde_json::json!({
-                "name": s.short_name,
-                "full_name": s.name,
-            })
-        })
-        .collect();
+    let entries = schema::protocol_list_json();
     println!("{}", serde_json::to_string(&entries)?);
 
     Ok(())

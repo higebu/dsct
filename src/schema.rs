@@ -3,6 +3,7 @@
 //! Centralises the output schema literals and helper functions that were
 //! previously duplicated between `main.rs` and `mcp/tools.rs`.
 
+use packet_dissector::registry::{DissectorRegistry, ProtocolInfo};
 use packet_dissector_core::field::{FieldDescriptor, FieldType};
 
 /// Return the JSON schema for the `dsct read` output format.
@@ -221,6 +222,48 @@ pub fn fd_to_json(
         entry["children"] = serde_json::Value::Array(child_entries);
     }
     entry
+}
+
+/// Convert one [`ProtocolInfo`] to the entry shape shared by `dsct list` and
+/// the `dsct_list_protocols` MCP tool.
+///
+/// Keys are emitted in the order `name`, `full_name`, `layer`, `references`.
+/// `layer` is omitted when the dissector declares no stack position;
+/// `references` is always present and is an empty array when the dissector
+/// lists no specifications.
+pub fn protocol_info_to_json(info: &ProtocolInfo) -> serde_json::Value {
+    let mut entry = serde_json::json!({
+        "name": info.short_name,
+        "full_name": info.name,
+    });
+    if let Some(layer) = info.layer {
+        entry["layer"] = serde_json::Value::String(layer.as_str().to_string());
+    }
+    entry["references"] = serde_json::Value::Array(
+        info.references
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "title": r.title,
+                    "url": r.url,
+                })
+            })
+            .collect(),
+    );
+    entry
+}
+
+/// Build the protocol list served by `dsct list` and `dsct_list_protocols`.
+///
+/// One entry per registered dissector, in registry order; see
+/// [`protocol_info_to_json`] for the entry shape.
+pub fn protocol_list_json() -> Vec<serde_json::Value> {
+    DissectorRegistry::default()
+        .all_protocol_info()
+        .iter()
+        .map(protocol_info_to_json)
+        .collect()
 }
 
 #[cfg(test)]

@@ -242,6 +242,11 @@ impl WhereClause {
     ///
     /// This operates on pre-annotation [`FieldValue`]s, enabling filters like
     /// `dns.qr=0` or `ipv4.protocol=17` that use raw numeric values.
+    ///
+    /// A bare field name (`bgp.code`) only ever matches one of the layer's
+    /// own top-level fields; it never reaches into a nested container.
+    /// A dotted path (`bgp.nlri.prefix`) is resolved by
+    /// [`dotted_path_matches`](Self::dotted_path_matches).
     pub fn matches_packet(&self, packet: &Packet) -> bool {
         for layer in packet.layers() {
             if !protocol_names_match(layer.name, &self.protocol) {
@@ -264,15 +269,44 @@ impl WhereClause {
             {
                 return true;
             }
-            // Nested field match (e.g., "questions.name")
+            // Nested field match (e.g., "questions.name").
             if let Some((group, rest)) = self.field.split_once('.')
-                && let Some(field) = fields.iter().find(|f| f.name() == group)
-                && self.nested_field_matches(field, rest, packet, layer)
+                && self.dotted_path_matches(group, rest, fields, packet, layer)
             {
                 return true;
             }
         }
         false
+    }
+
+    /// Resolve a dotted filter path (`group` + `rest`) against one layer.
+    ///
+    /// `group` is matched against every **container** (`Array`/`Object`)
+    /// of that name in the layer — the top-level field and any nested one —
+    /// and the clause matches if `rest` matches inside any of them. A BGP
+    /// UPDATE therefore answers `bgp.nlri.route_type` from the MP_REACH
+    /// NLRI whether or not it also carries a top-level `nlri`, and
+    /// `bgp.nlri.prefix` from either array. This keeps the result
+    /// independent of which containers a particular packet happens to
+    /// have, and matches what TUI value completion collects.
+    ///
+    /// Only containers take part: a nested *scalar* is never reachable
+    /// this way, which is also why a bare `bgp.code` cannot match a
+    /// capability's nested `code`.
+    fn dotted_path_matches(
+        &self,
+        group: &str,
+        rest: &str,
+        fields: &[Field],
+        packet: &Packet,
+        layer: &Layer,
+    ) -> bool {
+        fields
+            .iter()
+            .filter(|f| {
+                matches!(f.value, FieldValue::Array(_) | FieldValue::Object(_)) && f.name() == group
+            })
+            .any(|f| self.nested_field_matches(f, rest, packet, layer))
     }
 
     /// Compare the expected value against a [`Field`], using `format_fn` for
@@ -1013,6 +1047,85 @@ mod tests {
         buf.end_container(arr);
         buf.end_layer();
         assert!(!wc.matches_packet(&pkt_from(&buf)));
+    }
+
+    /// Build a BGP UPDATE-shaped layer: a `path_attributes` array whose
+    /// MP_REACH attribute carries a nested `nlri` array (with a
+    /// `route_type` field that exists only there), optionally followed by
+    /// the top-level `nlri` array. The nested container comes first in
+    /// buffer order, which is what a flat-slice lookup would pick.
+    fn bgp_nlri_buf(with_top_level_nlri: bool) -> DissectBuffer<'static> {
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer("BGP", None, &[], 0..0);
+        let attrs = buf.begin_container(
+            test_desc("path_attributes", "Path Attributes"),
+            FieldValue::Array(0..0),
+            0..0,
+        );
+        let attr = buf.begin_container(
+            test_desc("attribute", "Attribute"),
+            FieldValue::Object(0..0),
+            0..0,
+        );
+        let value =
+            buf.begin_container(test_desc("value", "Value"), FieldValue::Object(0..0), 0..0);
+        let nested_nlri =
+            buf.begin_container(test_desc("nlri", "NLRI"), FieldValue::Array(0..0), 0..0);
+        let nested_entry =
+            buf.begin_container(test_desc("entry", "Entry"), FieldValue::Object(0..0), 0..0);
+        buf.push_field(
+            test_desc("route_type", "Route Type"),
+            FieldValue::U8(1),
+            0..0,
+        );
+        buf.push_field(
+            test_desc("prefix", "Prefix"),
+            FieldValue::Str("2001:db8::/32"),
+            0..0,
+        );
+        buf.end_container(nested_entry);
+        buf.end_container(nested_nlri);
+        buf.end_container(value);
+        buf.end_container(attr);
+        buf.end_container(attrs);
+        if with_top_level_nlri {
+            let nlri =
+                buf.begin_container(test_desc("nlri", "NLRI"), FieldValue::Array(0..0), 0..0);
+            let entry =
+                buf.begin_container(test_desc("entry", "Entry"), FieldValue::Object(0..0), 0..0);
+            buf.push_field(test_desc("path_id", "Path ID"), FieldValue::U32(7), 0..0);
+            buf.push_field(
+                test_desc("prefix", "Prefix"),
+                FieldValue::Str("10.0.0.0/8"),
+                0..0,
+            );
+            buf.end_container(entry);
+            buf.end_container(nlri);
+        }
+        buf.end_layer();
+        buf
+    }
+
+    #[test]
+    fn test_dotted_path_matches_any_same_named_container() {
+        let buf = bgp_nlri_buf(true);
+        let packet = pkt_from(&buf);
+        // Both the top-level `nlri` and the nested MP_REACH one take part,
+        // so values from either array match ...
+        assert!(wc("bgp", "nlri.prefix", "10.0.0.0/8").matches_packet(&packet));
+        assert!(wc("bgp", "nlri.prefix", "2001:db8::/32").matches_packet(&packet));
+        // ... and a field only the nested one carries is still reachable.
+        assert!(wc("bgp", "nlri.route_type", "1").matches_packet(&packet));
+        assert!(!wc("bgp", "nlri.route_type", "2").matches_packet(&packet));
+    }
+
+    #[test]
+    fn test_dotted_path_reaches_nested_container_without_top_level() {
+        let buf = bgp_nlri_buf(false);
+        let packet = pkt_from(&buf);
+        // Without a top-level `nlri`, the MP_REACH one is still reached.
+        assert!(wc("bgp", "nlri.route_type", "1").matches_packet(&packet));
+        assert!(wc("bgp", "nlri.prefix", "2001:db8::/32").matches_packet(&packet));
     }
 
     #[test]
