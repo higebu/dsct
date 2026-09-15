@@ -99,16 +99,28 @@ struct ReadOptions {
 
     /// ESP Security Association for decryption (repeatable).
     /// Supported formats:
-    /// - `spi:null` — no encryption/authentication; ESP payload is not decrypted.
-    /// - `spi:enc_algo:enc_key_hex` — AEAD algorithms (e.g. `aes-128-gcm`, `aes-256-gcm`).
+    /// - `spi:null` — NULL encryption (RFC 2410): the ESP payload is plaintext,
+    ///   so the inner packet is dissected without a key.
+    /// - `spi:null:auth_algo:auth_key_hex` — NULL encryption with an integrity
+    ///   algorithm, whose ICV is stripped before the inner packet is read.
+    /// - `spi:enc_algo:enc_key_hex` — AEAD algorithms (`aes-128-gcm`, `aes-192-gcm`,
+    ///   `aes-256-gcm`).
     /// - `spi:enc_algo:enc_key_hex:auth_algo:auth_key_hex` — non-AEAD (separate cipher + auth).
     ///
     /// For AEAD algorithms, `enc_key_hex` must have the correct length for the algorithm and
-    /// must include any implicit salt. For AES-GCM in IPsec this means key + 4-byte salt:
-    /// 20 bytes for `aes-128-gcm` and 36 bytes for `aes-256-gcm`.
+    /// must include the implicit salt. For AES-GCM in IPsec this means key + 4-byte salt:
+    /// 20 bytes for `aes-128-gcm`, 28 bytes for `aes-192-gcm` and 36 bytes for `aes-256-gcm`.
+    ///
+    /// ESP with NULL encryption is decoded automatically, without any --esp-sa,
+    /// whenever the ESP trailer identifies a recognised inner protocol. An
+    /// explicit SA is only needed when that heuristic cannot confirm the trailer.
+    ///
+    /// ICVs are never verified — their length is used only to locate the end of
+    /// the payload, matching passive analysers such as Wireshark.
     ///
     /// Examples:
     /// - `0xDEADBEEF:null`
+    /// - `0xDEADBEEF:null:hmac-sha1-96:0xKEY`
     /// - `0x1234:aes-128-gcm:0x00112233445566778899AABBCCDDEEFF00112233`
     /// - `0x1234:aes-256-cbc:0xKEY:hmac-sha1-96:0xKEY`
     #[arg(long = "esp-sa", num_args = 1)]
