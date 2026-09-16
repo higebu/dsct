@@ -159,12 +159,12 @@ rusqlite = { version = "0.40", features = [
 ], optional = true }
 
 [dev-dependencies]
-assert_cmd = "2"
-criterion = { version = "0.8", features = ["html_reports"] }
-packet-dissector-test-alloc = "0.4.2"
-predicates = "3"
-tempfile = "3"
-nix = { version = "0.31", default-features = false, features = [
+assert_cmd = "=2.2.0"
+criterion = { version = "=0.8.2", features = ["html_reports"] }
+packet-dissector-test-alloc = "=0.4.2"
+predicates = "=3.1.4"
+tempfile = "=3.27.0"
+nix = { version = "=0.31.2", default-features = false, features = [
   "term",
   "poll",
   "process",
