@@ -1461,9 +1461,9 @@ dependencies = [
 
 [[package]]
 name = "packet-dissector-pcap"
-version = "0.4.2"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "900c07412d938d17eb160f73da675d26097b14e8c9a1016499bf4b2cf40dc52b"
+checksum = "f961f050b5fb4bb27328c46d3551a2eecacfade31b639422ee553f201d506e22"
 dependencies = [
  "thiserror 2.0.18",
 ]
