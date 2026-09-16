@@ -164,7 +164,7 @@ criterion = { version = "=0.8.2", features = ["html_reports"] }
 packet-dissector-test-alloc = "=0.4.2"
 predicates = "=3.1.4"
 tempfile = "=3.27.0"
-nix = { version = "=0.31.2", default-features = false, features = [
+nix = { version = "=0.31.3", default-features = false, features = [
   "term",
   "poll",
   "process",
