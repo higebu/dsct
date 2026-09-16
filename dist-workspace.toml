@@ -28,3 +28,13 @@ install-updater = true
 tap = "higebu/homebrew-tap"
 # Publish jobs to run in CI
 publish-jobs = ["homebrew"]
+
+# Commit SHAs for the actions dist writes into .github/workflows/release.yml.
+# That file is generated, and `dist plan` fails the Release workflow when its
+# contents drift, so the pins have to come from here rather than being edited
+# into the workflow. Renovate is kept off release.yml for the same reason (see
+# renovate.json); update these by hand when an action is bumped.
+[dist.github-action-commits]
+"actions/checkout" = "d23441a48e516b6c34aea4fa41551a30e30af803"          # v6
+"actions/download-artifact" = "37930b1c2abaa49bbe596cd826c3c89aef350131" # v7
+"actions/upload-artifact" = "b7c566a772e6b6bfb58ed0dc250532a479d7789f"   # v6
