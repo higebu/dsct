@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - uses: bencherdev/bencher@4329f73fe39302585007f172f45e3fdb924ba29f # main
+      - uses: bencherdev/bencher@6b7f59ed7fccdbaf7b400ef1e91f09e4c379edf9 # main
 
       - name: Install hyperfine
         uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2
@@ -67,7 +67,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - uses: bencherdev/bencher@4329f73fe39302585007f172f45e3fdb924ba29f # main
+      - uses: bencherdev/bencher@6b7f59ed7fccdbaf7b400ef1e91f09e4c379edf9 # main
 
       - name: Install hyperfine
         uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2
@@ -103,7 +103,7 @@ jobs:
     name: Archive closed PR branch
     runs-on: ubuntu-latest
     steps:
-      - uses: bencherdev/bencher@4329f73fe39302585007f172f45e3fdb924ba29f # main
+      - uses: bencherdev/bencher@6b7f59ed7fccdbaf7b400ef1e91f09e4c379edf9 # main
       - name: Archive branch
         run: |
           bencher archive \
