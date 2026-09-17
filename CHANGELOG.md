@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.2.15] - 2026-09-17
+
+### 🐛 Bug Fixes
+
+- *(esp-sa)* Strip the salt from the AES-192-GCM key
+- *(ci)* Stop dist plan failing on Renovate's action pins
+- *(deps)* Update rust crate lru to 0.18 ([#60](https://github.com/higebu/dsct/issues/60))
+- *(deps)* Update rust crate sqlparser to 0.63.0 ([#64](https://github.com/higebu/dsct/issues/64))
+- *(deps)* Update rust crate packet-dissector-pcap to 0.5.0 ([#63](https://github.com/higebu/dsct/issues/63))
+- *(deps)* Update rust crate packet-dissector to 0.5.0 ([#61](https://github.com/higebu/dsct/issues/61))
+- *(deps)* Update packet-dissector to 0.5.0 ([#79](https://github.com/higebu/dsct/issues/79))
+
+### 💼 Other
+
+- Revert "fix(deps): update rust crate packet-dissector to 0.5.0 ([#61](https://github.com/higebu/dsct/issues/61))" ([#76](https://github.com/higebu/dsct/issues/76))
+
+### 📚 Documentation
+
+- *(cli)* Correct the --esp-sa help text
+
+### ⚙️ Miscellaneous Tasks
+
+- *(renovate)* Group packet-dissector family updates ([#78](https://github.com/higebu/dsct/issues/78))
+
+### 📦 Dependencies
+
+- *(deps)* Update rust crate clap to v4.6.7
+- *(deps)* Update rust crate assert_cmd to v2.2.2
+- *(deps)* Lock file maintenance ([#70](https://github.com/higebu/dsct/issues/70))
+- *(deps)* Update rust crate nix to v0.31.3
+- *(deps)* Update rust crate rustix to v1.1.5 ([#72](https://github.com/higebu/dsct/issues/72))
+- *(deps)* Update taiki-e/install-action digest to 76c2e64 ([#75](https://github.com/higebu/dsct/issues/75))
+- *(deps)* Update release-plz/action digest to d6c5627 ([#74](https://github.com/higebu/dsct/issues/74))
+- *(deps)* Update actions/create-github-app-token action to v3 ([#66](https://github.com/higebu/dsct/issues/66))
+- *(deps)* Update actions/checkout action to v7 ([#65](https://github.com/higebu/dsct/issues/65))
 ## [0.2.14] - 2026-09-06
 
 ### 🚀 Features
