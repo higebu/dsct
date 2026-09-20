@@ -26,7 +26,7 @@ jobs:
       - uses: bencherdev/bencher@2d5a7d1c925343580fd0937d00c4f561458b2b0e # main
 
       - name: Install hyperfine
-        uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         with:
           tool: hyperfine
 
@@ -70,7 +70,7 @@ jobs:
       - uses: bencherdev/bencher@2d5a7d1c925343580fd0937d00c4f561458b2b0e # main
 
       - name: Install hyperfine
-        uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         with:
           tool: hyperfine
 
