@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.2.16] - 2026-09-26
+
+### 📦 Dependencies
+
+- *(deps)* Update bencherdev/bencher digest to 2d5a7d1 ([#80](https://github.com/higebu/dsct/issues/80))
+- *(deps)* Update taiki-e/install-action digest to 9114bf4 ([#81](https://github.com/higebu/dsct/issues/81))
+- *(deps)* Update release-plz/action digest to b8d6b54 ([#82](https://github.com/higebu/dsct/issues/82))
+- *(deps)* Update taiki-e/install-action digest to 94c31af ([#85](https://github.com/higebu/dsct/issues/85))
+- *(deps)* Update bencherdev/bencher digest to b97d2fc ([#84](https://github.com/higebu/dsct/issues/84))
+- *(deps)* Lock file maintenance ([#86](https://github.com/higebu/dsct/issues/86))
+- *(deps)* Update rust crate lru to v0.18.5 ([#89](https://github.com/higebu/dsct/issues/89))
+- *(deps)* Update bencherdev/bencher digest to 2e58545 ([#88](https://github.com/higebu/dsct/issues/88))
+- *(deps)* Update taiki-e/install-action digest to 7623a79 ([#87](https://github.com/higebu/dsct/issues/87))
+- *(deps)* Update rust crate thiserror to v2.0.21 ([#90](https://github.com/higebu/dsct/issues/90))
+- *(deps)* Update taiki-e/install-action digest to 9983c65 ([#91](https://github.com/higebu/dsct/issues/91))
+- *(deps)* Update taiki-e/install-action digest to 4cef141 ([#93](https://github.com/higebu/dsct/issues/93))
+- *(deps)* Update bencherdev/bencher digest to f64a2e8 ([#92](https://github.com/higebu/dsct/issues/92))
 ## [0.2.15] - 2026-09-17
 
 ### 🐛 Bug Fixes
