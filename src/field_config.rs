@@ -275,6 +275,7 @@ mod tests {
     use super::*;
 
     /// Collects the children of every descriptor named `name`, at any depth.
+    #[cfg(feature = "tcp")]
     fn collect_children_named<'a>(
         fields: &'a [packet_dissector_core::field::FieldDescriptor],
         name: &str,
@@ -290,66 +291,109 @@ mod tests {
         }
     }
 
-    /// Every `_name` companion pattern in `default_fields.toml` must have a
-    /// corresponding base field in the dissector's descriptor tree.
+    /// Protocols in `default_fields.toml` whose field schema dsct cannot read
+    /// yet, so their patterns cannot be checked.
     ///
-    /// `_name` companion fields are synthesized by the serializer from a
-    /// descriptor's `display_fn` (see `emit_virtual_name_field` in
-    /// `serialize.rs`) as `"<base field name>_name"`. A pattern like
-    /// `"path_attributes.type_name"` only matches something real if the
-    /// dissector actually has a `path_attributes` child field named `type`
-    /// with a `display_fn` — otherwise the pattern is dead and the real
-    /// companion field (e.g. `type_code_name`) stays unmatched, so the
-    /// value the field is meant to disambiguate never appears in
-    /// non-verbose output. This walks every protocol's raw pattern list and
-    /// checks the base field exists among the corresponding descriptor's
-    /// children (or the protocol's top-level fields), catching drift
-    /// between `default_fields.toml` and the dissector crates it targets.
-    #[test]
-    fn name_patterns_have_existing_base_fields() {
-        use packet_dissector::registry::DissectorRegistry;
+    /// packet-dissector 0.6 `all_field_schemas()` only walks the dispatch
+    /// tables, so dissectors reached through a dispatcher or from inside
+    /// another dissector have no (or an empty) schema (tracked upstream as
+    /// "field schemas and protocol info miss dissectors behind
+    /// dispatchers"). The test fails once one of them gains a non-empty
+    /// schema, so the entry is removed and its patterns get checked.
+    #[cfg(feature = "tcp")]
+    const PROTOCOLS_WITHOUT_SCHEMA: &[(&str, &str)] = &[
+        (
+            "HTTP",
+            "registered as HttpDispatcher with empty field descriptors",
+        ),
+        ("HTTP2", "only reached through the HTTP dispatcher"),
+        (
+            "L2TP",
+            "registered as L2tpDispatcher with empty field descriptors",
+        ),
+        ("L2TPv3-UDP", "only reached through the L2TP dispatcher"),
+        ("RTP", "only reached through decode-as or heuristics"),
+        ("NAS-5G", "only reached from inside NGAP"),
+    ];
 
-        let raw: RawConfig = toml::from_str(DEFAULT_CONFIG).unwrap();
+    /// Returns a message for every pattern in `config_toml` that matches no
+    /// field, skipping the protocols in `without_schema`.
+    ///
+    /// Every exact (non-wildcard) pattern in `default_fields.toml` must name
+    /// a field the dissector can emit, or the value it was meant to show is
+    /// silently hidden in non-verbose output. The container of a nested
+    /// pattern (`parent.child`, `parent.*`, `parent.prefix*`) must exist too.
+    ///
+    /// A pattern names either a field in the descriptor tree or a `_name`
+    /// companion, which the serializer synthesizes from a descriptor's
+    /// `display_fn` as `"<base field name>_name"` (see
+    /// `emit_virtual_name_field` in `serialize.rs`). Nested patterns
+    /// (`parent.child`) filter by the immediate parent's name, so the parent
+    /// may sit at any depth of the tree (e.g. TLS `extensions` inside
+    /// `handshake_messages`). This catches drift between
+    /// `default_fields.toml` and the dissector crates after a bump.
+    ///
+    /// TCP reassembly also gives an intermediate segment a thin layer named
+    /// after the upper protocol that holds only the TCP
+    /// `reassembly_in_progress` and `segment_count` descriptors
+    /// (packet-dissector `TcpReassemblyService::add_reassembly_fields`), so
+    /// those two names are accepted as top-level fields of any protocol.
+    #[cfg(feature = "tcp")]
+    fn stale_patterns(config_toml: &str, without_schema: &[(&str, &str)]) -> Vec<String> {
+        use packet_dissector::registry::DissectorRegistry;
+        use packet_dissector_core::field::FieldDescriptor;
+
+        let raw: RawConfig = toml::from_str(config_toml).unwrap();
         let registry = DissectorRegistry::default();
         let schemas = registry.all_field_schemas();
 
+        let reassembly_fields = {
+            use packet_dissector::dissectors::tcp::{
+                FD_REASSEMBLY_IN_PROGRESS, FD_SEGMENT_COUNT, FIELD_DESCRIPTORS,
+            };
+            [
+                FIELD_DESCRIPTORS[FD_REASSEMBLY_IN_PROGRESS].name,
+                FIELD_DESCRIPTORS[FD_SEGMENT_COUNT].name,
+            ]
+        };
+
         let mut failures = Vec::new();
+
+        for (name, _) in without_schema {
+            if !raw.protocols.contains_key(*name) {
+                failures.push(format!(
+                    "PROTOCOLS_WITHOUT_SCHEMA entry \"{name}\" is not a default_fields.toml section"
+                ));
+            }
+        }
 
         for (protocol, raw_proto) in &raw.protocols {
             let Some(fields) = &raw_proto.fields else {
                 continue;
             };
-            // Some config protocol keys (e.g. "GTPv1-U") don't match a
-            // compiled-in dissector short_name in every feature
-            // combination; skip protocols with no matching schema instead
-            // of failing, since feature-gating is out of scope here.
-            let Some(schema) = schemas.iter().find(|s| s.short_name == protocol) else {
-                continue;
+            let schema = schemas
+                .iter()
+                .find(|s| s.short_name == protocol && !s.fields.is_empty());
+            let excluded = without_schema.iter().any(|(name, _)| name == protocol);
+            let schema = match (schema, excluded) {
+                (Some(schema), false) => schema,
+                (None, true) => continue,
+                (Some(_), true) => {
+                    failures.push(format!(
+                        "[{protocol}] now has a field schema: remove it from PROTOCOLS_WITHOUT_SCHEMA"
+                    ));
+                    continue;
+                }
+                // The dissector is compiled out in this feature set.
+                (None, false) => continue,
             };
 
             for pattern in fields {
-                // Only check exact (non-wildcard) patterns whose last
-                // segment ends with "_name" — prefix/suffix wildcards
-                // (e.g. "*_timestamp", "flags_names") aren't `_name`
-                // companion references in the same sense.
                 let (parent, last_segment) = match pattern.split_once('.') {
                     Some((p, c)) => (Some(p), c),
                     None => (None, pattern.as_str()),
                 };
-                if last_segment.contains('*') {
-                    continue;
-                }
-                let Some(base) = last_segment.strip_suffix("_name") else {
-                    continue;
-                };
-                if base.is_empty() {
-                    continue;
-                }
-
-                // Nested patterns filter by the immediate parent's name, so a
-                // parent may sit at any depth of the descriptor tree (e.g.
-                // TLS "extensions" inside "handshake_messages").
-                let scopes: Vec<&[packet_dissector_core::field::FieldDescriptor]> = match parent {
+                let scopes: Vec<&[FieldDescriptor]> = match parent {
                     None => vec![schema.fields],
                     Some(parent_name) => {
                         let mut found = Vec::new();
@@ -357,35 +401,90 @@ mod tests {
                         found
                     }
                 };
-
-                // A field literally named `last_segment` (e.g. DHCP's real
-                // "domain_name" option, or TLS's real "server_name"
-                // extension field) is not a synthesized `_name` companion
-                // pattern at all — skip it.
-                let is_real_field = scopes
-                    .iter()
-                    .any(|children| children.iter().any(|fd| fd.name == last_segment));
-                if is_real_field {
+                if scopes.is_empty() {
+                    failures.push(format!(
+                        "[{protocol}] pattern \"{pattern}\": no container field \"{}\"",
+                        parent.unwrap_or_default()
+                    ));
+                    continue;
+                }
+                // The parent of a wildcard pattern is checked above; the
+                // wildcard itself may legitimately match nothing yet.
+                if last_segment.contains('*') {
                     continue;
                 }
 
-                let found = scopes
-                    .iter()
-                    .any(|children| children.iter().any(|fd| fd.name == base));
-
-                if !found {
+                let exists = (parent.is_none() && reassembly_fields.contains(&last_segment))
+                    || scopes.iter().any(|children| {
+                        children.iter().any(|fd| {
+                            fd.name == last_segment
+                                || last_segment
+                                    .strip_suffix("_name")
+                                    .is_some_and(|base| fd.name == base && fd.display_fn.is_some())
+                        })
+                    });
+                if !exists {
                     failures.push(format!(
-                        "[{protocol}] pattern \"{pattern}\" has no base field \"{base}\" in the {} descriptor tree",
+                        "[{protocol}] pattern \"{pattern}\": no field or _name companion \"{last_segment}\" in the {} descriptor tree",
                         parent.unwrap_or(protocol.as_str())
                     ));
                 }
             }
         }
 
+        failures.sort();
+        failures
+    }
+
+    #[cfg(feature = "tcp")]
+    #[test]
+    fn exact_patterns_name_existing_fields() {
+        let failures = stale_patterns(DEFAULT_CONFIG, PROTOCOLS_WITHOUT_SCHEMA);
         assert!(
             failures.is_empty(),
-            "default_fields.toml has _name patterns with no matching base field:\n{}",
+            "default_fields.toml has patterns that match no field:\n{}",
             failures.join("\n")
+        );
+    }
+
+    /// The checker itself reports each kind of stale entry.
+    #[cfg(feature = "tcp")]
+    #[test]
+    fn stale_patterns_reports_each_kind_of_drift() {
+        let config = r#"
+            [DNS]
+            fields = [
+              "id",
+              "questions.name",
+              "answers.rdata_*",
+              "reassembly_in_progress",
+              "nope",
+              "nope_name",
+              "questions.nope",
+              "nosuch.*",
+            ]
+
+            [IPv4]
+            fields = ["src"]
+
+            [HTTP]
+            fields = ["unchecked"]
+
+            [NotCompiledIn]
+            fields = ["unchecked"]
+        "#;
+        let without_schema = [("IPv4", "test"), ("HTTP", "test"), ("Missing", "test")];
+
+        assert_eq!(
+            stale_patterns(config, &without_schema),
+            [
+                "PROTOCOLS_WITHOUT_SCHEMA entry \"Missing\" is not a default_fields.toml section",
+                "[DNS] pattern \"nope\": no field or _name companion \"nope\" in the DNS descriptor tree",
+                "[DNS] pattern \"nope_name\": no field or _name companion \"nope_name\" in the DNS descriptor tree",
+                "[DNS] pattern \"nosuch.*\": no container field \"nosuch\"",
+                "[DNS] pattern \"questions.nope\": no field or _name companion \"nope\" in the questions descriptor tree",
+                "[IPv4] now has a field schema: remove it from PROTOCOLS_WITHOUT_SCHEMA",
+            ]
         );
     }
 

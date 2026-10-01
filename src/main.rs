@@ -113,6 +113,14 @@ struct ReadOptions {
     /// algorithm takes from it — 4 bytes for GCM, GMAC, CTR and ChaCha20-Poly1305, 3 bytes
     /// for CCM (e.g. 20 bytes for `aes-128-gcm`, 36 bytes for `aes-256-gcm`).
     ///
+    /// Append `:esn` (high-order bits 0) or `:esn=HIGH` (decimal or `0x` hex) when the SA
+    /// uses Extended Sequence Numbers, which IKEv2 negotiates by default. Only the low-order
+    /// 32 bits are on the wire (RFC 4303 §2.2.1); GCM, CCM and ChaCha20-Poly1305 need the
+    /// high-order bits for their 12-octet AAD (RFC 4106 §5), so without them decryption
+    /// fails. `esn` is rejected for the other algorithms, which do not use it. HIGH is
+    /// fixed per SA: packets sent after the low-order 32 bits wrap within the capture need
+    /// a different HIGH and do not decrypt.
+    ///
     /// ESP with NULL encryption is decoded automatically, without any --esp-sa,
     /// whenever the ESP trailer identifies a recognised inner protocol. An
     /// explicit SA is only needed when that heuristic cannot confirm the trailer.
@@ -124,6 +132,7 @@ struct ReadOptions {
     /// - `0xDEADBEEF:null`
     /// - `0xDEADBEEF:null:hmac-sha1-96:0xKEY`
     /// - `0x1234:aes-128-gcm:0x00112233445566778899AABBCCDDEEFF00112233`
+    /// - `0x1234:aes-128-gcm:0x00112233445566778899AABBCCDDEEFF00112233:esn`
     /// - `0x1234:aes-256-cbc:0xKEY:hmac-sha1-96:0xKEY`
     #[arg(long = "esp-sa", num_args = 1)]
     esp_sa: Vec<String>,
@@ -267,7 +276,8 @@ struct SqlOptions {
     #[arg(short, long = "decode-as", num_args = 1)]
     decode_as: Vec<String>,
 
-    /// ESP Security Association for decryption when building the index.
+    /// ESP Security Association for decryption when building the index
+    /// (see `dsct read --help`).
     #[arg(long = "esp-sa", num_args = 1)]
     esp_sa: Vec<String>,
 }

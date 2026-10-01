@@ -161,6 +161,30 @@ Include the original packet bytes (link-layer included) as a hex string under
 dsct read capture.pcap --raw-bytes --count 1
 ```
 
+Decrypt ESP with `--esp-sa` (repeatable; also accepted by `index` and
+`sql`). The key is the full KEYMAT — cipher key followed by the salt or
+nonce — and `dsct read --help` lists the algorithms:
+
+```bash
+dsct read esp.pcap --esp-sa 0x1001:aes-128-gcm:0x000102030405060708090a0b0c0d0e0fcafebabe
+dsct read esp.pcap --esp-sa 0x1001:aes-128-cbc:0x<16-byte key>:hmac-sha1-96:0x<20-byte key>
+```
+
+When the SA uses Extended Sequence Numbers (the IKEv2 default), append `:esn`
+(high-order 32 bits 0) or `:esn=HIGH` (decimal or `0x` hex). Only the
+low-order 32 bits are on the wire (RFC 4303 §2.2.1) and GCM, CCM and
+ChaCha20-Poly1305 include the high-order bits in their AAD (RFC 4106 §5), so
+such an SA without `:esn` fails to decrypt. `esn` is rejected for the other
+algorithms, which do not use it. `HIGH` is fixed per SA, so packets sent after
+the low-order 32 bits wrap within the capture do not decrypt:
+
+```bash
+dsct read esp.pcap --esp-sa 0x1001:aes-128-gcm:0x000102030405060708090a0b0c0d0e0fcafebabe:esn
+dsct read esp.pcap --esp-sa 0x1001:aes-128-gcm:0x000102030405060708090a0b0c0d0e0fcafebabe:esn=1
+```
+
+The MCP `esp_sa` parameter takes the same strings.
+
 Speed up filter evaluation on large files with `--threads`:
 
 ```bash
