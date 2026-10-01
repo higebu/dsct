@@ -40,7 +40,11 @@ use meta::{Freshness, IndexMeta};
 /// walking a layer's fields (see `field_iter::top_level_fields`) — nested
 /// fields (e.g. a BGP capability's `code`/`value`) no longer leak into
 /// `extra` under their bare names.
-pub const SCHEMA_VERSION: u32 = 2;
+///
+/// v3: packet-dissector 0.6 — several field layouts changed (e.g. TCP
+/// `options` is an array of objects instead of a BLOB, TLS handshakes moved
+/// under `handshake_messages`), so v2 tables no longer match the dissectors.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// File-name suffix appended to the capture path (or used inside the cache
 /// directory) for the database file.

@@ -42,6 +42,7 @@ default = [
   "gtpv2c",
   "pfcp",
   "sip",
+  "sdp",
   "diameter",
   "nas5g",
   "ngap",
@@ -70,6 +71,36 @@ default = [
   "rtp",
   "quic",
   "stun",
+  "null",
+  "raw_ip",
+  "ieee80211",
+  "radiotap",
+  "llmnr",
+  "gtpv1c",
+  "nas-eps",
+  "s1ap",
+  "xnap",
+  "f1ap",
+  "e1ap",
+  "sgsap",
+  "erspan",
+  "eap",
+  "cdp",
+  "ldp",
+  "nsh",
+  "pim",
+  "rsvp",
+  "ipfix",
+  "snmp",
+  "bmp",
+  "pppoe",
+  "rtcp",
+  "dtls",
+  "quic-decrypt",
+  "m3ua",
+  "sccp",
+  "tcap",
+  "map",
 ]
 sqlite = ["dep:rusqlite"]
 tui = [
@@ -104,6 +135,7 @@ gtpv1u = ["packet-dissector/gtpv1u"]
 gtpv2c = ["packet-dissector/gtpv2c"]
 pfcp = ["packet-dissector/pfcp"]
 sip = ["packet-dissector/sip"]
+sdp = ["packet-dissector/sdp"]
 diameter = ["packet-dissector/diameter"]
 nas5g = ["packet-dissector/nas5g"]
 ngap = ["packet-dissector/ngap"]
@@ -132,11 +164,41 @@ ike = ["packet-dissector/ike"]
 rtp = ["packet-dissector/rtp"]
 quic = ["packet-dissector/quic"]
 stun = ["packet-dissector/stun"]
+null = ["packet-dissector/null"]
+raw_ip = ["packet-dissector/raw_ip"]
+ieee80211 = ["packet-dissector/ieee80211"]
+radiotap = ["packet-dissector/radiotap"]
+llmnr = ["packet-dissector/llmnr"]
+gtpv1c = ["packet-dissector/gtpv1c"]
+nas-eps = ["packet-dissector/nas-eps"]
+s1ap = ["packet-dissector/s1ap"]
+xnap = ["packet-dissector/xnap"]
+f1ap = ["packet-dissector/f1ap"]
+e1ap = ["packet-dissector/e1ap"]
+sgsap = ["packet-dissector/sgsap"]
+erspan = ["packet-dissector/erspan"]
+eap = ["packet-dissector/eap"]
+cdp = ["packet-dissector/cdp"]
+ldp = ["packet-dissector/ldp"]
+nsh = ["packet-dissector/nsh"]
+pim = ["packet-dissector/pim"]
+rsvp = ["packet-dissector/rsvp"]
+ipfix = ["packet-dissector/ipfix"]
+snmp = ["packet-dissector/snmp"]
+bmp = ["packet-dissector/bmp"]
+pppoe = ["packet-dissector/pppoe"]
+rtcp = ["packet-dissector/rtcp"]
+dtls = ["packet-dissector/dtls"]
+quic-decrypt = ["quic", "packet-dissector/quic-decrypt"]
+m3ua = ["packet-dissector/m3ua"]
+sccp = ["packet-dissector/sccp"]
+tcap = ["packet-dissector/tcap"]
+map = ["packet-dissector/map"]
 
 [dependencies]
-packet-dissector = { version = "0.5.0", default-features = false }
-packet-dissector-core = "0.5.0"
-packet-dissector-pcap = "0.5.0"
+packet-dissector = { version = "0.6.0", default-features = false }
+packet-dissector-core = "0.6.0"
+packet-dissector-pcap = "0.6.0"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -161,7 +223,7 @@ rusqlite = { version = "0.40", features = [
 [dev-dependencies]
 assert_cmd = "=2.2.2"
 criterion = { version = "=0.8.2", features = ["html_reports"] }
-packet-dissector-test-alloc = "=0.5.0"
+packet-dissector-test-alloc = "=0.6.0"
 predicates = "=3.1.4"
 tempfile = "=3.27.0"
 nix = { version = "=0.31.3", default-features = false, features = [

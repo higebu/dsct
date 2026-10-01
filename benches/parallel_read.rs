@@ -1,6 +1,6 @@
 //! Benchmark for parallel filter evaluation (`dsct read --threads`).
 //!
-//! Generates a synthetic pcap with mixed UDP and TCP packets and measures
+//! Generates a synthetic pcap with mixed ICMP and TCP packets and measures
 //! the throughput of the parallel read engine at threads=1 vs threads=4,
 //! writing matched records to [`io::sink()`].
 
@@ -15,9 +15,9 @@ use dsct::parallel_read::{ParallelReadOptions, run};
 // Pcap generation
 // ---------------------------------------------------------------------------
 
-/// Build a synthetic pcap with `n` packets alternating UDP and TCP.
+/// Build a synthetic pcap with `n` packets alternating ICMP and TCP.
 ///
-/// Even-indexed packets: Ethernet + IPv4 + UDP (42 bytes).
+/// Even-indexed packets: Ethernet + IPv4 + ICMP Echo Request (42 bytes).
 /// Odd-indexed packets:  Ethernet + IPv4 + TCP (54 bytes).
 fn build_bench_pcap(n: usize) -> Vec<u8> {
     let mut buf = Vec::with_capacity(24 + n * 60);
@@ -31,8 +31,8 @@ fn build_bench_pcap(n: usize) -> Vec<u8> {
     buf.extend_from_slice(&65535u32.to_le_bytes());
     buf.extend_from_slice(&1u32.to_le_bytes()); // Ethernet
 
-    // UDP packet template (42 bytes): Eth + IPv4 (UDP, 10.0.0.1→10.0.0.2)
-    let udp: &[u8] = &[
+    // ICMP Echo Request template (42 bytes): Eth + IPv4 (ICMP, 10.0.0.1→10.0.0.2)
+    let icmp: &[u8] = &[
         // Ethernet (14 bytes)
         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // dst mac
         0x00, 0x11, 0x22, 0x33, 0x44, 0x55, // src mac
@@ -40,14 +40,14 @@ fn build_bench_pcap(n: usize) -> Vec<u8> {
         // IPv4 (20 bytes)
         0x45, 0x00, 0x00, 0x1c, // version/IHL, DSCP, total length (28)
         0x00, 0x00, 0x00, 0x00, // id, flags+frag
-        0x40, 0x11, 0x00, 0x00, // TTL=64, proto=UDP, checksum=0
+        0x40, 0x01, 0x00, 0x00, // TTL=64, proto=ICMP, checksum=0
         0x0a, 0x00, 0x00, 0x01, // src 10.0.0.1
         0x0a, 0x00, 0x00, 0x02, // dst 10.0.0.2
-        // UDP (8 bytes)
-        0x10, 0x00, // src port 4096
-        0x10, 0x01, // dst port 4097
-        0x00, 0x08, // length 8
+        // ICMP Echo Request (8 bytes, RFC 792)
+        0x08, 0x00, // type 8, code 0
         0x00, 0x00, // checksum
+        0x00, 0x01, // identifier
+        0x00, 0x01, // sequence number
     ];
 
     // TCP SYN packet template (54 bytes): Eth + IPv4 (TCP, 10.0.0.3→10.0.0.4)
@@ -71,7 +71,7 @@ fn build_bench_pcap(n: usize) -> Vec<u8> {
     ];
 
     for i in 0..n {
-        let pkt = if i % 2 == 0 { udp } else { tcp };
+        let pkt = if i % 2 == 0 { icmp } else { tcp };
         let ts_sec = (i / 1_000_000) as u32;
         let ts_usec = (i % 1_000_000) as u32;
         buf.extend_from_slice(&ts_sec.to_le_bytes());
@@ -109,12 +109,13 @@ fn bench_parallel_read(c: &mut Criterion) {
     group.sample_size(10);
     group.throughput(Throughput::Bytes(file_size));
 
-    // Filter that is parallel-safe: match all UDP packets.
-    let filter = "udp";
+    // Filter that `dsct read --threads` runs in parallel: ICMP packets carry
+    // no cross-packet state.
+    let filter = "icmp";
 
     for &threads in &[1usize, 4usize] {
         group.bench_with_input(
-            BenchmarkId::new("udp_filter", format!("threads={threads}")),
+            BenchmarkId::new("icmp_filter", format!("threads={threads}")),
             &threads,
             |b, &t| {
                 b.iter(|| {

@@ -86,11 +86,32 @@ fn tcp_pkt(
     p
 }
 
+/// A minimal Ethernet + IPv4 + ICMP Echo Request packet (42 bytes).
+/// RFC 792 — Echo or Echo Reply Message.
+/// <https://www.rfc-editor.org/rfc/rfc792>
+fn icmp_echo_pkt(src_ip_last: u8, dst_ip_last: u8, sequence: u16) -> [u8; 42] {
+    let mut p = [0u8; 42];
+    p[0..6].copy_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+    p[6..12].copy_from_slice(&[0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
+    p[12..14].copy_from_slice(&[0x08, 0x00]);
+    p[14] = 0x45; // version=4, IHL=5
+    p[16..18].copy_from_slice(&28u16.to_be_bytes()); // total length = 20 IP + 8 ICMP
+    p[22] = 0x40; // TTL = 64
+    p[23] = 0x01; // protocol = 1 (ICMP)
+    p[26..30].copy_from_slice(&[10, 0, 0, src_ip_last]);
+    p[30..34].copy_from_slice(&[10, 0, 0, dst_ip_last]);
+    p[34] = 8; // type = Echo Request
+    p[38..40].copy_from_slice(&1u16.to_be_bytes()); // identifier
+    p[40..42].copy_from_slice(&sequence.to_be_bytes());
+    p
+}
+
 /// Build a synthetic pcap with `n_rounds` rounds of:
 /// - Several UDP packets (varying src/dst IPs and ports)
-/// - A TCP packet with `tcp.dst_port > 1024`
+/// - A TCP SYN and a TCP data packet with `tcp.dst_port > 1024`
+/// - An ICMP Echo Request (the only packets the parallel path handles)
 ///
-/// Total packets ≈ n_rounds * 5.
+/// Total packets = n_rounds * 6.
 pub fn build_mixed_pcap(n_rounds: usize) -> Vec<u8> {
     let mut pcap = Vec::new();
     // Global header
@@ -105,7 +126,7 @@ pub fn build_mixed_pcap(n_rounds: usize) -> Vec<u8> {
     let mut pkt_idx = 0usize;
 
     for i in 0..n_rounds {
-        let ts = (i as u32) * 5;
+        let ts = (i as u32) * 6;
 
         // UDP packet 1: 10.0.0.1 -> 10.0.0.2 port 4096->4097
         let u1 = udp_pkt(1, 2, 4096, 4097);
@@ -130,6 +151,11 @@ pub fn build_mixed_pcap(n_rounds: usize) -> Vec<u8> {
         // TCP data: 10.0.0.10 -> 10.0.0.20 port 12345->2000
         let t2 = tcp_pkt(10, 20, 12345, 2000, 0x18, (pkt_idx as u32) * 100);
         push_pkt(&mut pcap, ts + 4, 0, &t2);
+        pkt_idx += 1;
+
+        // ICMP Echo Request: 10.0.0.1 -> 10.0.0.2
+        let e1 = icmp_echo_pkt(1, 2, i as u16);
+        push_pkt(&mut pcap, ts + 5, 0, &e1);
         pkt_idx += 1;
     }
     let _ = pkt_idx; // suppress warning
@@ -186,24 +212,22 @@ fn assert_parallel_equals_sequential(path: &str, filter: &str) {
 }
 
 #[test]
-fn parallel_udp_filter_equals_sequential() {
-    let tmp = write_mixed_pcap(200); // 1000 packets
+fn parallel_icmp_filter_equals_sequential() {
+    let tmp = write_mixed_pcap(200); // 1200 packets
+    let path = tmp.path().to_str().unwrap();
+    assert_parallel_equals_sequential(path, "icmp");
+    assert_parallel_equals_sequential(path, "icmp AND ipv4.src = '10.0.0.1'");
+}
+
+/// UDP, TCP and IPv4 filters may match packets carrying cross-packet state
+/// (TCP stream IDs, UDP tunnels with TCP inside, IPFIX templates), so they
+/// fall back to the sequential path and still equal `--threads 1`.
+#[test]
+fn fallback_udp_tcp_ipv4_filters_equal_sequential() {
+    let tmp = write_mixed_pcap(200);
     let path = tmp.path().to_str().unwrap();
     assert_parallel_equals_sequential(path, "udp");
-}
-
-#[test]
-fn parallel_tcp_dst_port_filter_equals_sequential() {
-    let tmp = write_mixed_pcap(200);
-    let path = tmp.path().to_str().unwrap();
     assert_parallel_equals_sequential(path, "tcp.dst_port > 1024");
-}
-
-#[test]
-fn parallel_ipv4_src_filter_equals_sequential() {
-    let tmp = write_mixed_pcap(200);
-    let path = tmp.path().to_str().unwrap();
-    // 10.0.0.1 is used in UDP packets in the generator
     assert_parallel_equals_sequential(path, "ipv4.src = '10.0.0.1'");
 }
 
@@ -232,6 +256,46 @@ fn fallback_dns_filter_succeeds_and_equals_sequential() {
     assert_eq!(seq, par, "fallback dns output should equal sequential");
 }
 
+/// Two TCP flows: `first` packets of flow A followed by `second` packets of
+/// flow B, all ACK-only segments.
+fn write_two_flow_tcp_pcap(first: usize, second: usize) -> NamedTempFile {
+    let mut pcap = Vec::new();
+    pcap.extend_from_slice(&0xA1B2C3D4u32.to_le_bytes());
+    pcap.extend_from_slice(&2u16.to_le_bytes());
+    pcap.extend_from_slice(&4u16.to_le_bytes());
+    pcap.extend_from_slice(&0i32.to_le_bytes());
+    pcap.extend_from_slice(&0u32.to_le_bytes());
+    pcap.extend_from_slice(&65535u32.to_le_bytes());
+    pcap.extend_from_slice(&1u32.to_le_bytes()); // Ethernet
+    for i in 0..first {
+        push_pkt(
+            &mut pcap,
+            i as u32,
+            0,
+            &tcp_pkt(1, 2, 1111, 2000, 0x10, i as u32),
+        );
+    }
+    for i in 0..second {
+        let ts = (first + i) as u32;
+        push_pkt(&mut pcap, ts, 0, &tcp_pkt(1, 2, 2222, 3000, 0x10, i as u32));
+    }
+    let mut tmp = NamedTempFile::with_suffix(".pcap").unwrap();
+    tmp.write_all(&pcap).unwrap();
+    tmp
+}
+
+/// `tcp.stream_id` is assigned in encounter order across the whole capture,
+/// so a worker that only sees flow B must not number it as the first stream.
+/// A TCP filter therefore has to be evaluated sequentially.
+#[test]
+fn tcp_filter_with_several_flows_equals_sequential() {
+    // Flow B spans several reader batches (256 packets each) on its own.
+    let tmp = write_two_flow_tcp_pcap(300, 500);
+    let path = tmp.path().to_str().unwrap();
+    assert_parallel_equals_sequential(path, "tcp.dst_port > 1024");
+    assert_parallel_equals_sequential(path, "ipv4.src = '10.0.0.1'");
+}
+
 // ---------------------------------------------------------------------------
 // Order/limit interplay
 // ---------------------------------------------------------------------------
@@ -240,9 +304,9 @@ fn fallback_dns_filter_succeeds_and_equals_sequential() {
 fn parallel_count_yields_first_n_matches() {
     let tmp = write_mixed_pcap(200);
     let path = tmp.path().to_str().unwrap();
-    // Both should give exactly the first 10 UDP matches
-    let seq = dsct_read_stdout(path, &["-f", "udp", "--count", "10", "--threads", "1"]);
-    let par = dsct_read_stdout(path, &["-f", "udp", "--count", "10", "--threads", "4"]);
+    // Both should give exactly the first 10 ICMP matches
+    let seq = dsct_read_stdout(path, &["-f", "icmp", "--count", "10", "--threads", "1"]);
+    let par = dsct_read_stdout(path, &["-f", "icmp", "--count", "10", "--threads", "4"]);
     assert_eq!(
         seq, par,
         "count-limited parallel output differs from sequential"
@@ -260,11 +324,27 @@ fn parallel_offset_skips_n_matches() {
     let path = tmp.path().to_str().unwrap();
     let seq = dsct_read_stdout(
         path,
-        &["-f", "udp", "--offset", "5", "--no-limit", "--threads", "1"],
+        &[
+            "-f",
+            "icmp",
+            "--offset",
+            "5",
+            "--no-limit",
+            "--threads",
+            "1",
+        ],
     );
     let par = dsct_read_stdout(
         path,
-        &["-f", "udp", "--offset", "5", "--no-limit", "--threads", "4"],
+        &[
+            "-f",
+            "icmp",
+            "--offset",
+            "5",
+            "--no-limit",
+            "--threads",
+            "4",
+        ],
     );
     assert_eq!(seq, par, "offset parallel output differs from sequential");
 }
@@ -278,7 +358,7 @@ fn parallel_sample_rate_combined_offset_count() {
         path,
         &[
             "-f",
-            "udp",
+            "icmp",
             "-s",
             "3",
             "--offset",
@@ -293,7 +373,7 @@ fn parallel_sample_rate_combined_offset_count() {
         path,
         &[
             "-f",
-            "udp",
+            "icmp",
             "-s",
             "3",
             "--offset",
@@ -318,7 +398,7 @@ fn parallel_sample_rate_combined_offset_count() {
 fn parallel_progress_reports_total_processed_packets() {
     // --progress must report packets_processed counting ALL packets read
     // (like the sequential path), not just filter-matching ones.
-    // 400 rounds = 2000 packets, 1200 of which are UDP matches.
+    // 400 rounds = 2400 packets, 400 of which are ICMP matches.
     let tmp = write_mixed_pcap(400);
     let path = tmp.path().to_str().unwrap();
     let out = Command::cargo_bin("dsct")
@@ -327,7 +407,7 @@ fn parallel_progress_reports_total_processed_packets() {
             "read",
             path,
             "-f",
-            "udp",
+            "icmp",
             "--no-limit",
             "--threads",
             "4",
@@ -349,7 +429,7 @@ fn parallel_progress_reports_total_processed_packets() {
         "expected at least one progress report on stderr, got: {stderr}"
     );
     let max = processed.iter().copied().max().unwrap();
-    // Only 1200 packets match; reaching >= 1500 proves the count covers all
+    // Only 400 packets match; reaching >= 1500 proves the count covers all
     // processed packets rather than matches only.
     assert!(
         max >= 1500,
@@ -370,7 +450,7 @@ fn invalid_decode_as_on_parallel_path_exits_with_code_2() {
             "read",
             path,
             "-f",
-            "udp",
+            "icmp",
             "--threads",
             "4",
             "--decode-as",
@@ -438,13 +518,13 @@ fn dsct_threads_env_unparsable_exits_with_code_2() {
 fn dsct_threads_env_equals_flag() {
     let tmp = write_mixed_pcap(200);
     let path = tmp.path().to_str().unwrap();
-    let via_flag = dsct_read_stdout(path, &["-f", "udp", "--no-limit", "--threads", "4"]);
+    let via_flag = dsct_read_stdout(path, &["-f", "icmp", "--no-limit", "--threads", "4"]);
     // Use DSCT_THREADS env without --threads flag
     let mut cmd = Command::cargo_bin("dsct").unwrap();
     cmd.arg("read")
         .arg(path)
         .arg("-f")
-        .arg("udp")
+        .arg("icmp")
         .arg("--no-limit");
     cmd.env("DSCT_THREADS", "4");
     let out = cmd.output().unwrap();

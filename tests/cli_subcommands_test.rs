@@ -55,6 +55,62 @@ fn list_outputs_valid_json_array_with_core_protocols() {
     }
 }
 
+/// Protocols added in packet-dissector 0.6 are part of the default build.
+#[test]
+fn list_includes_protocols_enabled_by_default() {
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args(["list"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let value: Value =
+        serde_json::from_str(String::from_utf8(output.stdout).unwrap().trim()).unwrap();
+    let names: Vec<&str> = value
+        .as_array()
+        .expect("list output must be a JSON array")
+        .iter()
+        .filter_map(|entry| entry.get("name").and_then(Value::as_str))
+        .collect();
+    for expected in [
+        "Null",
+        "RawIP",
+        "SDP",
+        "IEEE802.11",
+        "Radiotap",
+        "LLMNR",
+        "GTPv1-C",
+        "S1AP",
+        "XnAP",
+        "F1AP",
+        "E1AP",
+        "SGsAP",
+        "ERSPAN",
+        "EAP",
+        "CDP",
+        "LDP",
+        "NSH",
+        "PIM",
+        "RSVP",
+        "IPFIX",
+        "SNMP",
+        "BMP",
+        "PPPoE",
+        "RTCP",
+        "DTLS",
+        "M3UA",
+        "SCCP",
+        "TCAP",
+        "MAP",
+    ] {
+        assert!(
+            names.contains(&expected),
+            "{expected} must appear in `dsct list`; got {names:?}"
+        );
+    }
+}
+
 #[test]
 fn list_entries_carry_layer_and_references() {
     let output = Command::cargo_bin("dsct")

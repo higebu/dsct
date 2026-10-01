@@ -103,13 +103,15 @@ struct ReadOptions {
     ///   so the inner packet is dissected without a key.
     /// - `spi:null:auth_algo:auth_key_hex` — NULL encryption with an integrity
     ///   algorithm, whose ICV is stripped before the inner packet is read.
-    /// - `spi:enc_algo:enc_key_hex` — AEAD algorithms (`aes-128-gcm`, `aes-192-gcm`,
-    ///   `aes-256-gcm`).
-    /// - `spi:enc_algo:enc_key_hex:auth_algo:auth_key_hex` — non-AEAD (separate cipher + auth).
+    /// - `spi:enc_algo:enc_key_hex` — AEAD algorithms (`aes-{128,192,256}-gcm`, optionally
+    ///   with an ICV length suffix `-8`/`-12`/`-16`; `aes-{128,192,256}-ccm-{8,12,16}`;
+    ///   `aes-{128,192,256}-gmac`; `chacha20-poly1305`), or a cipher without integrity.
+    /// - `spi:enc_algo:enc_key_hex:auth_algo:auth_key_hex` — non-AEAD (separate cipher + auth),
+    ///   e.g. `aes-{128,192,256}-cbc`, `aes-{128,192,256}-ctr` or `3des-cbc`.
     ///
-    /// For AEAD algorithms, `enc_key_hex` must have the correct length for the algorithm and
-    /// must include the implicit salt. For AES-GCM in IPsec this means key + 4-byte salt:
-    /// 20 bytes for `aes-128-gcm`, 28 bytes for `aes-192-gcm` and 36 bytes for `aes-256-gcm`.
+    /// `enc_key_hex` is the full KEYMAT: the cipher key followed by the salt or nonce the
+    /// algorithm takes from it — 4 bytes for GCM, GMAC, CTR and ChaCha20-Poly1305, 3 bytes
+    /// for CCM (e.g. 20 bytes for `aes-128-gcm`, 36 bytes for `aes-256-gcm`).
     ///
     /// ESP with NULL encryption is decoded automatically, without any --esp-sa,
     /// whenever the ESP trailer identifies a recognised inner protocol. An
@@ -133,9 +135,10 @@ struct ReadOptions {
 
     /// Number of worker threads for parallel filter evaluation.
     /// Default: physical CPU count. Honoured only for file input with a
-    /// parallel-safe `--filter`. The `DSCT_THREADS` environment variable
-    /// is also honoured (flag takes precedence). Filters that require TCP
-    /// reassembly (HTTP, DNS-over-TCP, TLS, `tcp.stream_id`, etc.) and
+    /// `--filter` that requires ARP, LACP, ICMP, ICMPv6 or IGMP, whose packets
+    /// carry no cross-packet state. The `DSCT_THREADS` environment variable
+    /// is also honoured (flag takes precedence). Any other filter — packets
+    /// that may contain TCP (stream IDs, reassembly), HTTP/2 or IPFIX — and
     /// stdin input always fall back to sequential processing.
     #[arg(long)]
     threads: Option<usize>,
@@ -497,12 +500,15 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
         1 // not consulted; sequential path always used
     };
 
-    // Determine whether the parallel path is eligible.
+    // Determine whether the parallel path is eligible. The filter must
+    // evaluate the same in any order, and the packets it matches must not
+    // carry layers whose output depends on earlier packets (TCP stream IDs,
+    // reassembled payloads, ...), which independent workers cannot reproduce.
     let use_parallel = !is_stdin
         && resolved_threads > 1
-        && filter_expr
-            .as_ref()
-            .is_some_and(|e| !e.is_packet_number_only() && e.is_parallel_safe())
+        && filter_expr.as_ref().is_some_and(|e| {
+            !e.is_packet_number_only() && e.is_parallel_safe() && e.matches_only_stateless_packets()
+        })
         && esp_sa_args.is_empty();
 
     if use_parallel {

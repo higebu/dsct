@@ -148,6 +148,46 @@ impl FilterExpr {
             }
         }
     }
+
+    /// Returns `true` if every packet this filter can match is free of layers
+    /// that carry cross-packet state.
+    ///
+    /// [`is_parallel_safe`](Self::is_parallel_safe) only says the *filter*
+    /// evaluates the same in any order. The `read` output of a matched packet
+    /// additionally contains every layer, and some of them depend on earlier
+    /// packets: TCP (`stream_id`, reassembled upper layers such as HTTP or
+    /// TLS), HTTP/2 (HPACK dynamic table) and NetFlow v9 / IPFIX (template
+    /// cache). Such a layer can follow almost any L2–L4 header, including UDP
+    /// tunnels (VXLAN, GTP-U, ...), so only a filter that requires a protocol
+    /// which ends the dissection chain without carrying another packet —
+    /// ARP, LACP, ICMP, ICMPv6 or IGMP — guarantees a state-free packet.
+    ///
+    /// This assumes packet-dissector's `ip-reassembly` feature stays disabled
+    /// (dsct does not enable it): with it, any packet above IP could depend
+    /// on fragments seen earlier.
+    pub fn matches_only_stateless_packets(&self) -> bool {
+        /// Protocols that end the dissection chain and never carry a layer
+        /// with cross-packet state.
+        const TERMINAL_PROTOCOLS: &[&str] = &["arp", "lacp", "icmp", "icmpv6", "igmp"];
+
+        match self {
+            FilterExpr::PacketNumber(_) | FilterExpr::Not(_) => false,
+            FilterExpr::And(a, b) => {
+                a.matches_only_stateless_packets() || b.matches_only_stateless_packets()
+            }
+            FilterExpr::Or(a, b) => {
+                a.matches_only_stateless_packets() && b.matches_only_stateless_packets()
+            }
+            FilterExpr::Protocol(name) => {
+                let norm = crate::filter::normalize_protocol_name(name);
+                TERMINAL_PROTOCOLS.iter().any(|&p| p == norm)
+            }
+            FilterExpr::Where(clause) => {
+                let norm = crate::filter::normalize_protocol_name(&clause.protocol);
+                TERMINAL_PROTOCOLS.iter().any(|&p| p == norm)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -580,5 +620,44 @@ mod tests {
     fn parallel_safe_tcp_dst_port() {
         let expr = FilterExpr::parse("tcp.dst_port > 1024").unwrap().unwrap();
         assert!(expr.is_parallel_safe());
+    }
+
+    // --- matches_only_stateless_packets ---
+
+    fn stateless(filter: &str) -> bool {
+        FilterExpr::parse(filter)
+            .unwrap()
+            .unwrap()
+            .matches_only_stateless_packets()
+    }
+
+    #[test]
+    fn terminal_protocols_match_only_stateless_packets() {
+        for filter in ["arp", "lacp", "icmp", "ICMPv6", "igmp", "icmp.type = 8"] {
+            assert!(stateless(filter), "{filter}");
+        }
+    }
+
+    #[test]
+    fn transport_and_lower_layers_may_carry_stateful_layers() {
+        for filter in [
+            "tcp",
+            "tcp.dst_port > 1024",
+            "udp",
+            "ipv4.src = '10.0.0.1'",
+            "ethernet",
+            "NOT tcp",
+            "packet_number BETWEEN 1 AND 10",
+        ] {
+            assert!(!stateless(filter), "{filter}");
+        }
+    }
+
+    #[test]
+    fn and_needs_one_terminal_side_and_or_needs_both() {
+        assert!(stateless("icmp AND ipv4.src = '10.0.0.1'"));
+        assert!(stateless("ipv4.src = '10.0.0.1' AND arp"));
+        assert!(stateless("icmp OR arp"));
+        assert!(!stateless("icmp OR udp"));
     }
 }

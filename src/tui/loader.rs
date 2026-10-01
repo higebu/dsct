@@ -318,6 +318,22 @@ fn format_addr(value: &FieldValue<'_>) -> String {
     }
 }
 
+/// Display name of the first message in a TLS record's `handshake_messages`.
+fn first_tls_handshake_type_name(buf: &DissectBuffer<'_>, layer: &Layer) -> Option<&'static str> {
+    let messages = buf.field_by_name(layer, "handshake_messages")?;
+    let FieldValue::Array(ref range) = messages.value else {
+        return None;
+    };
+    let first = buf
+        .nested_fields(range)
+        .iter()
+        .find_map(|f| match f.value {
+            FieldValue::Object(ref object) => Some(object.clone()),
+            _ => None,
+        })?;
+    buf.resolve_nested_display_name(&first, "type_name")
+}
+
 /// Extract a one-line info string from the packet.
 ///
 /// Strategy:
@@ -477,10 +493,10 @@ fn extract_info(buf: &DissectBuffer<'_>, data: &[u8]) -> String {
         return cmd.to_string();
     }
 
-    // --- TLS: content type name (+ handshake type name if applicable) ---
+    // --- TLS: content type name (+ first handshake message type if applicable) ---
     if let Some(layer) = buf.layer_by_name("TLS") {
         let ct = buf.resolve_display_name(layer, "content_type_name");
-        let ht = buf.resolve_display_name(layer, "handshake_type_name");
+        let ht = first_tls_handshake_type_name(buf, layer);
         match (ct, ht) {
             (Some(ct), Some(ht)) => return format!("{ct}, {ht}"),
             (Some(ct), None) => return ct.to_string(),
@@ -963,16 +979,51 @@ pub(crate) mod tests {
         assert_eq!(extract_info(&buf, &[]), "Credit-Control-Request");
     }
 
+    /// Ethernet / IPv4 / TCP (port 443) frame carrying a TLS record with a
+    /// minimal ClientHello (one cipher suite, no extensions).
+    ///
+    /// RFC 8446, Section 4.1.2 — ClientHello.
+    /// <https://www.rfc-editor.org/rfc/rfc8446#section-4.1.2>
+    fn tls_client_hello_frame() -> Vec<u8> {
+        let mut body = vec![0x03, 0x03]; // legacy_version
+        body.extend_from_slice(&[0xAB; 32]); // random
+        body.push(0); // legacy_session_id length
+        body.extend_from_slice(&[0x00, 0x02, 0x13, 0x01]); // cipher_suites
+        body.extend_from_slice(&[0x01, 0x00]); // legacy_compression_methods
+        let mut handshake = vec![0x01]; // client_hello
+        handshake.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
+        handshake.extend_from_slice(&body);
+        let mut record = vec![0x16, 0x03, 0x01]; // handshake record
+        record.extend_from_slice(&(handshake.len() as u16).to_be_bytes());
+        record.extend_from_slice(&handshake);
+
+        let mut tcp = Vec::new();
+        tcp.extend_from_slice(&50000u16.to_be_bytes());
+        tcp.extend_from_slice(&443u16.to_be_bytes());
+        tcp.extend_from_slice(&1u32.to_be_bytes()); // seq
+        tcp.extend_from_slice(&1u32.to_be_bytes()); // ack
+        tcp.extend_from_slice(&[0x50, 0x18, 0x20, 0x00, 0, 0, 0, 0]); // PSH+ACK
+        tcp.extend_from_slice(&record);
+
+        let mut frame = vec![0xff; 6];
+        frame.extend_from_slice(&[0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
+        frame.extend_from_slice(&[0x08, 0x00]); // IPv4
+        frame.extend_from_slice(&[0x45, 0x00]);
+        frame.extend_from_slice(&((20 + tcp.len()) as u16).to_be_bytes());
+        frame.extend_from_slice(&[0, 0, 0, 0, 64, 6, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2]);
+        frame.extend_from_slice(&tcp);
+        frame
+    }
+
     #[test]
     fn extract_info_tls_handshake() {
-        use packet_dissector::dissector::Dissector;
-        let tls_fds = packet_dissector::dissectors::tls::TlsDissector.field_descriptors();
+        let frame = tls_client_hello_frame();
+        let registry = DissectorRegistry::default();
         let mut buf = DissectBuffer::new();
-        buf.begin_layer("TLS", None, &[], 0..0);
-        push_real_field(&mut buf, tls_fds, "content_type", FieldValue::U8(22));
-        push_real_field(&mut buf, tls_fds, "handshake_type", FieldValue::U8(1));
-        buf.end_layer();
-        assert_eq!(extract_info(&buf, &[]), "Handshake, Client Hello");
+        registry
+            .dissect_with_link_type(&frame, 1, &mut buf)
+            .unwrap();
+        assert_eq!(extract_info(&buf, &frame), "Handshake, Client Hello");
     }
 
     #[test]

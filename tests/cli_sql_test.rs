@@ -560,7 +560,7 @@ fn schema_flag_describes_database() {
     assert!(out.status.success());
     let schema: Value = serde_json::from_slice(&out.stdout).unwrap();
     // Keep in sync with `sqlite::SCHEMA_VERSION` in src/sqlite/mod.rs.
-    assert_eq!(schema["schema_version"], 2);
+    assert_eq!(schema["schema_version"], 3);
     let tables = schema["tables"].as_array().unwrap();
     let names: Vec<&str> = tables.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
@@ -829,12 +829,10 @@ fn schema_command_describes_sql_rows() {
 
 #[test]
 fn blob_columns_are_hex_strings() {
-    // TCP with a 4-byte NOP/NOP/timestamp-less option block: data offset 6.
-    let mut seg = tcp(40000, 8080, 1, 0, 0x02, &[]);
-    seg[12] = 0x60; // data offset = 6 words
-    seg.extend_from_slice(&[0x01, 0x01, 0x01, 0x00]); // NOP, NOP, NOP, EOL
-    let frame = eth(0x0800, &ipv4([10, 0, 0, 1], [10, 0, 0, 2], 6, &seg));
+    // ICMP Echo Request (RFC 792) whose 4-byte data is stored as a BLOB.
+    let icmp = [8, 0, 0, 0, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x01, 0x00];
+    let frame = eth(0x0800, &ipv4([10, 0, 0, 1], [10, 0, 0, 2], 1, &icmp));
     let (_dir, cap) = write_capture(&[frame]);
-    let out = rows(&sql(&cap, "SELECT \"options\" FROM tcp"));
-    assert_eq!(out[0]["options"], "01010100");
+    let out = rows(&sql(&cap, "SELECT \"data\" FROM icmp"));
+    assert_eq!(out[0]["data"], "01010100");
 }
