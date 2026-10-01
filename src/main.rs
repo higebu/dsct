@@ -352,10 +352,32 @@ fn main() {
     };
 
     if let Err(e) = result {
+        // The reader of stdout went away (e.g. `dsct ... | head`): stop
+        // quietly with success, like common Unix tools.
+        if e.is_broken_pipe() {
+            process::exit(0);
+        }
         let code = exit_code_for_error(&e);
         emit_error(&e);
         process::exit(code);
     }
+}
+
+/// Write `value` as JSON followed by a newline to stdout, compact on one
+/// line or pretty-printed.
+///
+/// Unlike `println!`, a failed write (e.g. `EPIPE` when the reader of a pipe
+/// has exited) is returned as an error instead of panicking.
+fn print_json(value: &impl serde::Serialize, pretty: bool) -> Result<()> {
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    if pretty {
+        serde_json::to_writer_pretty(&mut out, value)?;
+    } else {
+        serde_json::to_writer(&mut out, value)?;
+    }
+    writeln!(out)?;
+    out.flush()?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -541,11 +563,11 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
             },
         )?;
 
+        // Flush first so a closed stdout ends the command before the warning.
+        writer.flush()?;
         if is_default_limit && outcome.truncated_by_limit {
             emit_truncation_warning(limits::DEFAULT_PACKET_COUNT);
         }
-
-        writer.flush()?;
         return Ok(());
     }
 
@@ -649,13 +671,14 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
         Ok(ControlFlow::Continue(()))
     })?;
 
+    // Flush first so a closed stdout ends the command before the warning.
+    writer.flush()?;
+
     // Warn only when the default limit actually truncated output (i.e. the
     // loop broke due to the count limit, not because we reached EOF).
     if is_default_limit && truncated_by_limit {
         emit_truncation_warning(limits::DEFAULT_PACKET_COUNT);
     }
-
-    writer.flush()?;
 
     Ok(())
 }
@@ -823,7 +846,7 @@ fn cmd_index(opts: IndexOptions) -> Result<()> {
         info["flows"] = serde_json::json!(b.flows);
         info["elapsed_secs"] = serde_json::json!((b.elapsed_secs * 1000.0).round() / 1000.0);
     }
-    println!("{}", serde_json::to_string(&info)?);
+    print_json(&info, false)?;
     Ok(())
 }
 
@@ -925,14 +948,14 @@ fn cmd_fields(protocol_filter: Vec<String>) -> Result<()> {
             entries.push(schema::fd_to_json(fd, s.short_name, s.short_name, s.name));
         }
     }
-    println!("{}", serde_json::to_string(&entries)?);
+    print_json(&entries, false)?;
 
     Ok(())
 }
 
 fn cmd_list() -> Result<()> {
     let entries = schema::protocol_list_json();
-    println!("{}", serde_json::to_string(&entries)?);
+    print_json(&entries, false)?;
 
     Ok(())
 }
@@ -950,7 +973,7 @@ fn cmd_version() -> Result<()> {
         "protocols": protocol_names,
         "output_formats": ["jsonl"],
     });
-    println!("{}", serde_json::to_string(&info)?);
+    print_json(&info, false)?;
 
     Ok(())
 }
@@ -968,7 +991,7 @@ fn cmd_schema(command: Option<String>) -> Result<()> {
             )));
         }
     };
-    println!("{}", serde_json::to_string_pretty(&value)?);
+    print_json(&value, true)?;
 
     Ok(())
 }

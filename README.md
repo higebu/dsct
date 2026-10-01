@@ -454,6 +454,10 @@ Exit codes:
 | `3` | File not found or permission denied |
 | `4` | Invalid capture format |
 
+When the reader of stdout goes away (for example `dsct read capture.pcap | head`),
+dsct stops writing and exits `0` without an error message. Warnings and
+progress records written to stderr before that point are kept.
+
 ## License
 
 Licensed under either of [Apache License 2.0](LICENSE-APACHE) or [MIT License](LICENSE-MIT) at your option.

@@ -110,6 +110,27 @@ impl DsctError {
         self
     }
 
+    /// Returns `true` if this error, or any error in its source chain, is a
+    /// write to a pipe whose reader has gone away (`EPIPE`), e.g. stdout
+    /// piped into `head`.
+    pub fn is_broken_pipe(&self) -> bool {
+        let mut current: Option<&(dyn StdError + 'static)> = Some(self);
+        while let Some(error) = current {
+            let kind = if let Some(io_error) = error.downcast_ref::<io::Error>() {
+                Some(io_error.kind())
+            } else if let Some(json_error) = error.downcast_ref::<serde_json::Error>() {
+                json_error.io_error_kind()
+            } else {
+                None
+            };
+            if kind == Some(io::ErrorKind::BrokenPipe) {
+                return true;
+            }
+            current = error.source();
+        }
+        false
+    }
+
     /// Return the error category.
     pub fn category(&self) -> ErrorCategory {
         self.category
@@ -297,6 +318,35 @@ mod tests {
         let err = DsctError::msg("inner").context("outer");
         let source = StdErrorTrait::source(&err).expect("context should chain source");
         assert_eq!(source.to_string(), "inner");
+    }
+
+    #[test]
+    fn broken_pipe_is_detected_through_the_source_chain() {
+        let io_error = || io::Error::from(io::ErrorKind::BrokenPipe);
+        assert!(DsctError::from(io_error()).is_broken_pipe());
+        assert!(
+            DsctError::from(io_error())
+                .context("writing")
+                .is_broken_pipe()
+        );
+        assert!(DsctError::from(serde_json::Error::io(io_error())).is_broken_pipe());
+        assert!(
+            DsctError::with_source(ErrorCategory::Error, "boxed", io_error())
+                .context("outer")
+                .is_broken_pipe()
+        );
+    }
+
+    #[test]
+    fn other_errors_are_not_broken_pipe() {
+        assert!(!DsctError::msg("broken pipe").is_broken_pipe());
+        assert!(!DsctError::from(io::Error::from(io::ErrorKind::NotFound)).is_broken_pipe());
+        assert!(
+            !DsctError::from(serde_json::Error::io(io::Error::from(
+                io::ErrorKind::WriteZero
+            )))
+            .is_broken_pipe()
+        );
     }
 
     #[test]
