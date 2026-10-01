@@ -1148,3 +1148,51 @@ fn dtls_client_hello_default_fields_match_tls() {
         "random is a verbose-only field: {dtls}"
     );
 }
+
+/// TCP reassembly adds a thin DNS layer holding only `reassembly_in_progress`
+/// and `segment_count` to a segment that carries part of a DNS-over-TCP
+/// message (packet-dissector `TcpReassemblyService::add_reassembly_fields`).
+/// The default field config must keep both visible, or that DNS layer is
+/// empty in non-verbose output.
+#[cfg(all(feature = "dns", feature = "tcp"))]
+#[test]
+fn dns_over_tcp_partial_segment_shows_reassembly_status() {
+    // RFC 1035, Section 4.2.2 — a 2-byte length prefix announcing 32 bytes,
+    // followed by only 4 of them.
+    // <https://www.rfc-editor.org/rfc/rfc1035#section-4.2.2>
+    let payload = [0x00, 0x20, 0x12, 0x34, 0x01, 0x00];
+    let frame = tcp_payload_frame([10, 0, 0, 1], [10, 0, 0, 2], 50000, 53, &payload);
+    let mut pcap = Vec::new();
+    pcap.extend_from_slice(&0xA1B2C3D4u32.to_le_bytes());
+    pcap.extend_from_slice(&2u16.to_le_bytes());
+    pcap.extend_from_slice(&4u16.to_le_bytes());
+    pcap.extend_from_slice(&0i32.to_le_bytes());
+    pcap.extend_from_slice(&0u32.to_le_bytes());
+    pcap.extend_from_slice(&65535u32.to_le_bytes());
+    pcap.extend_from_slice(&1u32.to_le_bytes()); // Ethernet
+    pcap.extend_from_slice(&1u32.to_le_bytes()); // ts_sec
+    pcap.extend_from_slice(&0u32.to_le_bytes()); // ts_usec
+    pcap.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+    pcap.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+    pcap.extend_from_slice(&frame);
+    let mut tmp = NamedTempFile::with_suffix(".pcap").unwrap();
+    tmp.write_all(&pcap).unwrap();
+
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args(["read", tmp.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let dns = v["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["protocol"] == "DNS")
+        .unwrap_or_else(|| panic!("DNS layer should be present: {stdout}"));
+
+    assert_eq!(dns["fields"]["reassembly_in_progress"], 1, "{dns}");
+    assert_eq!(dns["fields"]["segment_count"], 1, "{dns}");
+}
