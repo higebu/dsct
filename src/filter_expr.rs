@@ -161,6 +161,10 @@ impl FilterExpr {
     /// tunnels (VXLAN, GTP-U, ...), so only a filter that requires a protocol
     /// which ends the dissection chain without carrying another packet —
     /// ARP, LACP, ICMP, ICMPv6 or IGMP — guarantees a state-free packet.
+    ///
+    /// This assumes packet-dissector's `ip-reassembly` feature stays disabled
+    /// (dsct does not enable it): with it, any packet above IP could depend
+    /// on fragments seen earlier.
     pub fn matches_only_stateless_packets(&self) -> bool {
         /// Protocols that end the dissection chain and never carry a layer
         /// with cross-packet state.
