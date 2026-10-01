@@ -2,12 +2,13 @@
 
 use std::sync::Arc;
 
+use packet_dissector::registry::DissectorRegistry;
 use packet_dissector_core::packet::{DissectBuffer, Packet};
 
 use super::app::App;
 use super::filter_bitmap::FilterBitmap;
 use super::parallel_scan::{ParallelFilterScan, ScanPoll};
-use super::state::FilterProgress;
+use super::state::{CaptureMap, FilterProgress, InOrderScan, PacketIndex};
 use crate::filter_expr::FilterExpr;
 
 impl App {
@@ -39,14 +40,31 @@ impl App {
         let use_parallel = self.try_start_parallel_scan(expr.as_ref());
 
         if !use_parallel {
-            // Sequential path.
-            self.parallel_scan = None;
-            self.filter_progress = Some(FilterProgress {
-                expr,
-                cursor: 0,
-                results: FilterBitmap::new(),
-            });
+            self.start_sequential_scan(expr, None);
         }
+    }
+
+    /// Start (or continue, with `in_order`) a chunked sequential scan on a
+    /// fresh registry.
+    fn start_sequential_scan(&mut self, expr: Option<FilterExpr>, in_order: Option<InOrderScan>) {
+        self.parallel_scan = None;
+        let mut registry = DissectorRegistry::default();
+        if let Err(e) = crate::decode_as::parse_and_apply(&mut registry, &self.decode_as_args) {
+            // Validated at startup; report instead of scanning with a
+            // differently configured registry, and leave no filter applied.
+            self.filter_progress = None;
+            self.filter.applied.clear();
+            self.finalize_filter(FilterBitmap::all_set(self.indices.len()));
+            self.filter.error_message = Some(format!("{e}"));
+            return;
+        }
+        self.filter_progress = Some(FilterProgress {
+            expr,
+            cursor: 0,
+            results: FilterBitmap::new(),
+            registry,
+            in_order,
+        });
     }
 
     /// Attempt to start a parallel filter scan.
@@ -65,11 +83,7 @@ impl App {
         if expr.is_packet_number_only() {
             return false;
         }
-        // 2. Filter expression is parallel-safe (no cross-packet state).
-        if !expr.is_parallel_safe() {
-            return false;
-        }
-        // 3. Static file mode only (live mode uses a growing file that workers
+        // 2. Static file mode only (live mode uses a growing file that workers
         //    cannot safely mmap independently).
         let capture_path = match &self.capture_path {
             Some(p) => p.clone(),
@@ -78,12 +92,12 @@ impl App {
         if self.live_mode.is_some() {
             return false;
         }
-        // 4. At least one packet to scan.
+        // 3. At least one packet to scan.
         if self.indices.is_empty() {
             return false;
         }
 
-        // 5. Resolve thread count; fall back to sequential on error.
+        // 4. Resolve thread count; fall back to sequential on error.
         let thread_count = match crate::parallel::resolve_thread_count(None) {
             Ok(n) => n,
             Err(_) => return false,
@@ -132,9 +146,11 @@ impl App {
 
     /// Drive one tick of the parallel filter scan.
     ///
-    /// If every worker exited before the scan completed (e.g. the capture file
+    /// When packets used cross-packet state, continues by dissecting those
+    /// packets in order, keeping the parallel results of the others.  If
+    /// every worker exited before the scan completed (e.g. the capture file
     /// could not be reopened), falls back to a sequential scan of the same
-    /// filter so the scan always terminates.
+    /// filter from the start so the scan always terminates.
     fn parallel_filter_tick(&mut self) -> bool {
         let scan = match &mut self.parallel_scan {
             Some(s) => s,
@@ -148,18 +164,24 @@ impl App {
                 false
             }
             ScanPoll::Running => true,
-            ScanPoll::Failed => {
+            ScanPoll::InOrder { matches, in_order } => {
                 // The applied filter parsed successfully in apply_filter(), so
                 // re-parsing cannot fail here; `Ok(None)` (empty input) cannot
                 // occur either because the parallel path requires a non-empty
                 // expression.
                 let expr = FilterExpr::parse(&self.filter.applied).ok().flatten();
-                self.parallel_scan = None;
-                self.filter_progress = Some(FilterProgress {
-                    expr,
-                    cursor: 0,
-                    results: FilterBitmap::new(),
-                });
+                let in_order = InOrderScan {
+                    matches,
+                    in_order,
+                    done: 0,
+                    found: FilterBitmap::new(),
+                };
+                self.start_sequential_scan(expr, Some(in_order));
+                true
+            }
+            ScanPoll::Failed => {
+                let expr = FilterExpr::parse(&self.filter.applied).ok().flatten();
+                self.start_sequential_scan(expr, None);
                 true
             }
         }
@@ -168,54 +190,64 @@ impl App {
     /// Drive one chunk of the sequential filter scan.
     fn sequential_filter_tick(&mut self) -> bool {
         let total = self.indices.len();
-        let progress = match &mut self.filter_progress {
-            Some(p) => p,
-            None => return false,
+        let Some(progress) = &mut self.filter_progress else {
+            return false;
         };
-
-        let end = (progress.cursor + Self::FILTER_CHUNK_SIZE).min(total);
-        // Fast path: packet-number-only filters don't need dissection.
-        let pn_only = progress
-            .expr
-            .as_ref()
-            .is_some_and(|e| e.is_packet_number_only());
-
+        let FilterProgress {
+            expr,
+            cursor,
+            results,
+            registry,
+            in_order,
+        } = progress;
         let mut dissect_buf = DissectBuffer::new();
-        for i in progress.cursor..end {
-            let number = (i as u64) + 1; // 1-based packet number
-            let matches = if let Some(expr) = &progress.expr {
-                if pn_only {
-                    let buf = dissect_buf.clear_into();
-                    let empty_pkt = Packet::new(buf, &[]);
-                    expr.matches_with_number(&empty_pkt, number)
-                } else {
-                    let index = &self.indices[i];
-                    if let Some(data) = self.capture.packet_data(index) {
-                        let buf = dissect_buf.clear_into();
-                        if self
-                            .registry
-                            .dissect_with_link_type(data, index.link_type as u32, buf)
-                            .is_ok()
-                        {
-                            let packet = Packet::new(buf, data);
-                            expr.matches_with_number(&packet, number)
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                }
-            } else {
-                true
-            };
-            if matches {
-                progress.results.push(i);
-            }
-        }
-        progress.cursor = end;
 
-        if progress.cursor >= total {
+        if let Some(scan) = in_order {
+            // Only the listed packets need dissecting, in capture order.
+            let InOrderScan {
+                matches,
+                in_order: listed,
+                done,
+                found,
+            } = scan;
+            for i in listed.iter_from(*done).take(Self::FILTER_CHUNK_SIZE) {
+                if packet_matches(
+                    expr.as_ref(),
+                    registry,
+                    &self.capture,
+                    &self.indices,
+                    i,
+                    &mut dissect_buf,
+                ) {
+                    found.push(i);
+                }
+                *done += 1;
+            }
+            if *done >= listed.count_ones() {
+                *results = FilterBitmap::from_sorted_indices(
+                    total,
+                    merge_sorted(matches.iter(), found.iter()),
+                );
+                *cursor = total;
+            }
+        } else {
+            let end = (*cursor + Self::FILTER_CHUNK_SIZE).min(total);
+            for i in *cursor..end {
+                if packet_matches(
+                    expr.as_ref(),
+                    registry,
+                    &self.capture,
+                    &self.indices,
+                    i,
+                    &mut dissect_buf,
+                ) {
+                    results.push(i);
+                }
+            }
+            *cursor = end;
+        }
+
+        if *cursor >= total {
             // Scan complete — take results and finalize.
             let mut results = match std::mem::take(&mut self.filter_progress) {
                 Some(fp) => fp.results,
@@ -254,6 +286,53 @@ impl App {
         }
         None
     }
+}
+
+/// Merge two increasing, disjoint index sequences into one.
+fn merge_sorted(
+    a: impl Iterator<Item = usize>,
+    b: impl Iterator<Item = usize>,
+) -> impl Iterator<Item = usize> {
+    let mut a = a.peekable();
+    let mut b = b.peekable();
+    std::iter::from_fn(move || match (a.peek(), b.peek()) {
+        (Some(&x), Some(&y)) if x < y => a.next(),
+        (Some(_), Some(_)) | (None, Some(_)) => b.next(),
+        (Some(_), None) => a.next(),
+        (None, None) => None,
+    })
+}
+
+/// Whether packet `i` matches `expr` (`None` matches everything), dissecting
+/// it with `registry` unless the filter only looks at packet numbers.
+fn packet_matches(
+    expr: Option<&FilterExpr>,
+    registry: &DissectorRegistry,
+    capture: &CaptureMap,
+    indices: &[PacketIndex],
+    i: usize,
+    dissect_buf: &mut DissectBuffer<'static>,
+) -> bool {
+    let Some(expr) = expr else {
+        return true;
+    };
+    let number = (i as u64) + 1; // 1-based packet number
+    // Fast path: packet-number-only filters don't need dissection.
+    if expr.is_packet_number_only() {
+        let buf = dissect_buf.clear_into();
+        return expr.matches_with_number(&Packet::new(buf, &[]), number);
+    }
+    let Some(data) = capture.packet_data(&indices[i]) else {
+        return false;
+    };
+    let buf = dissect_buf.clear_into();
+    if registry
+        .dissect_with_link_type(data, indices[i].link_type as u32, buf)
+        .is_err()
+    {
+        return false;
+    }
+    expr.matches_with_number(&Packet::new(buf, data), number)
 }
 
 #[cfg(all(test, feature = "tui"))]
@@ -409,22 +488,70 @@ mod tests {
         assert_eq!(app.displayed_count(), 50);
     }
 
-    #[test]
-    fn unsafe_filter_uses_sequential_path() {
-        let (mut app, _tmp) = make_test_app_with_path(5);
+    /// Build an App over `udp` UDP packets followed by `tcp` TCP packets,
+    /// backed by a real temp file so the parallel scan can run.
+    fn make_mixed_app_with_path(udp: usize, tcp: usize) -> (App, tempfile::NamedTempFile) {
+        let pcap = super::super::parallel_scan::tests::build_mixed_pcap_for_test(udp, tcp);
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&pcap).unwrap();
+        tmp.flush().unwrap();
+        let file = std::fs::File::open(tmp.path()).unwrap();
+        let capture = CaptureMap::new(&file).unwrap();
+        let indices = loader::build_index(capture.as_bytes()).unwrap();
+        let app = App::new(
+            capture,
+            indices,
+            DissectorRegistry::default(),
+            tmp.path(),
+            vec![],
+        );
+        (app, tmp)
+    }
 
+    #[test]
+    fn upper_layer_filter_starts_parallel_scan() {
+        // No protocol list gates the parallel scan any more; cross-packet
+        // state is detected per packet while scanning.
+        let (mut app, _tmp) = make_test_app_with_path(5);
         app.filter.buf.input = "http".into();
         app.filter.buf.cursor = 4;
         app.apply_filter();
+        if crate::parallel::resolve_thread_count(None).is_ok_and(|n| n > 1) {
+            assert!(
+                app.parallel_scan.is_some(),
+                "http filter must scan in parallel"
+            );
+        }
+        drive_filter_to_completion(&mut app);
+        assert_eq!(app.displayed_count(), 0);
+    }
 
-        // "http" is not parallel-safe; must use sequential path.
-        assert!(
-            app.parallel_scan.is_none(),
-            "http filter must use sequential path"
-        );
-        assert!(
-            app.filter_progress.is_some(),
-            "http filter must set filter_progress"
-        );
+    #[test]
+    fn stateful_packets_dissected_in_order_give_same_result() {
+        for filter in ["tcp", "udp", "tcp.stream_id = 0"] {
+            let (mut app, _tmp) = make_mixed_app_with_path(30, 20);
+            app.filter.buf.input = filter.into();
+            app.filter.buf.cursor = filter.len();
+            app.apply_filter();
+            drive_filter_to_completion(&mut app);
+            let parallel: Vec<usize> = app.filtered.iter().collect();
+            assert_eq!(app.filtered.universe(), 50, "{filter}");
+
+            // Reference: the sequential scan from the first packet.
+            let (mut app, _tmp) = make_mixed_app_with_path(30, 20);
+            app.filter.buf.input = filter.into();
+            app.filter.applied = filter.into();
+            app.filter_progress = Some(super::super::state::FilterProgress {
+                expr: crate::filter_expr::FilterExpr::parse(filter).unwrap(),
+                cursor: 0,
+                results: super::super::filter_bitmap::FilterBitmap::new(),
+                registry: DissectorRegistry::default(),
+                in_order: None,
+            });
+            drive_filter_to_completion(&mut app);
+            let sequential: Vec<usize> = app.filtered.iter().collect();
+            assert_eq!(parallel, sequential, "{filter}");
+            assert!(!sequential.is_empty(), "{filter}");
+        }
     }
 }
