@@ -9,6 +9,7 @@ use super::completion::CompletionEngine;
 use super::filter_bitmap::FilterBitmap;
 use super::live::StdinCopier;
 use super::loader;
+use super::ordered_pass::{self, OrderedPass, Status};
 use super::state::{
     CaptureMap, CommandState, DEFAULT_PANE_WEIGHTS, DetailTreeState, FilterProgress, FilterState,
     HexDumpState, IndexProgress, LiveMode, PacketIndex, PacketListState, Pane, PaneLayout,
@@ -90,6 +91,12 @@ pub struct App {
     pub index_progress: Option<IndexProgress>,
     /// Background indexer thread (None = idle or complete).
     pub bg_indexer: Option<super::bg_indexer::BackgroundIndexer>,
+    /// In-order dissection pass providing the results of packets whose
+    /// dissection uses cross-packet state (None = dissect everything on
+    /// demand with `registry`).
+    pub ordered: Option<OrderedPass>,
+    /// Packet list rows cached as placeholders waiting for `ordered`.
+    pub pending_rows: Vec<usize>,
 }
 
 impl App {
@@ -143,6 +150,8 @@ impl App {
             indexed_bytes: 0,
             index_progress: None,
             bg_indexer: None,
+            ordered: None,
+            pending_rows: Vec::new(),
         };
         app.filter.history = loaded_history;
         app.load_selected();
@@ -198,6 +207,8 @@ impl App {
             indexed_bytes,
             index_progress: None,
             bg_indexer: None,
+            ordered: None,
+            pending_rows: Vec::new(),
         };
         app.filter.history = loaded_history;
         app.load_selected();
@@ -246,7 +257,16 @@ impl App {
             && let Some(index) = self.indices.get(pkt_idx)
             && let Some(data) = self.capture.packet_data(index)
         {
-            let summary = loader::extract_row_summary(data, index.link_type as u32, &self.registry);
+            let (summary, pending) = ordered_pass::row_summary(
+                &self.registry,
+                self.ordered.as_ref(),
+                pkt_idx,
+                data,
+                index.link_type as u32,
+            );
+            if pending {
+                self.pending_rows.push(pkt_idx);
+            }
             self.summary_cache.put(pkt_idx, summary);
         }
         static DEFAULT: RowSummary = RowSummary {
@@ -266,11 +286,12 @@ impl App {
         if let Some(pkt_idx) = self.filtered.select(self.packet_list.selected) {
             if let Some(index) = self.indices.get(pkt_idx) {
                 if let Some(data) = self.capture.packet_data(index) {
-                    self.selected = Some(loader::dissect_selected(
+                    self.selected = Some(ordered_pass::selected_packet(
+                        &self.registry,
+                        self.ordered.as_ref(),
+                        pkt_idx,
                         data,
                         index.link_type as u32,
-                        pkt_idx,
-                        &self.registry,
                     ));
                 } else {
                     self.selected = None;
@@ -281,6 +302,63 @@ impl App {
         } else {
             self.selected = None;
         }
+    }
+
+    /// A fresh registry configured like `registry`, for scans that dissect
+    /// packets in capture order and must not see the state the on-demand
+    /// display dissection left in `registry`.
+    pub(super) fn scan_registry(&self) -> crate::error::Result<DissectorRegistry> {
+        let mut registry = DissectorRegistry::default();
+        crate::decode_as::parse_and_apply(&mut registry, &self.decode_as_args)?;
+        Ok(registry)
+    }
+
+    // -- In-order dissection pass ---------------------------------------------
+
+    /// Drive the in-order dissection pass: feed it newly indexed packets and
+    /// replace placeholders whose results are ready.
+    ///
+    /// Returns `true` if the display changed.
+    pub fn ordered_tick(&mut self) -> bool {
+        let Some(pass) = &mut self.ordered else {
+            return false;
+        };
+        pass.feed(&self.indices);
+        let pass = &*pass;
+
+        let mut changed = false;
+        if !self.pending_rows.is_empty() {
+            let rows = std::mem::take(&mut self.pending_rows);
+            for pkt_idx in rows {
+                if pass.status(pkt_idx) == Status::Pending {
+                    if !self.pending_rows.contains(&pkt_idx) {
+                        self.pending_rows.push(pkt_idx);
+                    }
+                } else if self.summary_cache.pop(&pkt_idx).is_some() {
+                    changed = true;
+                }
+            }
+        }
+        let reload = self
+            .selected
+            .as_ref()
+            .is_some_and(|sel| sel.pending && pass.status(sel.pkt_idx) != Status::Pending);
+        if reload {
+            self.load_selected();
+            changed = true;
+        }
+        changed
+    }
+
+    /// Whether the event loop must keep calling [`ordered_tick`](Self::ordered_tick):
+    /// packets are left to feed or placeholders are shown.
+    pub fn ordered_needs_tick(&self) -> bool {
+        let Some(pass) = &self.ordered else {
+            return false;
+        };
+        !pass.fully_fed(self.indices.len())
+            || !self.pending_rows.is_empty()
+            || self.selected.as_ref().is_some_and(|sel| sel.pending)
     }
 
     // -- Chunked file indexing ------------------------------------------------

@@ -160,6 +160,9 @@ pub struct SelectedPacket {
     pub packet: OwnedPacket,
     /// Pre-built tree nodes for the detail pane.
     pub tree_nodes: Vec<TreeNode>,
+    /// Whether this is a placeholder shown until the in-order dissection
+    /// pass reaches the packet (see [`super::ordered_pass`]).
+    pub pending: bool,
 }
 
 /// Which pane is currently focused.
@@ -452,6 +455,9 @@ pub struct StatsProgress {
     pub cursor: usize,
     /// The stats collector accumulating results.
     pub collector: crate::stats::StatsCollector,
+    /// Fresh registry for this scan, so the result does not depend on the
+    /// packets displayed before.
+    pub registry: packet_dissector::registry::DissectorRegistry,
 }
 
 impl StatsProgress {
@@ -517,6 +523,9 @@ pub struct StreamBuildProgress {
     pub title: String,
     /// Protocol layer name ("TCP", "UDP", "SCTP").
     pub protocol: &'static str,
+    /// Fresh registry for this scan, so TCP stream IDs are assigned in
+    /// capture order as in the detail pane.
+    pub registry: packet_dissector::registry::DissectorRegistry,
 }
 
 impl StreamBuildProgress {

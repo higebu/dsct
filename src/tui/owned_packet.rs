@@ -104,6 +104,29 @@ impl OwnedPacket {
         }
     }
 
+    /// Rebuild a [`DissectBuffer`] that borrows from this packet, so code
+    /// written against dissection results (the detail tree, the packet list
+    /// summary, the JSON serializer) can display it.
+    ///
+    /// The buffer has the same layers, fields and scratch data; `Bytes` /
+    /// `Str` values point into [`data`](Self::data) and
+    /// [`aux_data`](Self::aux_data).
+    pub fn to_dissect_buf(&self) -> DissectBuffer<'_> {
+        let mut buf = DissectBuffer::new();
+        for layer in &self.layers {
+            buf.push_layer(layer.clone());
+        }
+        for field in &self.fields {
+            buf.push_raw_field(packet_dissector_core::field::Field {
+                descriptor: field.descriptor,
+                value: field.value.to_field_value(self),
+                range: field.range.clone(),
+            });
+        }
+        buf.extend_scratch(&self.scratch);
+        buf
+    }
+
     /// Get a layer's owned fields from the flat buffer.
     pub fn layer_fields(&self, layer: &Layer) -> &[OwnedField] {
         &self.fields[layer.field_range.start as usize..layer.field_range.end as usize]
@@ -200,6 +223,16 @@ impl OwnedFieldValue {
             OwnedFieldValue::Scratch(r) => FieldValue::Scratch(r.clone()),
         }
     }
+}
+
+/// Convert the value of a field of `buf` (the dissection of `data`) to an
+/// [`OwnedFieldValue`].
+pub(super) fn owned_value(
+    value: &FieldValue<'_>,
+    data: &[u8],
+    buf: &DissectBuffer<'_>,
+) -> OwnedFieldValue {
+    convert_field_value(value, data.as_ptr(), data.len(), buf)
 }
 
 /// Convert a borrowed `FieldValue` to an `OwnedFieldValue`, resolving

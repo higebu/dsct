@@ -3,8 +3,27 @@
 use packet_dissector_core::packet::{DissectBuffer, Packet};
 
 use super::app::App;
+use super::state::StatsProgress;
 
 impl App {
+    /// Start collecting stats over the displayed packets.
+    pub(super) fn start_stats(&mut self) {
+        let registry = match self.scan_registry() {
+            Ok(r) => r,
+            Err(e) => {
+                self.detail_tree.yank_message = Some(format!("Error: {e}"));
+                return;
+            }
+        };
+        self.stats_progress = Some(StatsProgress {
+            cursor: 0,
+            collector: crate::stats::StatsCollector::from_flags(
+                &crate::stats::StatsFlags::all_protocols(true, true),
+            ),
+            registry,
+        });
+    }
+
     /// Number of packets to scan per tick during stats collection.
     const STATS_CHUNK_SIZE: usize = 10_000;
 
@@ -30,7 +49,7 @@ impl App {
                 None => continue,
             };
             let buf = dissect_buf.clear_into();
-            if self
+            if progress
                 .registry
                 .dissect_with_link_type(data, index.link_type as u32, buf)
                 .is_ok()
@@ -79,6 +98,7 @@ mod tests {
         app.stats_progress = Some(StatsProgress {
             cursor: 0,
             collector: StatsCollector::from_flags(&StatsFlags::all_protocols(true, true)),
+            registry: packet_dissector::registry::DissectorRegistry::default(),
         });
         while app.stats_tick() {}
         let out = app.stats_output.as_ref().expect("stats_output set");

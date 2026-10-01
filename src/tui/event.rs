@@ -58,6 +58,9 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
     let mut last_render = std::time::Instant::now();
 
     loop {
+        // Feed the in-order dissection pass and pick up its results.
+        app.ordered_tick();
+
         // Throttle rendering during indexing to ~60 fps so we spend more
         // time indexing and less time redrawing.
         let indexing_active = app.index_progress.is_some() || app.bg_indexer.is_some();
@@ -159,6 +162,24 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
                     Event::Mouse(mouse) => app.handle_mouse(mouse),
                     Event::Resize(_, _) => app.on_resize(),
                     _ => {}
+                }
+            }
+        } else if app.ordered_needs_tick() {
+            // The in-order dissection pass needs feeding, or placeholders
+            // wait for its results: poll, and redraw only on an event or
+            // when a placeholder was replaced.
+            loop {
+                if event::poll(std::time::Duration::from_millis(10))? {
+                    match event::read()? {
+                        Event::Key(key) => app.handle_key(key),
+                        Event::Mouse(mouse) => app.handle_mouse(mouse),
+                        Event::Resize(_, _) => app.on_resize(),
+                        _ => {}
+                    }
+                    break;
+                }
+                if app.ordered_tick() || !app.ordered_needs_tick() {
+                    break;
                 }
             }
         } else {
