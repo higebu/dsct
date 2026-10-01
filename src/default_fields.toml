@@ -20,6 +20,14 @@
 #   "name"      Exact match
 #   "prefix_*"  Prefix match (e.g., "option_*" matches "option_overload")
 #   "*_suffix"  Suffix match (e.g., "*_port" matches "src_port")
+#
+# Every exact pattern must name a field (or "_name" companion) of the
+# protocol's field schema, or one of the TCP reassembly fields
+# ("reassembly_in_progress", "segment_count") that reassembly adds to the
+# upper-protocol layer of an intermediate segment; the field_config tests
+# check this. Protocols without a readable schema are listed, with the
+# reason, in PROTOCOLS_WITHOUT_SCHEMA in src/field_config.rs and are not
+# checked.
 
 [Ethernet]
 fields = [
@@ -399,7 +407,7 @@ fields = [
   "tlvs.entries",
   "tlvs.state_name",
   "tlvs.auth_type_name",
-  "tlvs.flags_names",
+  "tlvs.flags_name",
   "tlvs.remaining_time",
 ]
 
