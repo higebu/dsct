@@ -560,7 +560,7 @@ fn schema_flag_describes_database() {
     assert!(out.status.success());
     let schema: Value = serde_json::from_slice(&out.stdout).unwrap();
     // Keep in sync with `sqlite::SCHEMA_VERSION` in src/sqlite/mod.rs.
-    assert_eq!(schema["schema_version"], 2);
+    assert_eq!(schema["schema_version"], 3);
     let tables = schema["tables"].as_array().unwrap();
     let names: Vec<&str> = tables.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
