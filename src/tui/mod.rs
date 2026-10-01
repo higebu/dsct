@@ -60,10 +60,16 @@ fn cache_dir() -> Option<PathBuf> {
     None
 }
 
+/// A registry configured by the `--decode-as` arguments.
+fn new_registry(decode_as_args: &[String]) -> Result<DissectorRegistry> {
+    let mut registry = DissectorRegistry::default();
+    decode_as::parse_and_apply(&mut registry, decode_as_args)?;
+    Ok(registry)
+}
+
 /// Entry point for `dsct tui <file>`.
 pub fn run(file: PathBuf, decode_as_args: Vec<String>) -> Result<()> {
-    let mut registry = DissectorRegistry::default();
-    decode_as::parse_and_apply(&mut registry, &decode_as_args)?;
+    let registry = new_registry(&decode_as_args)?;
 
     // Memory-map the file for display/dissection on the main thread.
     let capture = loader::open_and_mmap(&file)?;
@@ -79,8 +85,8 @@ pub fn run(file: PathBuf, decode_as_args: Vec<String>) -> Result<()> {
     // Dissect the capture in order in the background, for packets whose
     // dissection uses state kept across packets.
     let ordered = ordered_pass::OrderedPass::spawn(
-        std::fs::File::open(&file)?,
-        &decode_as_args,
+        loader::open_and_mmap(&file)?,
+        new_registry(&decode_as_args)?,
         cache_dir().as_deref(),
     )?;
 
@@ -96,8 +102,7 @@ pub fn run(file: PathBuf, decode_as_args: Vec<String>) -> Result<()> {
 
 /// Entry point for `dsct tui -` (live stdin capture).
 pub fn run_live(decode_as_args: Vec<String>) -> Result<()> {
-    let mut registry = DissectorRegistry::default();
-    decode_as::parse_and_apply(&mut registry, &decode_as_args)?;
+    let registry = new_registry(&decode_as_args)?;
 
     // Create a temp file that will be automatically deleted on drop.
     // Prefer $XDG_CACHE_HOME/dsct/ over the system temp directory.
@@ -150,8 +155,8 @@ pub fn run_live(decode_as_args: Vec<String>) -> Result<()> {
 
     let result = (|| {
         let ordered = ordered_pass::OrderedPass::spawn(
-            file.try_clone()?,
-            &decode_as_args,
+            state::CaptureMap::new_live(file.try_clone()?)?,
+            new_registry(&decode_as_args)?,
             cache_dir().as_deref(),
         )?;
         // Create a live-mode mmap (initially empty or near-empty).

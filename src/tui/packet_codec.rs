@@ -163,8 +163,17 @@ pub(super) fn encode(
     interner: &mut Interner,
     out: &mut Vec<u8>,
 ) {
+    // Converting the values may append to the auxiliary data, so do it
+    // before writing that.
+    let mut aux = buf.aux_data();
+    let values: Vec<OwnedFieldValue> = buf
+        .fields()
+        .iter()
+        .map(|f| owned_value(&f.value, data, buf, &mut aux))
+        .collect();
+
     out.push(u8::from(ok));
-    put_bytes(out, &buf.aux_data());
+    put_bytes(out, &aux);
     put_bytes(out, buf.scratch());
 
     put_varint(out, buf.layers().len() as u64);
@@ -175,10 +184,10 @@ pub(super) fn encode(
     }
 
     put_varint(out, buf.fields().len() as u64);
-    for field in buf.fields() {
+    for (field, value) in buf.fields().iter().zip(values) {
         put_varint(out, u64::from(interner.descriptor(field.descriptor)));
         put_range(out, &field.range);
-        match owned_value(&field.value, data, buf) {
+        match value {
             OwnedFieldValue::U8(v) => {
                 out.push(TAG_U8);
                 put_varint(out, u64::from(v));
@@ -450,6 +459,8 @@ mod tests {
         buf.begin_layer("Second", None, &[], 2..DATA.len());
         let hello = std::str::from_utf8(&DATA[2..7]).unwrap();
         buf.push_field(&STR_DESC, FieldValue::Str(hello), 2..7);
+        // A string that is not in the packet (e.g. an HPACK static name).
+        buf.push_field(&STR_DESC, FieldValue::Str(":path"), 2..7);
         buf.push_field(&V4_DESC, FieldValue::Ipv4Addr([10, 0, 0, 1]), 2..6);
         buf.push_field(&V6_DESC, FieldValue::Ipv6Addr([0xfe; 16]), 2..6);
         buf.push_field(
@@ -499,6 +510,20 @@ mod tests {
                 e.value.to_field_value(&expected)
             );
         }
+    }
+
+    #[test]
+    fn roundtrip_keeps_values_outside_the_packet() {
+        let mut buf = DissectBuffer::new();
+        sample(&mut buf);
+        let got = roundtrip(&buf, DATA, true);
+        let values: Vec<_> = got
+            .packet
+            .fields
+            .iter()
+            .map(|f| f.value.to_field_value(&got.packet))
+            .collect();
+        assert!(values.contains(&FieldValue::Str(":path")), "{values:?}");
     }
 
     #[test]

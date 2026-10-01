@@ -72,6 +72,8 @@ struct Shared {
     tables: Tables,
     /// Whether the pass thread has stopped.
     stopped: bool,
+    /// Error to report to the user, not reported yet.
+    error: Option<String>,
 }
 
 /// Handle to the in-order dissection pass of one capture.
@@ -83,8 +85,9 @@ pub(super) struct OrderedPass {
     fed: usize,
     /// Read handle of the spill file (its own file offset).
     reader: File,
-    /// Owns the spill file, which is deleted on drop.
-    _spill: tempfile::NamedTempFile,
+    /// Owns the spill file where its name could not be removed while it is
+    /// open (not Unix); it is deleted on drop.
+    _spill: Option<tempfile::NamedTempFile>,
 }
 
 /// Marks the pass as stopped when dropped.
@@ -92,7 +95,11 @@ struct StopGuard<'a>(&'a Mutex<Shared>);
 
 impl Drop for StopGuard<'_> {
     fn drop(&mut self) {
-        lock(self.0).stopped = true;
+        let mut shared = lock(self.0);
+        shared.stopped = true;
+        if std::thread::panicking() {
+            shared.error = Some("in-order dissection stopped unexpectedly".to_string());
+        }
     }
 }
 
@@ -103,18 +110,14 @@ fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
 }
 
 impl OrderedPass {
-    /// Start the pass over the capture in `capture` (opened read-only; it
-    /// may still grow, as in live capture), dissecting with a registry
-    /// configured by `decode_as_args`.  The spill file is created in
+    /// Start the pass over `capture` (which may still grow, as in live
+    /// capture), dissecting with `registry`.  The spill file is created in
     /// `spill_dir`, or the system temp directory if that fails or is `None`.
     pub(super) fn spawn(
-        capture: File,
-        decode_as_args: &[String],
+        capture: CaptureMap,
+        registry: DissectorRegistry,
         spill_dir: Option<&Path>,
     ) -> Result<Self> {
-        let mut registry = DissectorRegistry::default();
-        crate::decode_as::parse_and_apply(&mut registry, decode_as_args)?;
-        let capture = CaptureMap::new_live(capture)?;
         let in_dir = spill_dir.and_then(|dir| {
             std::fs::create_dir_all(dir).ok()?;
             tempfile::NamedTempFile::new_in(dir).ok()
@@ -125,6 +128,15 @@ impl OrderedPass {
         };
         let writer = spill.as_file().try_clone()?;
         let reader = spill.reopen()?;
+        // On Unix, remove the name right away: the open handles keep the
+        // data, and nothing is left behind if dsct is killed.
+        #[cfg(unix)]
+        let spill = {
+            spill.close()?;
+            None
+        };
+        #[cfg(not(unix))]
+        let spill = Some(spill);
 
         let shared = Arc::new(Mutex::new(Shared::default()));
         let (tx, rx) = mpsc::sync_channel(FEED_QUEUE);
@@ -136,7 +148,9 @@ impl OrderedPass {
                 // dropping the sender), packets it has not reached are
                 // dissected on demand from then on.
                 let _stopped = StopGuard(&thread_shared);
-                let _ = run(&rx, capture, &registry, writer, &thread_shared);
+                if let Err(e) = run(&rx, capture, &registry, writer, &thread_shared) {
+                    lock(&thread_shared).error = Some(format!("in-order dissection stopped: {e}"));
+                }
             })
             .map_err(|e| DsctError::msg(format!("failed to start the in-order pass: {e}")))?;
 
@@ -194,20 +208,50 @@ impl OrderedPass {
 
     /// Load the in-order result of packet `pkt_idx`, whose bytes are
     /// `data`.  Returns `None` unless its [`status`](Self::status) is
-    /// [`Status::Stateful`] and the kept result can be read back.
+    /// [`Status::Stateful`] and the kept result can be read back (a failure
+    /// to read it back is reported through [`take_error`](Self::take_error)).
     pub(super) fn load(&self, pkt_idx: usize, data: &[u8]) -> Option<StoredPacket> {
         let offset = match lock(&self.shared).offsets.get(pkt_idx) {
             Some(&entry) if entry != STATELESS => entry - 1,
             _ => return None,
         };
-        let mut reader = &self.reader;
-        reader.seek(SeekFrom::Start(offset)).ok()?;
-        let mut len = [0u8; 4];
-        reader.read_exact(&mut len).ok()?;
-        let mut record = vec![0u8; u32::from_le_bytes(len) as usize];
-        reader.read_exact(&mut record).ok()?;
+        let record = match self.read_record(offset) {
+            Ok(record) => record,
+            Err(e) => {
+                lock(&self.shared).error = Some(format!(
+                    "failed to read the in-order result of packet {}: {e}",
+                    pkt_idx + 1
+                ));
+                return None;
+            }
+        };
+        let mut shared = lock(&self.shared);
         // The tables were published together with the offset.
-        packet_codec::decode(&record, data, &lock(&self.shared).tables)
+        let stored = packet_codec::decode(&record, data, &shared.tables);
+        if stored.is_none() {
+            shared.error = Some(format!(
+                "the in-order result of packet {} is damaged",
+                pkt_idx + 1
+            ));
+        }
+        stored
+    }
+
+    fn read_record(&self, offset: u64) -> std::io::Result<Vec<u8>> {
+        let mut reader = &self.reader;
+        reader.seek(SeekFrom::Start(offset))?;
+        let mut len = [0u8; 4];
+        reader.read_exact(&mut len)?;
+        let mut record = vec![0u8; u32::from_le_bytes(len) as usize];
+        reader.read_exact(&mut record)?;
+        Ok(record)
+    }
+
+    /// Take the error to report to the user, if any: the pass stopped
+    /// early, or a kept result could not be read back.  The packets
+    /// concerned are dissected on demand.
+    pub(super) fn take_error(&self) -> Option<String> {
+        lock(&self.shared).error.take()
     }
 }
 
@@ -523,7 +567,9 @@ mod tests {
         let capture = CaptureMap::new(&file).unwrap();
         let indices = loader::build_index(capture.as_bytes()).unwrap();
         let mut app = App::new(capture, indices, DissectorRegistry::default(), path, vec![]);
-        app.ordered = Some(OrderedPass::spawn(file, &[], None).unwrap());
+        let pass_capture = CaptureMap::new(&file).unwrap();
+        app.ordered =
+            Some(OrderedPass::spawn(pass_capture, DissectorRegistry::default(), None).unwrap());
         app
     }
 
@@ -792,5 +838,49 @@ mod tests {
         assert!(!sel.pending);
         assert!(sel.tree_nodes.iter().any(|n| n.label == "TCP"));
         assert!(!app.ordered_needs_tick());
+    }
+
+    /// Errors of the pass are reported to the user once.
+    #[test]
+    fn pass_errors_are_reported() {
+        let tmp = write_pcap(&stateful_frames());
+        let mut app = open_app(tmp.path());
+        super::lock(&app.ordered.as_ref().unwrap().shared).error = Some("disk full".to_string());
+        assert!(app.ordered_tick());
+        let msg = app.detail_tree.yank_message.take().unwrap();
+        assert!(msg.contains("disk full"), "{msg}");
+        app.ordered_tick();
+        assert!(app.detail_tree.yank_message.is_none());
+    }
+
+    /// A panic in the pass thread marks the pass stopped, with an error.
+    #[test]
+    fn panicking_pass_thread_reports_an_error() {
+        let shared = std::sync::Mutex::new(super::Shared::default());
+        std::thread::scope(|s| {
+            let r = s
+                .spawn(|| {
+                    let _guard = super::StopGuard(&shared);
+                    panic!("dissector bug");
+                })
+                .join();
+            assert!(r.is_err());
+        });
+        let shared = super::lock(&shared);
+        assert!(shared.stopped);
+        assert!(shared.error.is_some());
+    }
+
+    /// Follow Stream on a placeholder says why nothing happens.
+    #[test]
+    fn follow_stream_waits_for_the_pass() {
+        let tmp = write_pcap(&stateful_frames());
+        let mut app = open_app(tmp.path());
+        app.packet_list.selected = 2;
+        app.load_selected();
+        assert!(app.selected.as_ref().unwrap().pending);
+        app.start_follow_stream();
+        assert!(app.stream_build_progress.is_none());
+        assert!(app.detail_tree.yank_message.is_some());
     }
 }

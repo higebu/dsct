@@ -79,14 +79,13 @@ impl OwnedPacket {
     /// Convert a `DissectBuffer` and packet data into a fully owned packet.
     pub fn from_dissect_buf(buf: &DissectBuffer<'_>, data: &[u8]) -> Self {
         let owned_data: Vec<u8> = data.to_vec();
-        let owned_aux: Vec<u8> = buf.aux_data();
-        let data_range = data.as_ptr_range();
+        let mut owned_aux: Vec<u8> = buf.aux_data();
 
         let fields: Vec<OwnedField> = buf
             .fields()
             .iter()
             .map(|f| {
-                let value = convert_field_value(&f.value, data_range.start, data.len(), buf);
+                let value = owned_value(&f.value, data, buf, &mut owned_aux);
                 OwnedField {
                     descriptor: f.descriptor,
                     value,
@@ -227,21 +226,15 @@ impl OwnedFieldValue {
 
 /// Convert the value of a field of `buf` (the dissection of `data`) to an
 /// [`OwnedFieldValue`].
+///
+/// `aux` starts as a copy of `buf`'s auxiliary data.  `Bytes` / `Str`
+/// values found neither in `data` nor in the auxiliary data (static strings
+/// such as HPACK static table names) are appended to it.
 pub(super) fn owned_value(
     value: &FieldValue<'_>,
     data: &[u8],
     buf: &DissectBuffer<'_>,
-) -> OwnedFieldValue {
-    convert_field_value(value, data.as_ptr(), data.len(), buf)
-}
-
-/// Convert a borrowed `FieldValue` to an `OwnedFieldValue`, resolving
-/// `Bytes`/`Str` references into ranges.
-fn convert_field_value(
-    value: &FieldValue<'_>,
-    data_base: *const u8,
-    data_len: usize,
-    buf: &DissectBuffer<'_>,
+    aux: &mut Vec<u8>,
 ) -> OwnedFieldValue {
     match value {
         FieldValue::U8(v) => OwnedFieldValue::U8(*v),
@@ -249,15 +242,8 @@ fn convert_field_value(
         FieldValue::U32(v) => OwnedFieldValue::U32(*v),
         FieldValue::U64(v) => OwnedFieldValue::U64(*v),
         FieldValue::I32(v) => OwnedFieldValue::I32(*v),
-        FieldValue::Bytes(b) => {
-            let src = resolve_ptr_range(b.as_ptr(), b.len(), data_base, data_len, buf);
-            OwnedFieldValue::Bytes(src)
-        }
-        FieldValue::Str(s) => {
-            let b = s.as_bytes();
-            let src = resolve_ptr_range(b.as_ptr(), b.len(), data_base, data_len, buf);
-            OwnedFieldValue::Str(src)
-        }
+        FieldValue::Bytes(b) => OwnedFieldValue::Bytes(bytes_source(b, data, buf, aux)),
+        FieldValue::Str(s) => OwnedFieldValue::Str(bytes_source(s.as_bytes(), data, buf, aux)),
         FieldValue::Ipv4Addr(a) => OwnedFieldValue::Ipv4Addr(*a),
         FieldValue::Ipv6Addr(a) => OwnedFieldValue::Ipv6Addr(*a),
         FieldValue::MacAddr(m) => OwnedFieldValue::MacAddr(*m),
@@ -267,30 +253,30 @@ fn convert_field_value(
     }
 }
 
-/// Determine if a pointer+length falls within the data buffer or aux buffer
-/// and return the corresponding `BytesSource`.
-fn resolve_ptr_range(
-    ptr: *const u8,
-    len: usize,
-    data_base: *const u8,
-    data_len: usize,
+/// Locate `bytes` in the packet `data` or in `buf`'s auxiliary data, or
+/// append a copy to `aux` (see [`owned_value`]).
+fn bytes_source(
+    bytes: &[u8],
+    data: &[u8],
     buf: &DissectBuffer<'_>,
+    aux: &mut Vec<u8>,
 ) -> BytesSource {
-    let addr = ptr as usize;
-    let data_start = data_base as usize;
-    let data_end = data_start + data_len;
+    let addr = bytes.as_ptr() as usize;
+    let data_start = data.as_ptr() as usize;
+    let data_end = data_start + data.len();
 
-    if addr >= data_start && addr < data_end {
+    if addr >= data_start && addr < data_end && addr - data_start + bytes.len() <= data.len() {
         let offset = addr - data_start;
-        return BytesSource::Data(offset..offset + len);
+        return BytesSource::Data(offset..offset + bytes.len());
     }
 
-    if let Some(range) = buf.resolve_aux_ptr_range(ptr, len) {
+    if let Some(range) = buf.resolve_aux_ptr_range(bytes.as_ptr(), bytes.len()) {
         return BytesSource::AuxData(range);
     }
 
-    // Fallback: data range (shouldn't happen in practice).
-    BytesSource::Data(0..0)
+    let start = aux.len();
+    aux.extend_from_slice(bytes);
+    BytesSource::AuxData(start..aux.len())
 }
 
 #[cfg(test)]
@@ -367,6 +353,32 @@ mod tests {
             }
             _ => panic!("expected Str"),
         }
+    }
+
+    /// Values that are neither in the packet nor in the auxiliary data
+    /// (e.g. HPACK static table names, which are `&'static str`) are kept.
+    #[test]
+    fn from_dissect_buf_keeps_values_outside_the_packet() {
+        let data: &[u8] = b"abc";
+        let mut buf = DissectBuffer::new();
+
+        static STR_DESC: FieldDescriptor = FieldDescriptor::new("name", "Name", FieldType::Str);
+        static BYTES_DESC: FieldDescriptor = FieldDescriptor::new("raw", "Raw", FieldType::Bytes);
+
+        buf.begin_layer("Test", None, &[], 0..3);
+        buf.push_field(&STR_DESC, FieldValue::Str(":method"), 0..3);
+        buf.push_field(&BYTES_DESC, FieldValue::Bytes(b"\x01\x02"), 0..3);
+        buf.end_layer();
+
+        let owned = OwnedPacket::from_dissect_buf(&buf, data);
+        assert_eq!(
+            owned.fields[0].value.to_field_value(&owned),
+            FieldValue::Str(":method")
+        );
+        assert_eq!(
+            owned.fields[1].value.to_field_value(&owned),
+            FieldValue::Bytes(b"\x01\x02")
+        );
     }
 
     #[test]

@@ -9,6 +9,11 @@ use super::state::{StreamBuildProgress, StreamKey, StreamLine, StreamViewState};
 impl App {
     /// Start building a follow-stream view for the selected packet.
     pub(super) fn start_follow_stream(&mut self) {
+        if self.selected.as_ref().is_some_and(|sel| sel.pending) {
+            self.detail_tree.yank_message =
+                Some("Wait until the packet is dissected in capture order".to_string());
+            return;
+        }
         if let Some((key, title, protocol)) = self.extract_stream_key() {
             let registry = match self.scan_registry() {
                 Ok(r) => r,

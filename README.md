@@ -53,9 +53,14 @@ dissects the capture once in capture order.  Until that pass reaches such a
 packet, its row and detail show `Dissecting packets in capture order...`.
 The pass keeps those results in a temporary file under
 `$XDG_CACHE_HOME/dsct` (or `~/.cache/dsct`, falling back to the system temp
-directory), about 200 bytes per such packet, deleted on exit; in memory it
-keeps 8 bytes per packet.  Follow Stream and `:stats` dissect in capture
-order with a fresh registry, so they agree with the detail pane.
+directory) that is removed on exit: about 200 bytes for a plain TCP
+segment, plus the reassembled data for a packet that completes a
+reassembly.  In memory it keeps 8 bytes per packet.  If the pass fails
+(for example, the disk is full), the TUI reports it and dissects the
+remaining packets on demand.  Follow Stream scans the capture in order
+with a fresh registry, so it finds the stream ID shown in the detail pane;
+`:stats` dissects the displayed packets in order with a fresh registry, so
+its result does not depend on what was viewed before.
 
 ## Installation
 

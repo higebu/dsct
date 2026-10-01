@@ -1,5 +1,6 @@
 //! TUI application state and core accessors.
 
+use std::collections::HashSet;
 use std::num::NonZeroUsize;
 
 use lru::LruCache;
@@ -96,7 +97,7 @@ pub struct App {
     /// demand with `registry`).
     pub ordered: Option<OrderedPass>,
     /// Packet list rows cached as placeholders waiting for `ordered`.
-    pub pending_rows: Vec<usize>,
+    pub pending_rows: HashSet<usize>,
 }
 
 impl App {
@@ -151,7 +152,7 @@ impl App {
             index_progress: None,
             bg_indexer: None,
             ordered: None,
-            pending_rows: Vec::new(),
+            pending_rows: HashSet::new(),
         };
         app.filter.history = loaded_history;
         app.load_selected();
@@ -208,7 +209,7 @@ impl App {
             index_progress: None,
             bg_indexer: None,
             ordered: None,
-            pending_rows: Vec::new(),
+            pending_rows: HashSet::new(),
         };
         app.filter.history = loaded_history;
         app.load_selected();
@@ -265,7 +266,7 @@ impl App {
                 index.link_type as u32,
             );
             if pending {
-                self.pending_rows.push(pkt_idx);
+                self.pending_rows.insert(pkt_idx);
             }
             self.summary_cache.put(pkt_idx, summary);
         }
@@ -308,9 +309,7 @@ impl App {
     /// packets in capture order and must not see the state the on-demand
     /// display dissection left in `registry`.
     pub(super) fn scan_registry(&self) -> crate::error::Result<DissectorRegistry> {
-        let mut registry = DissectorRegistry::default();
-        crate::decode_as::parse_and_apply(&mut registry, &self.decode_as_args)?;
-        Ok(registry)
+        super::new_registry(&self.decode_as_args)
     }
 
     // -- In-order dissection pass ---------------------------------------------
@@ -327,18 +326,19 @@ impl App {
         let pass = &*pass;
 
         let mut changed = false;
-        if !self.pending_rows.is_empty() {
-            let rows = std::mem::take(&mut self.pending_rows);
-            for pkt_idx in rows {
-                if pass.status(pkt_idx) == Status::Pending {
-                    if !self.pending_rows.contains(&pkt_idx) {
-                        self.pending_rows.push(pkt_idx);
-                    }
-                } else if self.summary_cache.pop(&pkt_idx).is_some() {
-                    changed = true;
-                }
-            }
+        if let Some(e) = pass.take_error() {
+            self.detail_tree.yank_message =
+                Some(format!("Error: {e}; dissecting packets on demand instead"));
+            changed = true;
         }
+        let summary_cache = &mut self.summary_cache;
+        self.pending_rows.retain(|&pkt_idx| {
+            if pass.status(pkt_idx) == Status::Pending {
+                return true;
+            }
+            changed |= summary_cache.pop(&pkt_idx).is_some();
+            false
+        });
         let reload = self
             .selected
             .as_ref()
