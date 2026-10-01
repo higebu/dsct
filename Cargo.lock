@@ -1229,6 +1229,7 @@ dependencies = [
  "packet-dissector-s1ap",
  "packet-dissector-sccp",
  "packet-dissector-sctp",
+ "packet-dissector-sdp",
  "packet-dissector-sgsap",
  "packet-dissector-sip",
  "packet-dissector-snmp",
@@ -1893,6 +1894,15 @@ name = "packet-dissector-sctp"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc57aea9665488ba2bcece5cf20d91cb4ae9ef89a7a539d061d45147b5e9ca25"
+dependencies = [
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-sdp"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00a277859bbe26115c6a44dd8447ccadf662b6f469857d9ad47f25b5d10c95c1"
 dependencies = [
  "packet-dissector-core",
 ]

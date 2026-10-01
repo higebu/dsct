@@ -76,6 +76,7 @@ fn list_includes_protocols_enabled_by_default() {
     for expected in [
         "Null",
         "RawIP",
+        "SDP",
         "IEEE802.11",
         "Radiotap",
         "LLMNR",

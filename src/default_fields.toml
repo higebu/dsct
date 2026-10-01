@@ -461,6 +461,26 @@ fields = [
   "alert_description_name",
 ]
 
+[DTLS]
+fields = [
+  "content_type_name",
+  "version_name",
+  "epoch",
+  "sequence_number",
+  "handshake_messages",
+  "handshake_messages.type_name",
+  "handshake_messages.message_seq",
+  "handshake_messages.version_name",
+  "handshake_messages.cipher_suites",
+  "handshake_messages.cipher_suite",
+  "handshake_messages.cipher_suite_name",
+  "handshake_messages.extensions",
+  "extensions.type_name",
+  "extensions.server_name",
+  "alert_level_name",
+  "alert_description_name",
+]
+
 [L2TP]
 fields = ["is_control", "tunnel_id", "session_id", "ns", "nr"]
 

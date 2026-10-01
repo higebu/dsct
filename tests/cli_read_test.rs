@@ -1064,3 +1064,87 @@ fn tls_client_hello_default_fields_show_handshake_type_and_sni() {
         "random is a verbose-only field: {tls}"
     );
 }
+
+/// A DTLS 1.2 record holding a ClientHello (empty cookie, one cipher suite).
+///
+/// RFC 9147, Section 4 (record layer) and Section 5.3 (ClientHello).
+/// <https://www.rfc-editor.org/rfc/rfc9147#section-4>
+/// <https://www.rfc-editor.org/rfc/rfc9147#section-5.3>
+fn dtls_client_hello_record() -> Vec<u8> {
+    let mut body = vec![0xFE, 0xFD]; // legacy_version = DTLS 1.2
+    body.extend_from_slice(&[0xCD; 32]); // random
+    body.push(0); // legacy_session_id length
+    body.push(0); // legacy_cookie length
+    body.extend_from_slice(&[0x00, 0x02, 0x13, 0x01]); // cipher_suites
+    body.extend_from_slice(&[0x01, 0x00]); // legacy_compression_methods
+
+    let len = (body.len() as u32).to_be_bytes();
+    let mut handshake = vec![0x01]; // msg_type = client_hello
+    handshake.extend_from_slice(&len[1..]); // length
+    handshake.extend_from_slice(&[0x00, 0x00]); // message_seq
+    handshake.extend_from_slice(&[0x00, 0x00, 0x00]); // fragment_offset
+    handshake.extend_from_slice(&len[1..]); // fragment_length
+    handshake.extend_from_slice(&body);
+
+    let mut record = vec![0x16, 0xFE, 0xFF]; // handshake, DTLS 1.0 record version
+    record.extend_from_slice(&[0x00, 0x00]); // epoch
+    record.extend_from_slice(&[0x00; 6]); // sequence_number
+    record.extend_from_slice(&(handshake.len() as u16).to_be_bytes());
+    record.extend_from_slice(&handshake);
+    record
+}
+
+/// DTLS shares the TLS handshake layout, so its default fields keep the
+/// handshake type and cipher suites and hide verbose-only bytes.
+#[test]
+fn dtls_client_hello_default_fields_match_tls() {
+    let frame = udp_frame(
+        [10, 0, 0, 1],
+        [10, 0, 0, 2],
+        50000,
+        853,
+        &dtls_client_hello_record(),
+    );
+    let mut pcap = Vec::new();
+    pcap.extend_from_slice(&0xA1B2C3D4u32.to_le_bytes());
+    pcap.extend_from_slice(&2u16.to_le_bytes());
+    pcap.extend_from_slice(&4u16.to_le_bytes());
+    pcap.extend_from_slice(&0i32.to_le_bytes());
+    pcap.extend_from_slice(&0u32.to_le_bytes());
+    pcap.extend_from_slice(&65535u32.to_le_bytes());
+    pcap.extend_from_slice(&1u32.to_le_bytes()); // Ethernet
+    pcap.extend_from_slice(&1u32.to_le_bytes()); // ts_sec
+    pcap.extend_from_slice(&0u32.to_le_bytes()); // ts_usec
+    pcap.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+    pcap.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+    pcap.extend_from_slice(&frame);
+    let mut tmp = NamedTempFile::with_suffix(".pcap").unwrap();
+    tmp.write_all(&pcap).unwrap();
+
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args(["read", tmp.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let dtls = v["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| {
+            l["protocol"]
+                .as_str()
+                .is_some_and(|p| p.starts_with("DTLS"))
+        })
+        .unwrap_or_else(|| panic!("DTLS layer should be present: {stdout}"));
+
+    let hello = &dtls["fields"]["handshake_messages"][0];
+    assert_eq!(hello["type_name"], "Client Hello", "{dtls}");
+    assert_eq!(hello["cipher_suites"][0], 0x1301, "{dtls}");
+    assert!(
+        hello.get("random").is_none(),
+        "random is a verbose-only field: {dtls}"
+    );
+}
