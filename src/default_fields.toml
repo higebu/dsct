@@ -27,7 +27,9 @@
 # upper-protocol layer of an intermediate segment; the field_config tests
 # check this. Protocols without a readable schema are listed, with the
 # reason, in PROTOCOLS_WITHOUT_SCHEMA in src/field_config.rs and are not
-# checked.
+# checked.  A container listed without dotted sub-field patterns (such as
+# "avps" or "information_elements") shows all of its sub-fields, including
+# their "_name" companions.
 
 [Ethernet]
 fields = [
@@ -258,6 +260,10 @@ fields = [
   "reason_phrase",
   "headers",
   "content_length",
+  "content_type",
+  "body_framing",
+  "chunk_count",
+  "content_length_overridden",
   "reassembly_in_progress",
   "segment_count",
 ]
@@ -267,16 +273,28 @@ fields = [
   "magic",
   "frame_length",
   "frame_type",
+  "frame_type_name",
   "flags",
   "stream_id",
   "settings",
   "error_code",
+  "error_code_name",
   "last_stream_id",
+  "debug_data",
   "window_size_increment",
   "promised_stream_id",
   "header_block_fragment",
   "headers",
+  "hpack_error",
   "padding_length",
+  "priority_exclusive",
+  "priority_stream_dependency",
+  "priority_weight",
+  "prioritized_stream_id",
+  "priority_field_value",
+  "origins",
+  "origin",
+  "alt_svc_field_value",
   "opaque_data",
   "reassembly_in_progress",
   "segment_count",
@@ -490,7 +508,17 @@ fields = [
 ]
 
 [L2TP]
-fields = ["is_control", "tunnel_id", "session_id", "ns", "nr"]
+fields = [
+  "is_control",
+  "version",
+  "tunnel_id",
+  "session_id",
+  "ns",
+  "nr",
+  "message_type",
+  "message_type_name",
+  "avps",
+]
 
 [L2TPv3]
 fields = [
@@ -501,11 +529,8 @@ fields = [
   "ns",
   "nr",
   "message_type",
+  "message_type_name",
   "avps",
-  "avps.mandatory",
-  "avps.vendor_id",
-  "avps.attribute_type",
-  "avps.value",
 ]
 
 [L2TPv3-UDP]
@@ -517,11 +542,8 @@ fields = [
   "ns",
   "nr",
   "message_type",
+  "message_type_name",
   "avps",
-  "avps.mandatory",
-  "avps.vendor_id",
-  "avps.attribute_type",
-  "avps.value",
 ]
 
 [PPP]
@@ -552,6 +574,7 @@ fields = [
 [RTP]
 fields = [
   "payload_type",
+  "payload_type_name",
   "sequence_number",
   "timestamp",
   "ssrc",
@@ -596,6 +619,11 @@ fields = [
   "message_authentication_code",
   "sequence_number",
   "plain_nas_message",
+  "ciphered_nas_message",
+  "raw_nas_message",
+  "information_elements",
+  "undecoded_octets",
+  "missing_mandatory_ie",
 ]
 
 [BFD]
