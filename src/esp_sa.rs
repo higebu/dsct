@@ -1,12 +1,15 @@
 //! Parser and applier for `--esp-sa` CLI arguments.
 //!
 //! Format: `spi:enc_algo:enc_key_hex` (AEAD) or
-//!         `spi:enc_algo:enc_key_hex:auth_algo:auth_key_hex` (non-AEAD).
+//!         `spi:enc_algo:enc_key_hex:auth_algo:auth_key_hex` (non-AEAD),
+//!         optionally followed by `:esn` or `:esn=HIGH` when the SA uses
+//!         Extended Sequence Numbers.
 //!
 //! Examples:
 //! - `0xDEADBEEF:null`
 //! - `0x12345678:aes-128-cbc:0xAABBCC...:hmac-sha1-96:0xDDEEFF...`
 //! - `0x12345678:aes-256-gcm:0xAABBCC...DDEE` (key = enc_key + salt)
+//! - `0x12345678:aes-256-gcm:0xAABBCC...DDEE:esn=1` (ESN, high-order bits 1)
 
 #[cfg(feature = "esp-decrypt")]
 use packet_dissector::dissectors::esp::{AuthenticationAlgorithm, EncryptionAlgorithm, EspSa};
@@ -65,19 +68,99 @@ fn parse_spi(s: &str) -> Result<u32> {
     }
 }
 
+/// Split an optional trailing `esn` / `esn=HIGH` element off the SA parts.
+///
+/// Returns the high-order 32 bits of the 64-bit sequence number when the SA
+/// uses Extended Sequence Numbers (`esn` alone means 0), `None` otherwise.
+///
+/// RFC 4303, Section 2.2.1 — "Only the low-order 32 bits of the sequence
+/// number are transmitted in the plaintext ESP header of each packet", so a
+/// stateless dissector has to be told the high-order bits. The AEAD
+/// transforms include them in the AAD (RFC 4106, Section 5, Figure 4).
+/// <https://www.rfc-editor.org/rfc/rfc4303#section-2.2.1>
+/// <https://www.rfc-editor.org/rfc/rfc4106#section-5>
+#[cfg(feature = "esp-decrypt")]
+fn split_esn(arg: &str, parts: &mut Vec<&str>) -> Result<Option<u32>> {
+    let Some(&last) = parts.last() else {
+        return Ok(None);
+    };
+    let high = if last == "esn" {
+        0
+    } else if let Some(value) = last.strip_prefix("esn=") {
+        parse_esn_high(value).ok_or_else(|| {
+            DsctError::invalid_argument(format!(
+                "--esp-sa '{arg}': invalid esn value '{value}': expected the high-order 32 bits of the sequence number as a decimal or 0x-prefixed hex u32"
+            ))
+        })?
+    } else {
+        return Ok(None);
+    };
+    parts.pop();
+    Ok(Some(high))
+}
+
+/// Parse the `HIGH` of `esn=HIGH`: decimal or `0x`-prefixed hex digits only
+/// (no sign, no whitespace), fitting in a `u32`.
+#[cfg(feature = "esp-decrypt")]
+fn parse_esn_high(value: &str) -> Option<u32> {
+    let (digits, radix) = match value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        Some(hex) => (hex, 16),
+        None => (value, 10),
+    };
+    if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+        return None;
+    }
+    u32::from_str_radix(digits, radix).ok()
+}
+
+/// Reject `esn` on an SA whose algorithm never uses the high-order bits.
+///
+/// Only the GCM, CCM and ChaCha20-Poly1305 transforms put the ESN into their
+/// AAD (RFC 4106, Section 5 / RFC 4309, Section 5 / RFC 7634, Section 2.1).
+/// GMAC is not decrypted and ICVs are never verified, so for the other
+/// algorithms the value would be silently ignored.
+/// <https://www.rfc-editor.org/rfc/rfc4106#section-5>
+/// <https://www.rfc-editor.org/rfc/rfc4309#section-5>
+/// <https://www.rfc-editor.org/rfc/rfc7634#section-2.1>
+#[cfg(feature = "esp-decrypt")]
+fn check_esn_applies(arg: &str, encryption: &EncryptionAlgorithm, esn: Option<u32>) -> Result<()> {
+    let uses_esn = matches!(
+        encryption,
+        EncryptionAlgorithm::Aes128Gcm { .. }
+            | EncryptionAlgorithm::Aes192Gcm { .. }
+            | EncryptionAlgorithm::Aes256Gcm { .. }
+            | EncryptionAlgorithm::Aes128Ccm { .. }
+            | EncryptionAlgorithm::Aes192Ccm { .. }
+            | EncryptionAlgorithm::Aes256Ccm { .. }
+            | EncryptionAlgorithm::ChaCha20Poly1305 { .. }
+    );
+    if esn.is_some() && !uses_esn {
+        return Err(DsctError::invalid_argument(format!(
+            "--esp-sa '{arg}': esn only applies to the GCM, CCM and ChaCha20-Poly1305 algorithms, which include the high-order sequence number bits in their AAD; remove it for this algorithm"
+        )));
+    }
+    Ok(())
+}
+
 /// Parse a single `--esp-sa` argument into an SPI and its Security Association.
 ///
 /// Accepted forms:
 /// - `spi:null` / `spi:null:auth_algo:auth_key_hex`
 /// - `spi:enc_algo:enc_key_hex` (AEAD ciphers)
 /// - `spi:enc_algo:enc_key_hex:auth_algo:auth_key_hex` (cipher + separate auth)
+///
+/// Each form may end with `:esn` or `:esn=HIGH` (see [`split_esn`]).
 #[cfg(feature = "esp-decrypt")]
 fn parse_sa(arg: &str) -> Result<(u32, EspSa)> {
     use packet_dissector::dissectors::esp::{
         parse_authentication_algorithm, parse_encryption_algorithm,
     };
 
-    let parts: Vec<&str> = arg.split(':').collect();
+    let mut parts: Vec<&str> = arg.split(':').collect();
+    let esn = split_esn(arg, &mut parts)?;
     if parts.len() < 2 {
         return Err(DsctError::invalid_argument(format!(
             "invalid --esp-sa format: expected 'spi:algo[:key[:auth_algo:auth_key]]', got '{arg}'"
@@ -103,10 +186,11 @@ fn parse_sa(arg: &str) -> Result<(u32, EspSa)> {
     if enc_algo_name == "null" {
         if parts.len() != 2 && parts.len() != 4 {
             return Err(DsctError::invalid_argument(format!(
-                "--esp-sa '{arg}': 'null' requires exactly 2 parts (spi:null) or 4 parts (spi:null:auth_algo:auth_key), got {}",
+                "--esp-sa '{arg}': 'null' requires exactly 2 parts (spi:null) or 4 parts (spi:null:auth_algo:auth_key) before an optional esn element, got {}",
                 parts.len()
             )));
         }
+        check_esn_applies(arg, &EncryptionAlgorithm::Null, esn)?;
         let (authentication, auth_key) = if parts.len() == 4 {
             parse_auth(arg, parts[2], parts[3])?
         } else {
@@ -120,7 +204,7 @@ fn parse_sa(arg: &str) -> Result<(u32, EspSa)> {
                 enc_key: vec![],
                 authentication,
                 auth_key,
-                esn: None,
+                esn,
             },
         ));
     }
@@ -128,7 +212,7 @@ fn parse_sa(arg: &str) -> Result<(u32, EspSa)> {
     // Non-null algorithms: exactly 3 parts (AEAD) or 5 parts (cipher + auth)
     if parts.len() != 3 && parts.len() != 5 {
         return Err(DsctError::invalid_argument(format!(
-            "--esp-sa '{arg}': non-null algorithms require exactly 3 parts (spi:algo:key) or 5 parts (spi:algo:key:auth_algo:auth_key), got {}",
+            "--esp-sa '{arg}': non-null algorithms require exactly 3 parts (spi:algo:key) or 5 parts (spi:algo:key:auth_algo:auth_key) before an optional esn element, got {}",
             parts.len()
         )));
     }
@@ -137,6 +221,7 @@ fn parse_sa(arg: &str) -> Result<(u32, EspSa)> {
 
     let encryption = parse_encryption_algorithm(enc_algo_name, &enc_key)
         .map_err(|e| DsctError::invalid_argument(format!("in --esp-sa '{arg}': {e}")))?;
+    check_esn_applies(arg, &encryption, esn)?;
 
     // The KEYMAT of the GCM, CCM, GMAC, CTR and ChaCha20-Poly1305 transforms
     // is the cipher key followed by a salt or nonce, which
@@ -167,7 +252,7 @@ fn parse_sa(arg: &str) -> Result<(u32, EspSa)> {
             enc_key,
             authentication,
             auth_key,
-            esn: None,
+            esn,
         },
     ))
 }
@@ -178,7 +263,8 @@ fn parse_sa(arg: &str) -> Result<(u32, EspSa)> {
 /// - `spi:enc_algo:enc_key_hex` (for AEAD ciphers or null)
 /// - `spi:enc_algo:enc_key_hex:auth_algo:auth_key_hex` (for non-AEAD ciphers)
 ///
-/// The `null` algorithm requires no key: `spi:null`
+/// optionally followed by `:esn` or `:esn=HIGH` for an SA with Extended
+/// Sequence Numbers. The `null` algorithm requires no key: `spi:null`
 #[cfg(feature = "esp-decrypt")]
 pub fn parse_and_apply(registry: &DissectorRegistry, args: &[String]) -> Result<()> {
     for arg in args {
@@ -295,6 +381,88 @@ mod tests {
                 assert_eq!(sa.enc_key, vec![0x44; key_len], "{name}: enc_key");
                 assert_eq!(sa.encryption.key_len(), Some(key_len), "{name}: key_len");
                 assert_eq!(sa.esn, None, "{name}: 32-bit sequence numbers");
+            }
+        }
+
+        const GCM_KEYMAT: &str = "0x000102030405060708090a0b0c0d0e0fcafebabe";
+
+        /// RFC 4303, Section 2.2.1 — only the low-order 32 bits of an ESN are
+        /// on the wire; `:esn` declares an ESN SA whose high-order bits are 0.
+        /// <https://www.rfc-editor.org/rfc/rfc4303#section-2.2.1>
+        #[test]
+        fn esn_without_value_means_high_bits_zero() {
+            let (spi, sa) = parse_sa(&format!("0x1001:aes-128-gcm:{GCM_KEYMAT}:esn")).unwrap();
+            assert_eq!(spi, 0x1001);
+            assert_eq!(sa.esn, Some(0));
+            assert_eq!(sa.enc_key.len(), 16);
+        }
+
+        #[test]
+        fn esn_with_value() {
+            let (_, sa) = parse_sa(&format!("1:aes-128-gcm:{GCM_KEYMAT}:esn=1")).unwrap();
+            assert_eq!(sa.esn, Some(1));
+            let (_, sa) = parse_sa(&format!("1:aes-128-gcm:{GCM_KEYMAT}:esn=0xFFFFFFFF")).unwrap();
+            assert_eq!(sa.esn, Some(u32::MAX));
+        }
+
+        /// RFC 4309, Section 5 / RFC 7634, Section 2.1 — CCM and
+        /// ChaCha20-Poly1305 build the same 12-octet ESN AAD as GCM.
+        /// <https://www.rfc-editor.org/rfc/rfc4309#section-5>
+        /// <https://www.rfc-editor.org/rfc/rfc7634#section-2.1>
+        #[test]
+        fn esn_with_ccm_and_chacha20_poly1305() {
+            let ccm = "0x".to_string() + &"11".repeat(16 + 3);
+            let (_, sa) = parse_sa(&format!("1:aes-128-ccm-16:{ccm}:esn=2")).unwrap();
+            assert_eq!(sa.esn, Some(2));
+            let chacha = "0x".to_string() + &"11".repeat(32 + 4);
+            let (_, sa) = parse_sa(&format!("1:chacha20-poly1305:{chacha}:esn")).unwrap();
+            assert_eq!(sa.esn, Some(0));
+        }
+
+        /// The other algorithms never use the high-order bits (GMAC is not
+        /// decrypted, ICVs are not verified), so `esn` is rejected instead
+        /// of being silently ignored.
+        #[test]
+        fn rejects_esn_for_algorithms_that_ignore_it() {
+            let auth = "0x".to_string() + &"aa".repeat(20);
+            let enc = "0x".to_string() + &"11".repeat(16);
+            let ctr = "0x".to_string() + &"11".repeat(16 + 4);
+            for arg in [
+                "1:null:esn".to_string(),
+                format!("1:null:hmac-sha1-96:{auth}:esn=1"),
+                format!("2:aes-128-cbc:{enc}:hmac-sha1-96:{auth}:esn"),
+                format!("2:aes-128-ctr:{ctr}:hmac-sha1-96:{auth}:esn"),
+                format!("3:aes-128-gmac:{ctr}:esn"),
+            ] {
+                let err = parse_sa(&arg).expect_err(&arg);
+                assert!(err.to_string().contains("esn only applies"), "{arg}: {err}");
+            }
+        }
+
+        #[test]
+        fn no_esn_suffix_means_32_bit_sequence_numbers() {
+            let (_, sa) = parse_sa(&format!("1:aes-128-gcm:{GCM_KEYMAT}")).unwrap();
+            assert_eq!(sa.esn, None);
+        }
+
+        #[test]
+        fn rejects_malformed_esn() {
+            for suffix in [
+                "esn=",
+                "esn=x",
+                "esn=-1",
+                "esn=+1",
+                "esn=0x+1",
+                "esn= 1",
+                "esn=4294967296",
+                "esn=0x",
+                "esn=0x100000000",
+                "ESN",
+                "esn:esn",
+            ] {
+                let arg = format!("1:aes-128-gcm:{GCM_KEYMAT}:{suffix}");
+                let err = parse_sa(&arg).expect_err(&arg);
+                assert!(err.to_string().contains(&arg), "{arg}: {err}");
             }
         }
 

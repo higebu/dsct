@@ -44,6 +44,26 @@ fn invalid_esp_sa_returns_exit_code_2() {
         .stderr(predicate::str::contains("invalid_arguments"));
 }
 
+#[cfg(feature = "esp-decrypt")]
+#[test]
+fn invalid_esp_sa_esn_returns_exit_code_2() {
+    Command::cargo_bin("dsct")
+        .unwrap()
+        .args([
+            "read",
+            "--esp-sa",
+            "0x1001:aes-128-gcm:0x000102030405060708090a0b0c0d0e0fcafebabe:esn=x",
+            "/dev/null",
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(
+            predicate::str::contains("invalid_arguments")
+                .and(predicate::str::contains("invalid esn value")),
+        );
+}
+
 #[test]
 fn read_stdin_dash_with_empty_input_returns_exit_code_4() {
     Command::cargo_bin("dsct")
