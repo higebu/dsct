@@ -111,6 +111,52 @@ fn list_includes_protocols_enabled_by_default() {
     }
 }
 
+/// Dissectors reached through a dispatcher or from inside another dissector
+/// are listed since packet-dissector 0.6.1.
+#[test]
+fn list_and_fields_include_dispatched_protocols() {
+    let run = |args: &[&str]| -> Value {
+        let output = Command::cargo_bin("dsct")
+            .unwrap()
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    let list = run(&["list"]);
+    let names: Vec<&str> = list
+        .as_array()
+        .expect("list output must be a JSON array")
+        .iter()
+        .filter_map(|entry| entry.get("name").and_then(Value::as_str))
+        .collect();
+    for (protocol, field) in [
+        ("HTTP", "HTTP.method"),
+        ("HTTP2", "HTTP2.frame_type"),
+        ("L2TP", "L2TP.tunnel_id"),
+        ("L2TPv3-UDP", "L2TPv3-UDP.session_id"),
+        ("RTP", "RTP.ssrc"),
+        ("NAS-5G", "NAS-5G.message_type"),
+    ] {
+        assert!(
+            names.contains(&protocol),
+            "{protocol} must appear in `dsct list`; got {names:?}"
+        );
+        let fields = run(&["fields", protocol]);
+        let qualified: Vec<&str> = fields
+            .as_array()
+            .expect("fields output must be a JSON array")
+            .iter()
+            .filter_map(|entry| entry.get("qualified_name").and_then(Value::as_str))
+            .collect();
+        assert!(
+            qualified.contains(&field),
+            "`dsct fields {protocol}` must list {field}; got {qualified:?}"
+        );
+    }
+}
+
 #[test]
 fn list_entries_carry_layer_and_references() {
     let output = Command::cargo_bin("dsct")

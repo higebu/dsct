@@ -433,6 +433,158 @@ mod tests {
         );
     }
 
+    /// Sections whose schema dsct could not read before packet-dissector
+    /// 0.6.1 (they were written without one), plus L2TPv3 over IP, which
+    /// shares L2TPv3-UDP's fields.
+    const SECTIONS_CHECKED_SINCE_0_6_1: &[&str] = &[
+        "HTTP",
+        "HTTP2",
+        "L2TP",
+        "L2TPv3-UDP",
+        "L2TPv3",
+        "RTP",
+        "NAS-5G",
+    ];
+
+    /// Fields of the sections written without a schema that default output
+    /// must not hide: decoded content (L2TP AVPs, NAS-5G IEs), error and
+    /// diagnostic fields (HTTP/2 HPACK errors, GOAWAY debug data, missing
+    /// mandatory NAS IEs) and frame metadata.
+    #[cfg(all(
+        feature = "http",
+        feature = "http2",
+        feature = "l2tp",
+        feature = "l2tpv3",
+        feature = "rtp",
+        feature = "nas5g"
+    ))]
+    #[test]
+    fn dispatched_sections_show_key_fields() {
+        let config = FieldConfig::default_config().unwrap();
+        let top = [
+            ("HTTP", "content_type"),
+            ("HTTP2", "debug_data"),
+            ("HTTP2", "hpack_error"),
+            ("HTTP2", "priority_weight"),
+            ("HTTP2", "origins"),
+            ("HTTP2", "alt_svc_field_value"),
+            ("L2TP", "version"),
+            ("L2TP", "message_type"),
+            ("L2TP", "message_type_name"),
+            ("L2TP", "avps"),
+            ("NAS-5G", "information_elements"),
+            ("NAS-5G", "ciphered_nas_message"),
+            ("NAS-5G", "missing_mandatory_ie"),
+            ("NAS-5G", "undecoded_octets"),
+            ("NAS-5G", "raw_nas_message"),
+            ("HTTP", "chunk_count"),
+            ("L2TPv3", "message_type_name"),
+        ];
+        for (proto, field) in top {
+            assert!(
+                config.should_include(proto, field),
+                "[{proto}] {field} is hidden"
+            );
+        }
+        let nested = [
+            ("L2TP", "avps", "result_code"),
+            ("L2TP", "avps", "typed_value_name"),
+            ("L2TPv3-UDP", "avps", "typed_value"),
+            ("L2TPv3-UDP", "avps", "typed_value_name"),
+            ("L2TPv3-UDP", "avps", "error_message"),
+            ("L2TPv3", "avps", "result_code"),
+            ("NAS-5G", "information_elements", "cause_name"),
+        ];
+        let registry = packet_dissector::registry::DissectorRegistry::default();
+        let schemas = registry.all_field_schemas();
+        for (proto, parent, field) in nested {
+            // The sub-field must exist (as a field or a `_name` companion),
+            // or the check below would pass vacuously.
+            let children = schemas
+                .iter()
+                .filter(|s| s.short_name == proto)
+                .flat_map(|s| s.fields.iter())
+                .filter(|fd| fd.name == parent)
+                .find_map(|fd| fd.children)
+                .unwrap_or_else(|| panic!("[{proto}] has no container {parent}"));
+            assert!(
+                children.iter().any(|fd| fd.name == field
+                    || field
+                        .strip_suffix("_name")
+                        .is_some_and(|base| fd.name == base && fd.display_fn.is_some())),
+                "[{proto}] {parent} has no sub-field {field}"
+            );
+            assert!(
+                config.should_include(proto, parent)
+                    && config.should_include_nested(proto, parent, field),
+                "[{proto}] {parent}.{field} is hidden"
+            );
+        }
+    }
+
+    /// In the sections written without a schema, every shown field that has
+    /// a `display_fn` also shows its `_name` companion, so default output
+    /// has no bare code without its name.
+    #[cfg(all(
+        feature = "http",
+        feature = "http2",
+        feature = "l2tp",
+        feature = "l2tpv3",
+        feature = "rtp",
+        feature = "nas5g"
+    ))]
+    #[test]
+    fn dispatched_sections_show_name_companions() {
+        let config = FieldConfig::default_config().unwrap();
+        let registry = packet_dissector::registry::DissectorRegistry::default();
+        let mut failures = Vec::new();
+        let mut checked = 0;
+        for schema in registry.all_field_schemas() {
+            let proto = schema.short_name;
+            if !SECTIONS_CHECKED_SINCE_0_6_1.contains(&proto) || schema.fields.is_empty() {
+                continue;
+            }
+            checked += 1;
+            for fd in schema.fields {
+                if !config.should_include(proto, fd.name) {
+                    continue;
+                }
+                if fd.display_fn.is_some()
+                    && !config.should_include(proto, &format!("{}_name", fd.name))
+                {
+                    failures.push(format!("[{proto}] {} without {}_name", fd.name, fd.name));
+                }
+                for child in fd.children.unwrap_or_default() {
+                    if child.display_fn.is_some()
+                        && config.should_include_nested(proto, fd.name, child.name)
+                        && !config.should_include_nested(
+                            proto,
+                            fd.name,
+                            &format!("{}_name", child.name),
+                        )
+                    {
+                        failures.push(format!(
+                            "[{proto}] {}.{} without {}.{}_name",
+                            fd.name, child.name, fd.name, child.name
+                        ));
+                    }
+                }
+            }
+        }
+        failures.sort();
+        failures.dedup();
+        assert_eq!(
+            checked,
+            SECTIONS_CHECKED_SINCE_0_6_1.len(),
+            "every section has a schema"
+        );
+        assert!(
+            failures.is_empty(),
+            "default_fields.toml hides _name companions:\n{}",
+            failures.join("\n")
+        );
+    }
+
     /// The checker itself reports each kind of stale entry.
     #[cfg(feature = "tcp")]
     #[test]

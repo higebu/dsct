@@ -1092,9 +1092,9 @@ fn resolve_protocol_name(
 /// Every name is validated against `registry` (see
 /// [`resolve_protocol_name`]); an unknown one is a structured error rather
 /// than a silently empty `layers` array. A protocol that is only reachable
-/// through a heuristic dispatcher or `decode_as` (e.g. HTTP2) has no entry
-/// in `all_field_schemas` even though its layers do appear in output, so
-/// the registry's decode-as names are accepted as well.
+/// through `decode_as` (e.g. `pw-eth`) has no entry in `all_field_schemas`
+/// even though its layers do appear in output, so the registry's decode-as
+/// names are accepted as well.
 ///
 /// The returned names are already normalized so the serializer can compare
 /// them without allocating (see
@@ -2683,9 +2683,25 @@ mod tests {
 
     #[test]
     fn build_layer_filter_accepts_decode_as_only_protocols() {
-        // HTTP2 layers appear via the HTTP dispatcher / decode_as, but the
-        // dissector isn't in any dispatch table, so it has no field
+        // `pw-eth` is only reachable through decode_as, so it has no field
         // schema. Its layers must still be selectable.
+        let registry = packet_dissector::registry::DissectorRegistry::default();
+        assert!(
+            !registry
+                .all_field_schemas()
+                .iter()
+                .any(|s| s.short_name.eq_ignore_ascii_case("pw-eth")),
+            "pick a protocol without a field schema"
+        );
+        assert_eq!(
+            build_layer_filter(&["pw-eth".to_owned()], &registry).unwrap(),
+            vec![crate::filter::normalize_protocol_name("pw-eth")]
+        );
+    }
+
+    #[test]
+    fn build_layer_filter_accepts_dispatched_protocols() {
+        // Since packet-dissector 0.6.1 HTTP2 has a field schema.
         let registry = packet_dissector::registry::DissectorRegistry::default();
         assert_eq!(
             build_layer_filter(&["HTTP2".to_owned()], &registry).unwrap(),
