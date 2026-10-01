@@ -433,19 +433,6 @@ mod tests {
         );
     }
 
-    /// Sections whose schema dsct could not read before packet-dissector
-    /// 0.6.1 (they were written without one), plus L2TPv3 over IP, which
-    /// shares L2TPv3-UDP's fields.
-    const SECTIONS_CHECKED_SINCE_0_6_1: &[&str] = &[
-        "HTTP",
-        "HTTP2",
-        "L2TP",
-        "L2TPv3-UDP",
-        "L2TPv3",
-        "RTP",
-        "NAS-5G",
-    ];
-
     /// Fields of the sections written without a schema that default output
     /// must not hide: decoded content (L2TP AVPs, NAS-5G IEs), error and
     /// diagnostic fields (HTTP/2 HPACK errors, GOAWAY debug data, missing
@@ -522,62 +509,83 @@ mod tests {
         }
     }
 
-    /// In the sections written without a schema, every shown field that has
-    /// a `display_fn` also shows its `_name` companion, so default output
-    /// has no bare code without its name.
-    #[cfg(all(
-        feature = "http",
-        feature = "http2",
-        feature = "l2tp",
-        feature = "l2tpv3",
-        feature = "rtp",
-        feature = "nas5g"
-    ))]
-    #[test]
-    fn dispatched_sections_show_name_companions() {
-        let config = FieldConfig::default_config().unwrap();
-        let registry = packet_dissector::registry::DissectorRegistry::default();
-        // (protocol, container, companion) for every shown field with a
-        // `display_fn`; `container` is `None` for top-level fields.
-        let mut companions: Vec<(&str, Option<&str>, String)> = Vec::new();
-        let mut checked = 0;
-        for schema in registry.all_field_schemas() {
-            let proto = schema.short_name;
-            if !SECTIONS_CHECKED_SINCE_0_6_1.contains(&proto) || schema.fields.is_empty() {
+    /// Collects `(container, companion)` for every shown descriptor in
+    /// `fields` that has a `display_fn`, recursing into shown containers.
+    ///
+    /// Mirrors the serializer's filtering: a top-level field (`parent` is
+    /// `None`) is checked with `should_include`, and a sub-field of an Object
+    /// or of an Array of Objects with `should_include_nested` keyed by its
+    /// immediate container's name, at any depth (see `write_field_json` in
+    /// `serialize.rs`).
+    #[cfg(feature = "tcp")]
+    fn collect_shown_companions<'a>(
+        config: &FieldConfig,
+        proto: &str,
+        parent: Option<&'a str>,
+        fields: &'a [packet_dissector_core::field::FieldDescriptor],
+        out: &mut Vec<(Option<&'a str>, String)>,
+    ) {
+        for fd in fields {
+            let shown = match parent {
+                None => config.should_include(proto, fd.name),
+                Some(parent) => config.should_include_nested(proto, parent, fd.name),
+            };
+            if !shown {
                 continue;
             }
-            checked += 1;
-            for fd in schema.fields {
-                if !config.should_include(proto, fd.name) {
-                    continue;
-                }
-                if fd.display_fn.is_some() {
-                    companions.push((proto, None, format!("{}_name", fd.name)));
-                }
-                for child in fd.children.unwrap_or_default() {
-                    let shown = config.should_include_nested(proto, fd.name, child.name);
-                    if child.display_fn.is_some() && shown {
-                        companions.push((proto, Some(fd.name), format!("{}_name", child.name)));
-                    }
-                }
+            if fd.display_fn.is_some() {
+                out.push((parent, format!("{}_name", fd.name)));
+            }
+            if let Some(children) = fd.children {
+                collect_shown_companions(config, proto, Some(fd.name), children, out);
             }
         }
-        assert_eq!(
-            checked,
-            SECTIONS_CHECKED_SINCE_0_6_1.len(),
-            "every section has a schema"
-        );
+    }
+
+    /// Every field that default output shows and that has a `display_fn`
+    /// also shows its `_name` companion, in every `default_fields.toml`
+    /// section, so default output has no bare code without its name.
+    ///
+    /// Sections whose dissector is compiled out in this feature set are
+    /// skipped, as in `exact_patterns_name_existing_fields`.
+    #[cfg(feature = "tcp")]
+    #[test]
+    fn shown_fields_show_name_companions() {
+        let config = FieldConfig::default_config().unwrap();
+        let raw: RawConfig = toml::from_str(DEFAULT_CONFIG).unwrap();
+        let registry = packet_dissector::registry::DissectorRegistry::default();
+        let mut companions: Vec<(&str, Option<&str>, String)> = Vec::new();
+        for schema in registry.all_field_schemas() {
+            let proto = schema.short_name;
+            if !raw.protocols.contains_key(proto) {
+                continue;
+            }
+            let mut found = Vec::new();
+            collect_shown_companions(&config, proto, None, schema.fields, &mut found);
+            companions.extend(
+                found
+                    .into_iter()
+                    .map(|(parent, name)| (proto, parent, name)),
+            );
+        }
         assert!(!companions.is_empty());
-        let hidden: Vec<&(&str, Option<&str>, String)> = companions
+        let mut hidden: Vec<String> = companions
             .iter()
             .filter(|(proto, parent, name)| match parent {
                 None => !config.should_include(proto, name),
                 Some(parent) => !config.should_include_nested(proto, parent, name),
             })
+            .map(|(proto, parent, name)| match parent {
+                None => format!("[{proto}] {name}"),
+                Some(parent) => format!("[{proto}] {parent}.{name}"),
+            })
             .collect();
+        hidden.sort();
+        hidden.dedup();
         assert!(
             hidden.is_empty(),
-            "default_fields.toml hides _name companions: {hidden:?}"
+            "default_fields.toml hides _name companions:\n{}",
+            hidden.join("\n")
         );
     }
 

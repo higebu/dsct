@@ -76,14 +76,15 @@ fields = [
   "tlvs.enabled_capabilities",
   "tlvs.oui",
   "tlvs.org_subtype",
+  "tlvs.org_subtype_name",
   "tlvs.info",
 ]
 
 [IPv4]
-fields = ["ttl", "protocol", "src", "dst"]
+fields = ["ttl", "protocol", "protocol_name", "src", "dst"]
 
 [IPv6]
-fields = ["next_header", "hop_limit", "src", "dst"]
+fields = ["next_header", "next_header_name", "hop_limit", "src", "dst"]
 
 [TCP]
 fields = [
@@ -104,7 +105,9 @@ fields = ["src_port", "dst_port"]
 [ICMP]
 fields = [
   "type",
+  "type_name",
   "code",
+  "code_name",
   "identifier",
   "sequence_number",
   "next_hop_mtu",
@@ -127,6 +130,7 @@ fields = [
 [ICMPv6]
 fields = [
   "type",
+  "type_name",
   "code",
   "identifier",
   "sequence_number",
@@ -166,19 +170,26 @@ fields = [
   # Top-level header fields
   "id",
   "qr",
+  "qr_name",
   "opcode",
+  "opcode_name",
   "rcode",
+  "rcode_name",
   # Record groups
   "questions",
   "answers",
   # Sub-fields inside question records
   "questions.name",
   "questions.type",
+  "questions.type_name",
   "questions.class",
+  "questions.class_name",
   # Sub-fields inside answer records (rdlength omitted)
   "answers.name",
   "answers.type",
+  "answers.type_name",
   "answers.class",
+  "answers.class_name",
   "answers.ttl",
   "answers.rdata",
   "answers.rdata_*",
@@ -192,19 +203,26 @@ fields = [
   # Top-level header fields
   "id",
   "qr",
+  "qr_name",
   "opcode",
+  "opcode_name",
   "rcode",
+  "rcode_name",
   # Record groups
   "questions",
   "answers",
   # Sub-fields inside question records
   "questions.name",
   "questions.type",
+  "questions.type_name",
   "questions.class",
+  "questions.class_name",
   # Sub-fields inside answer records (rdlength omitted)
   "answers.name",
   "answers.type",
+  "answers.type_name",
   "answers.class",
+  "answers.class_name",
   "answers.ttl",
   "answers.rdata",
   "answers.rdata_*",
@@ -216,6 +234,7 @@ fields = [
   "yiaddr",
   "chaddr",
   "dhcp_message_type",
+  "dhcp_message_type_name",
   "server_identifier",
   "requested_ip",
   "hostname",
@@ -229,7 +248,7 @@ fields = [
 ]
 
 [DHCPv6]
-fields = ["msg_type", "transaction_id", "options"]
+fields = ["msg_type", "msg_type_name", "transaction_id", "options"]
 
 [VRRP]
 fields = [
@@ -352,6 +371,7 @@ fields = [
   # Tunnel identification
   "teid",
   "message_type",
+  "message_type_name",
   # Optional fields present when S/PN/E flags are set
   "sequence_number",
   "n_pdu_number",
@@ -377,6 +397,7 @@ fields = [
 fields = [
   # Message identification
   "message_type",
+  "message_type_name",
   # Tunnel identification (absent on some messages)
   "teid",
   "sequence_number",
@@ -391,6 +412,7 @@ fields = [
 fields = [
   # Message identification
   "message_type",
+  "message_type_name",
   # Session identification (absent on node-related messages)
   "seid",
   "sequence_number",
@@ -547,13 +569,19 @@ fields = [
 ]
 
 [PPP]
-fields = ["protocol"]
+fields = ["protocol", "protocol_name"]
 
 [AH]
-fields = ["next_header", "spi", "sequence_number"]
+fields = ["next_header", "next_header_name", "spi", "sequence_number"]
 
 [ESP]
-fields = ["spi", "sequence_number", "next_header", "pad_length"]
+fields = [
+  "spi",
+  "sequence_number",
+  "next_header",
+  "next_header_name",
+  "pad_length",
+]
 
 [IKE]
 fields = [
@@ -561,6 +589,7 @@ fields = [
   "responder_spi",
   "major_version",
   "exchange_type",
+  "exchange_type_name",
   "flags",
   "flag_initiator",
   "flag_response",
@@ -568,6 +597,7 @@ fields = [
   "length",
   "payloads",
   "payloads.payload_type",
+  "payloads.payload_type_name",
   "payloads.payload_length",
 ]
 
@@ -593,6 +623,7 @@ fields = [
   "attributes.value",
   "attributes.value_name",
   "attributes.vendor_id",
+  "attributes.vendor_id_name",
 ]
 
 [NGAP]
