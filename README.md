@@ -424,7 +424,7 @@ dsct sql capture.pcap "SELECT DISTINCT a.packet_number FROM tcp_segments a JOIN 
 
 ## Supported protocols
 
-The default build currently includes 50+ protocol dissectors across link, network, transport, tunneling, and application layers.
+The default build currently includes 100+ protocol dissectors across link, network, transport, tunneling, and application layers.
 
 Use `dsct list` to see the exact protocol set in your build; each entry reports
 the protocol's `layer` (`link`, `network`, `transport`, `tunnel`,

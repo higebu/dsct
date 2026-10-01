@@ -103,13 +103,15 @@ struct ReadOptions {
     ///   so the inner packet is dissected without a key.
     /// - `spi:null:auth_algo:auth_key_hex` — NULL encryption with an integrity
     ///   algorithm, whose ICV is stripped before the inner packet is read.
-    /// - `spi:enc_algo:enc_key_hex` — AEAD algorithms (`aes-128-gcm`, `aes-192-gcm`,
-    ///   `aes-256-gcm`).
-    /// - `spi:enc_algo:enc_key_hex:auth_algo:auth_key_hex` — non-AEAD (separate cipher + auth).
+    /// - `spi:enc_algo:enc_key_hex` — AEAD algorithms (`aes-{128,192,256}-gcm`, optionally
+    ///   with an ICV length suffix `-8`/`-12`/`-16`; `aes-{128,192,256}-ccm-{8,12,16}`;
+    ///   `aes-{128,192,256}-gmac`; `chacha20-poly1305`), or a cipher without integrity.
+    /// - `spi:enc_algo:enc_key_hex:auth_algo:auth_key_hex` — non-AEAD (separate cipher + auth),
+    ///   e.g. `aes-{128,192,256}-cbc`, `aes-{128,192,256}-ctr` or `3des-cbc`.
     ///
-    /// For AEAD algorithms, `enc_key_hex` must have the correct length for the algorithm and
-    /// must include the implicit salt. For AES-GCM in IPsec this means key + 4-byte salt:
-    /// 20 bytes for `aes-128-gcm`, 28 bytes for `aes-192-gcm` and 36 bytes for `aes-256-gcm`.
+    /// `enc_key_hex` is the full KEYMAT: the cipher key followed by the salt or nonce the
+    /// algorithm takes from it — 4 bytes for GCM, GMAC, CTR and ChaCha20-Poly1305, 3 bytes
+    /// for CCM (e.g. 20 bytes for `aes-128-gcm`, 36 bytes for `aes-256-gcm`).
     ///
     /// ESP with NULL encryption is decoded automatically, without any --esp-sa,
     /// whenever the ESP trailer identifies a recognised inner protocol. An

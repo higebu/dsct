@@ -120,6 +120,7 @@ fn parse_sa(arg: &str) -> Result<(u32, EspSa)> {
                 enc_key: vec![],
                 authentication,
                 auth_key,
+                esn: None,
             },
         ));
     }
@@ -137,17 +138,21 @@ fn parse_sa(arg: &str) -> Result<(u32, EspSa)> {
     let encryption = parse_encryption_algorithm(enc_algo_name, &enc_key)
         .map_err(|e| DsctError::invalid_argument(format!("in --esp-sa '{arg}': {e}")))?;
 
-    // RFC 4106, Section 8.1 — an AEAD KEYMAT is the cipher key followed by a
-    // 4-byte salt, which `parse_encryption_algorithm` has already lifted into
-    // the algorithm. Keep only the cipher key, whose length must match the
-    // cipher exactly.
+    // The KEYMAT of the GCM, CCM, GMAC, CTR and ChaCha20-Poly1305 transforms
+    // is the cipher key followed by a salt or nonce, which
+    // `parse_encryption_algorithm` has already lifted into the algorithm.
+    // Keep only the cipher key, whose length must match the cipher exactly.
+    // RFC 4106, Section 8.1 / RFC 3686, Section 5.1 / RFC 4309, Section 7.1 /
+    // RFC 4543, Section 6 / RFC 7634, Section 2
     // <https://www.rfc-editor.org/rfc/rfc4106#section-8.1>
-    let enc_key = match &encryption {
-        EncryptionAlgorithm::Aes128Gcm { .. } => enc_key[..16].to_vec(),
-        EncryptionAlgorithm::Aes192Gcm { .. } => enc_key[..24].to_vec(),
-        EncryptionAlgorithm::Aes256Gcm { .. } => enc_key[..32].to_vec(),
-        _ => enc_key,
-    };
+    // <https://www.rfc-editor.org/rfc/rfc3686#section-5.1>
+    // <https://www.rfc-editor.org/rfc/rfc4309#section-7.1>
+    // <https://www.rfc-editor.org/rfc/rfc4543#section-6>
+    // <https://www.rfc-editor.org/rfc/rfc7634#section-2>
+    let mut enc_key = enc_key;
+    if let Some(key_len) = encryption.key_len() {
+        enc_key.truncate(key_len);
+    }
 
     let (authentication, auth_key) = if parts.len() == 5 {
         parse_auth(arg, parts[3], parts[4])?
@@ -162,6 +167,7 @@ fn parse_sa(arg: &str) -> Result<(u32, EspSa)> {
             enc_key,
             authentication,
             auth_key,
+            esn: None,
         },
     ))
 }
@@ -249,12 +255,46 @@ mod tests {
 
                 assert_eq!(sa.enc_key, vec![0x33; key_len], "{name}: enc_key length");
                 let salt = match sa.encryption {
-                    EncryptionAlgorithm::Aes128Gcm { salt }
-                    | EncryptionAlgorithm::Aes192Gcm { salt }
-                    | EncryptionAlgorithm::Aes256Gcm { salt } => salt,
+                    EncryptionAlgorithm::Aes128Gcm { salt, .. }
+                    | EncryptionAlgorithm::Aes192Gcm { salt, .. }
+                    | EncryptionAlgorithm::Aes256Gcm { salt, .. } => salt,
                     other => panic!("{name}: expected an AEAD algorithm, got {other:?}"),
                 };
                 assert_eq!(salt, [0xDE, 0xAD, 0xBE, 0xEF], "{name}: salt");
+            }
+        }
+
+        /// RFC 3686, Section 5.1 / RFC 4309, Section 7.1 / RFC 4543, Section 6 /
+        /// RFC 7634, Section 2 — the KEYMAT of these transforms is the cipher
+        /// key followed by a nonce or salt, which belongs to the algorithm and
+        /// not to the cipher key.
+        /// <https://www.rfc-editor.org/rfc/rfc3686#section-5.1>
+        /// <https://www.rfc-editor.org/rfc/rfc4309#section-7.1>
+        /// <https://www.rfc-editor.org/rfc/rfc4543#section-6>
+        /// <https://www.rfc-editor.org/rfc/rfc7634#section-2>
+        #[test]
+        fn keymat_nonce_and_salt_are_split_off_the_cipher_key() {
+            for (name, key_len, extra) in [
+                ("aes-128-gcm-8", 16usize, 4usize),
+                ("aes-256-gcm-12", 32, 4),
+                ("aes-128-ctr", 16, 4),
+                ("aes-192-ctr", 24, 4),
+                ("aes-256-ctr", 32, 4),
+                ("aes-128-ccm-8", 16, 3),
+                ("aes-256-ccm-16", 32, 3),
+                ("aes-128-gmac", 16, 4),
+                ("chacha20-poly1305", 32, 4),
+            ] {
+                let mut key = vec![0x44u8; key_len];
+                key.extend(std::iter::repeat_n(0xA5, extra));
+                let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+
+                let (_, sa) = parse_sa(&format!("4:{name}:0x{hex}"))
+                    .unwrap_or_else(|e| panic!("{name} must parse: {e:?}"));
+
+                assert_eq!(sa.enc_key, vec![0x44; key_len], "{name}: enc_key");
+                assert_eq!(sa.encryption.key_len(), Some(key_len), "{name}: key_len");
+                assert_eq!(sa.esn, None, "{name}: 32-bit sequence numbers");
             }
         }
 

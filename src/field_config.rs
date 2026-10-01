@@ -274,6 +274,22 @@ fn parse_patterns(patterns: Vec<String>) -> Result<PatternSet> {
 mod tests {
     use super::*;
 
+    /// Collects the children of every descriptor named `name`, at any depth.
+    fn collect_children_named<'a>(
+        fields: &'a [packet_dissector_core::field::FieldDescriptor],
+        name: &str,
+        out: &mut Vec<&'a [packet_dissector_core::field::FieldDescriptor]>,
+    ) {
+        for fd in fields {
+            if let Some(children) = fd.children {
+                if fd.name == name {
+                    out.push(children);
+                }
+                collect_children_named(children, name, out);
+            }
+        }
+    }
+
     /// Every `_name` companion pattern in `default_fields.toml` must have a
     /// corresponding base field in the dissector's descriptor tree.
     ///
@@ -330,30 +346,32 @@ mod tests {
                     continue;
                 }
 
-                let scope_children =
-                    || -> Option<&[packet_dissector_core::field::FieldDescriptor]> {
-                        match parent {
-                            None => Some(schema.fields),
-                            Some(parent_name) => schema
-                                .fields
-                                .iter()
-                                .find(|fd| fd.name == parent_name)
-                                .and_then(|fd| fd.children),
-                        }
-                    };
+                // Nested patterns filter by the immediate parent's name, so a
+                // parent may sit at any depth of the descriptor tree (e.g.
+                // TLS "extensions" inside "handshake_messages").
+                let scopes: Vec<&[packet_dissector_core::field::FieldDescriptor]> = match parent {
+                    None => vec![schema.fields],
+                    Some(parent_name) => {
+                        let mut found = Vec::new();
+                        collect_children_named(schema.fields, parent_name, &mut found);
+                        found
+                    }
+                };
 
                 // A field literally named `last_segment` (e.g. DHCP's real
                 // "domain_name" option, or TLS's real "server_name"
                 // extension field) is not a synthesized `_name` companion
                 // pattern at all — skip it.
-                let is_real_field = scope_children()
-                    .is_some_and(|children| children.iter().any(|fd| fd.name == last_segment));
+                let is_real_field = scopes
+                    .iter()
+                    .any(|children| children.iter().any(|fd| fd.name == last_segment));
                 if is_real_field {
                     continue;
                 }
 
-                let found = scope_children()
-                    .is_some_and(|children| children.iter().any(|fd| fd.name == base));
+                let found = scopes
+                    .iter()
+                    .any(|children| children.iter().any(|fd| fd.name == base));
 
                 if !found {
                     failures.push(format!(

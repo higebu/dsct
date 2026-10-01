@@ -238,6 +238,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ccm"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0be9b34d99d395af800e996c5784f810f8400ccd64202f91859dc677825b5378"
+dependencies = [
+ "aead",
+ "cipher",
+ "ctr",
+ "ctutils",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -248,6 +260,29 @@ name = "cfg_aliases"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
+
+[[package]]
+name = "chacha20"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
+dependencies = [
+ "cfg-if",
+ "cipher",
+ "cpufeatures",
+]
+
+[[package]]
+name = "chacha20poly1305"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b89e1c441e926b9c82a8d023f6e1b7ae0adcfaa7d621814e4d60789bac751cb"
+dependencies = [
+ "aead",
+ "chacha20",
+ "cipher",
+ "poly1305",
+]
 
 [[package]]
 name = "ciborium"
@@ -352,6 +387,12 @@ dependencies = [
  "ryu",
  "static_assertions",
 ]
+
+[[package]]
+name = "const-oid"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
 name = "convert_case"
@@ -563,10 +604,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "des"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "916a94e407b54f9034d71dd748234cd1e516ced6284009906ae246f177eafe5a"
+dependencies = [
+ "cipher",
+]
+
+[[package]]
 name = "difflib"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
+
+[[package]]
+name = "digest"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
+dependencies = [
+ "block-buffer",
+ "const-oid",
+ "crypto-common",
+ "ctutils",
+]
 
 [[package]]
 name = "document-features"
@@ -776,6 +838,24 @@ name = "hermit-abi"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
+
+[[package]]
+name = "hkdf"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4aaa26c720c68b866f2c96ef5c1264b3e6f473fe5d4ce61cd44bbe913e553018"
+dependencies = [
+ "hmac",
+]
+
+[[package]]
+name = "hmac"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "httparse"
@@ -1078,198 +1158,307 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
 name = "packet-dissector"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9c4bed51007798cabe7c505f39c08cf63e2ba4171606574eb7257111bab1754"
+checksum = "266c1bbe0ff4c92d31649936fd0749fa281a299298a50daa1109e24133074e8b"
 dependencies = [
  "packet-dissector-ah",
  "packet-dissector-arp",
  "packet-dissector-bfd",
  "packet-dissector-bgp",
+ "packet-dissector-bmp",
+ "packet-dissector-cdp",
  "packet-dissector-core",
  "packet-dissector-dhcp",
  "packet-dissector-dhcpv6",
  "packet-dissector-diameter",
  "packet-dissector-dns",
+ "packet-dissector-e1ap",
+ "packet-dissector-eap",
+ "packet-dissector-erspan",
  "packet-dissector-esp",
  "packet-dissector-ethernet",
+ "packet-dissector-f1ap",
  "packet-dissector-geneve",
  "packet-dissector-gre",
+ "packet-dissector-gtpv1c",
  "packet-dissector-gtpv1u",
  "packet-dissector-gtpv2c",
  "packet-dissector-http",
  "packet-dissector-http2",
  "packet-dissector-icmp",
  "packet-dissector-icmpv6",
+ "packet-dissector-ieee80211",
  "packet-dissector-igmp",
  "packet-dissector-ike",
+ "packet-dissector-ipfix",
  "packet-dissector-ipv4",
  "packet-dissector-ipv6",
  "packet-dissector-isis",
  "packet-dissector-l2tp",
  "packet-dissector-l2tpv3",
  "packet-dissector-lacp",
+ "packet-dissector-ldp",
  "packet-dissector-linux-sll",
  "packet-dissector-linux-sll2",
  "packet-dissector-lldp",
+ "packet-dissector-llmnr",
+ "packet-dissector-m3ua",
+ "packet-dissector-map",
  "packet-dissector-mdns",
  "packet-dissector-mpls",
+ "packet-dissector-nas-eps",
  "packet-dissector-nas5g",
  "packet-dissector-ngap",
+ "packet-dissector-nsh",
  "packet-dissector-ntp",
+ "packet-dissector-null",
  "packet-dissector-ospf",
  "packet-dissector-pfcp",
+ "packet-dissector-pim",
  "packet-dissector-ppp",
+ "packet-dissector-pppoe",
  "packet-dissector-quic",
+ "packet-dissector-radiotap",
  "packet-dissector-radius",
+ "packet-dissector-raw-ip",
  "packet-dissector-reassembly",
+ "packet-dissector-rsvp",
+ "packet-dissector-rtcp",
  "packet-dissector-rtp",
+ "packet-dissector-s1ap",
+ "packet-dissector-sccp",
  "packet-dissector-sctp",
+ "packet-dissector-sgsap",
  "packet-dissector-sip",
+ "packet-dissector-snmp",
  "packet-dissector-srv6",
  "packet-dissector-stp",
  "packet-dissector-stun",
+ "packet-dissector-tcap",
  "packet-dissector-tcp",
  "packet-dissector-tls",
  "packet-dissector-udp",
  "packet-dissector-vrrp",
  "packet-dissector-vxlan",
+ "packet-dissector-xnap",
 ]
 
 [[package]]
 name = "packet-dissector-ah"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "183518569bfbe37d20b464f84d1932802b6a9477b4b8fa059d3c6e729faa72be"
+checksum = "ebb2f22320258da6d819d247236592e6717959eb5dde561aa6efabf9a64b3472"
+dependencies = [
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-aper"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fbf27e8bf8662b2ac517cd2b069407dc1d11dfe90521e20d9a5378bcc3c67af2"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-arp"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74d3abaf7a444d2557649c0327aa84c8f58df9fdef1a4186c6723ce39eca6d42"
+checksum = "252765691164492b264a34cedd0743bffcf0b87894fc15b7109b3e35929c542a"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-bfd"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0415bd9788a89d8de730e4a017e767900feb0be9c43055c4734d36fcef65748"
+checksum = "fcb84b01ff0424e6ab02bf222e3b4d840335cfe5f211749271137e56b6e1deef"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-bgp"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "805f8437a1b9ca6a50d432b427e2af70d0c90ce74d0d66a66d970d2923b2752c"
+checksum = "8196adc98915f4a675e2bae5f52ec06b6769d237277bbe886d461c4a6e14a251"
+dependencies = [
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-bmp"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "040bdf6437204fdfd6d78d867deb81c9d3756da4dceabab26e59f269d49a9128"
+dependencies = [
+ "packet-dissector-bgp",
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-cdp"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b3bfc6e05bd6057057dcb04eb2b3c3e98bf1e6bbf46ee32101ee15927863509"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-core"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c32dac15648bfac05a01630f05a625f0ece3a52f4574e053fea0c7892942fd68"
+checksum = "e4a83364f46316bad9fb646faad06ae1d7283972556ff00b57fb4d4156acce41"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "packet-dissector-dhcp"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eadd5d8c48e4e55f01b0b0a9d4ad3c89d54b50a3a3d034118348b949685643e8"
+checksum = "cf8fb6b1e503673f5fc1af8da58645c9b137abe5d74185b00f56adbf11426140"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-dhcpv6"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e44f9787fa382ab0e3d342b97f9ff8f4bb95f002103279b24ea01a9dbd2186d2"
+checksum = "89a79f79b8a4a3e8b4010dc4b47de7f0e37e63b8a15b0cf18f163090448411e0"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-diameter"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0153422fd21ed07830f474afc9cb84fbbaa079632057b9076398e746b6cf309e"
+checksum = "596f92b4553694768e532fe3d61b1e819f01a17c51a2c7d67e370b8f78bd65f2"
+dependencies = [
+ "packet-dissector-core",
+ "packet-dissector-eap",
+]
+
+[[package]]
+name = "packet-dissector-dns"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "199c11c3e9a2ccc891c253145cad970140203fb50c653804cc2a20409741af82"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
-name = "packet-dissector-dns"
-version = "0.5.0"
+name = "packet-dissector-e1ap"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fb485a5d6b5d0679f224a96b25d0e9e37674acba0b449f82b3e4b9dabe6c98e"
+checksum = "c263f5a4accd36f5ad17bbe204345c2579c4ad25a3ddfa96ad1d07139b10f815"
+dependencies = [
+ "packet-dissector-aper",
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-eap"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a129d25b726e44bac7984c990f8864d355b9f7410adb1ee67559564966da8e2"
+dependencies = [
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-erspan"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e42686e8bdce4300492d564da7ccb97ac171321adab0184c41e167c8c126d5b2"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-esp"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f590904e4e4cc22d474b05b46be082eab22853d764b93843dbc526043b08c54"
+checksum = "e3c9b951f2b66e6f74fa92851a576800987b357b957c5eebe30b998fa9992b65"
 dependencies = [
  "aes",
  "aes-gcm",
  "cbc",
+ "ccm",
+ "chacha20poly1305",
+ "ctr",
+ "des",
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-ethernet"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09695d4760ab8da2efd5ffd31c00f1d61dd5c08a5d39c293eea55d36a539bfb8"
+checksum = "d57c19d984a832ede6291930debf49a63d8144306b488bf6fa0079944085bc18"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
-name = "packet-dissector-geneve"
-version = "0.5.0"
+name = "packet-dissector-f1ap"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "113cce2536f13e34703a96b054035f00cadc084a78b1b1887f7d3cabe57812a5"
+checksum = "dad7226d9b9238110f20781887a9fe11992822789e89db37f639bfd0fa41a04c"
+dependencies = [
+ "packet-dissector-aper",
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-geneve"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4141635014f5291e0ebb1751ddcb8f6850c4fe6df70f2f364e1549beaae01c49"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-gre"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19f973e0f131472ffc3ecbc4018fdbc2e762e4eaee724429a2a5bdb3c5bed739"
+checksum = "772cf98d33bf9b353af62b8b29a17cc1255da004feb6aa6e6f3dda17f3271ea3"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
-name = "packet-dissector-gtpv1u"
-version = "0.5.0"
+name = "packet-dissector-gtpv1c"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b12d8b281635cf5c28363ad2b92bbfe31817581b9065a7741913f7f33a50359"
+checksum = "13874a4e6871f7a6f89fd24ba6a5279ee25df691018332ebb9fa29db569f6b98"
+dependencies = [
+ "packet-dissector-core",
+ "packet-dissector-gtpv2c",
+]
+
+[[package]]
+name = "packet-dissector-gtpv1u"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83ee674b377d1c686ec0725f4cc324f8cb1aab7e4bb9d5690ec22d724eedaaef"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-gtpv2c"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6dab852249008f2566668fe5d3c2ceb26ad9ecc9b473c3d18976b73a988f4e7c"
+checksum = "936f93d5bd9f3ad40623b0f7c30c3cf7781a2f1120b91ccc2a6d9959f507624e"
 dependencies = [
  "packet-dissector-core",
  "packet-dissector-ppp",
@@ -1277,9 +1466,9 @@ dependencies = [
 
 [[package]]
 name = "packet-dissector-http"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "869dcf22a32575513352bcb5aa08e2f2afd6d888e790b1e0f24b283aa894cd21"
+checksum = "368348d588e8218de70b09448e92efc59100a5610c5d6506b9f6db19a9cb6b0c"
 dependencies = [
  "httparse",
  "packet-dissector-core",
@@ -1287,135 +1476,195 @@ dependencies = [
 
 [[package]]
 name = "packet-dissector-http2"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3972d07bc8cc96ee5d9bf1a96a7016aa57e121d82004af0469505888816a6a3"
+checksum = "e455a28f42e628ff6f3b99a915062aa46d7cd11f2eed889be3e3e3e2df80aac0"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-icmp"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d8395313dfc144b489bcb498cd1b2bccc70e7fbf8b250ff29dcd6492135d0d5"
+checksum = "de411ec0a64cb4025c65ce8a8de1f320a7e86b8ff8728a4a9e1bc01d6a7f3d30"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-icmpv6"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd3485ab717e9227ec708c2c2821e00967d03569566245b53df45f75034ad8fa"
+checksum = "ad187fcaf39f9701825c7add1c353e9230f16d4a19ec32d0c97394d6014f8de0"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
-name = "packet-dissector-igmp"
-version = "0.5.0"
+name = "packet-dissector-ieee80211"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15dec5b298d206e1fcf85228f2f05a20811a26173616112c33dbcb8dc85cab9d"
+checksum = "21945f1e103025c219546b24aa52bb37ad2644baf3af10ab22d1de118f833b23"
+dependencies = [
+ "packet-dissector-core",
+ "packet-dissector-ethernet",
+]
+
+[[package]]
+name = "packet-dissector-igmp"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4083d97a53f742a9303654d1543b56f54f85d9b28495e79e810f2e6cce86e2ca"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-ike"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4100cce91dbadbb1cf3944e7d4922d65e2036d2be4546968280812c6b4dc4da8"
+checksum = "d5ae8d6cca40f32c93b18f82d28570c16168ebcd067264d4a689f229bf9fea65"
+dependencies = [
+ "packet-dissector-core",
+ "packet-dissector-eap",
+]
+
+[[package]]
+name = "packet-dissector-ipfix"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d330c80af95541c3fc49023f6cf2d22f7a5ccb1c75f9032fef71b345e0ced396"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-ipv4"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d06e6827eba90821c99e38534b297604ba7dc00e460f50e6f26674f8c6f69071"
+checksum = "a53b95514f5737301dc109b742eefe7b559a961b60ee97912c5c79c0ac840e29"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-ipv6"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcd4f53bfa8e301491e7fb9d4e9a585fcd0899a6b171b1ce191236b27597d14f"
+checksum = "264477d0569558b3128af2c1f05e8aa61c945d808cfdd3dcf851c98e715ef1ed"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-isis"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "035b4b2f4e7564e99808a906c9c774ba377d6a5511a3d73633a4acaa8f6d3dd7"
+checksum = "49932b716c50a5ea3fb81560fd93cfbe0f742e3c3591b5244235037aeb95f127"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-l2tp"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a9f9fe1cd37c8fea65530717953bb9efa0afb0219feb06dc1d2cdc09bbdbdca"
+checksum = "ddafa42ead6ae3eecdd9d4615f452ddf45863c1811363c95222d5674c6e573e7"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-l2tpv3"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2448acb2541a1aee3cc6e10a00db6661093772a6816a7dcbbc89eccc05481be4"
+checksum = "c3ba84dd3428c7f1f90e96641705a34761cb49caee65af5c21564ef3223fd09b"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-lacp"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c480eb8d846be1662aab638bfc44c7d92ce8ca9765c25ff1b20a31662ce4732c"
+checksum = "70dfb1850d5c742caf1c30e9c2e8a586f79e0e60c4c566a54394d36f0f6b5bd0"
+dependencies = [
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-ldp"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc258df6a2e88792282b1eeaba7e8e5d424daf6a01aadebd8d00e994d1c9c98e"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-linux-sll"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47804d85b02ffd99d6c7cbbe4b9569448ec0c7e29cddb1f15d66c5df184252a8"
+checksum = "ff926fa0dd18d3bcd61ba5c00931128d205fb66b7164325195a51438432461ac"
 dependencies = [
  "packet-dissector-core",
+ "packet-dissector-ethernet",
 ]
 
 [[package]]
 name = "packet-dissector-linux-sll2"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e92d0a75e13a9acce5e1461612e06cd3008727b4ada6a7f4feb1e4519d6b993"
+checksum = "a1e407bee8b2e3fade2bb3059a5775adbe340d0f858565e244a5d81812585a43"
 dependencies = [
  "packet-dissector-core",
+ "packet-dissector-ethernet",
 ]
 
 [[package]]
 name = "packet-dissector-lldp"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00a0337ed45e8c4de56946554fc28a6a677492cd44463f2cc30dd333d29e618e"
+checksum = "6ad5264796661c3378740f7236e9f0cb54405b3182b74407b2ad5b7a76d14395"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
-name = "packet-dissector-mdns"
-version = "0.5.0"
+name = "packet-dissector-llmnr"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d909860577429df65e1a7a0ad5204fce7c8d0e517152f26149c1f7d9c622b48b"
+checksum = "26ef37e5b86d4a54c560e39d7d884d266e058ac38fe7718d0c2f296dadb9669a"
+dependencies = [
+ "packet-dissector-core",
+ "packet-dissector-dns",
+]
+
+[[package]]
+name = "packet-dissector-m3ua"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ba8fa88f326384f6a696c2edb844d6399eea89041f5caa24a0a9cbed16b54ea"
+dependencies = [
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-map"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7be83ea890e5d0f619fc5d48fdc4548b7434615427c23fc24b96a7ed80563b98"
+dependencies = [
+ "packet-dissector-core",
+ "packet-dissector-tcap",
+]
+
+[[package]]
+name = "packet-dissector-mdns"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c853fe1ae9e05b124f6fb395c0e9f9afcd79234503b22693ec24896b88d361c7"
 dependencies = [
  "packet-dissector-core",
  "packet-dissector-dns",
@@ -1423,210 +1672,356 @@ dependencies = [
 
 [[package]]
 name = "packet-dissector-mpls"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5826339e59e737fb20cb6b1e776a5654fea4ff040c30b36daea52861296e07e1"
+checksum = "c1c8e3d713e24df625cdab4246b1e038d23f362a750dd66f644245d6f003fb4e"
+dependencies = [
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-nas-eps"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c331370cd7353db8bda4a4d1fb971213b7a48b89def427d756e63fa66bbbeb2"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-nas5g"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "862216e215d16b9e465b38c8c5e28b45acb6a0dcdea0c156a2247d7b9eeb941c"
+checksum = "e6743c8fa965dd3cc256c04ca7ad1726196774957d4a0895c3a5a51bf81e37fc"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-ngap"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad8da766495615e822336fbf3b698b212acf5a61c300a9be3e4cdc80670a9fc3"
+checksum = "d457b0e327e90f16448c84a3b6ba91fe882038ff1977a7a5ffc5fbb1c9104a93"
 dependencies = [
+ "packet-dissector-aper",
  "packet-dissector-core",
  "packet-dissector-nas5g",
 ]
 
 [[package]]
-name = "packet-dissector-ntp"
-version = "0.5.0"
+name = "packet-dissector-nsh"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a86b3bdcaa9bd1682d56f1220c83325a4a7701d7cf8f442d45612c54b879a9fe"
+checksum = "b8eacfa6518e0c49f2a637e89d88012292894bf3ad3092ce6445eca3e17efc91"
+dependencies = [
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-ntp"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e05f5b68160505abe609f00006d47750f1c3e7bf92b8bf3d8830ccdf3e0a135"
+dependencies = [
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-null"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bc0586e97b760466c3249db6fac9e4afa95ceb30b27109244074c747a0a4284"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-ospf"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6876dc4809ced948b9c30fb0b61353d9ff8ef15cf60693c76c7bd1015a4c3b7"
+checksum = "972bd608551b58af5eafc673f8afe67cf0b850f6d48b6abd46cf0eca078abcd6"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-pcap"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f961f050b5fb4bb27328c46d3551a2eecacfade31b639422ee553f201d506e22"
+checksum = "9b617b59dac4914f42774813d0444366616550cfa744a6a707bb36a6181588ee"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "packet-dissector-pfcp"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ac1b8fac0ff6249b1a1cbdbdf0815c8fe93248da70bbaff20d4af1c19d5100a"
+checksum = "37b89cc20cdfcb4d1df3430f70712528bf13feafe915ee123dbd39dc6f7d3c11"
+dependencies = [
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-pim"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f23f029a75ed0f9e771c28d59f465cadb9c745a5eab76fbb93c050d95a6c095"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-ppp"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4946c0fd2d51d21bf61762ff4ae4cb1945bcbd63186742b51793568989dd0257"
+checksum = "bc60acee63fefd6e1a2e79ee67bd341703300db8427fd4ca7abe5125d5a8cdc4"
+dependencies = [
+ "packet-dissector-core",
+ "packet-dissector-eap",
+]
+
+[[package]]
+name = "packet-dissector-pppoe"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b90270385ca426151cbc1ce8e746ab1d3170c6224f2479d680a0d5de75eafa9a"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-quic"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c52ec8054ba33f6171606289f6d144a8609c77e82968fbbe6b3c49142b428a1"
+checksum = "3bcb19eb7aa48e9335605f6a40b7e088793be464e867790fe27debc923bdd037"
+dependencies = [
+ "aes",
+ "aes-gcm",
+ "hkdf",
+ "packet-dissector-core",
+ "sha2",
+]
+
+[[package]]
+name = "packet-dissector-radiotap"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df418a0fc4c5bd7d807fc716511edc7263feb1cb0f64366032d0724b240fd4b1"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-radius"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a44c0c6db500d0f228c9588014da683eccaaf7d5579d1d9ff3921eed0851d1b"
+checksum = "4274f4f7b6f4de7b96619135779dd7699c65ea371ee51c8003bc083c3d32c09c"
+dependencies = [
+ "packet-dissector-core",
+ "packet-dissector-eap",
+]
+
+[[package]]
+name = "packet-dissector-raw-ip"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb15c49a3c3fab081aab8bab0232f456ad53d8684b96eb0e0b0553fde0194d52"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-reassembly"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "940919e7b6e2c24a8e8c516f6dfe30d85d6130cd4461da531933bafee2b7cb77"
+checksum = "54a26a32377370ca29ae438e76b4246cf5accf8bdd11b1f68d11b8f69b41a75c"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "packet-dissector-rtp"
-version = "0.5.0"
+name = "packet-dissector-rsvp"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0383825d0671edb34d4a33bba2c35c304302b8a03131c6c0f31df3d5ea304881"
+checksum = "2cb72724bc324d566273ea1abbe85e8c6ba8afcf10d58a5975444e8f32ee7de4"
+dependencies = [
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-rtcp"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "536b318eeb87388ab1117fcebe963f3244ac269017c825fc7bc2ee81749bc91c"
+dependencies = [
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-rtp"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86a32b5ebfee35241be21c2d58b86669c6083ffa5ec5615c176058d471488982"
+dependencies = [
+ "packet-dissector-core",
+ "packet-dissector-rtcp",
+]
+
+[[package]]
+name = "packet-dissector-s1ap"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0646d5f716de355d10e64d045779c121024c4a42f651beaa6aee277e5c23ce6"
+dependencies = [
+ "packet-dissector-aper",
+ "packet-dissector-core",
+ "packet-dissector-nas-eps",
+]
+
+[[package]]
+name = "packet-dissector-sccp"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fab1ba6d80762853441d6386c6a4d8653caec0f7ba8562f7ed8672196301fbe"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-sctp"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fd8a55304398d75bba0bc44f4c9d62f4e9e737ec496400ee48a23544932465c"
+checksum = "fc57aea9665488ba2bcece5cf20d91cb4ae9ef89a7a539d061d45147b5e9ca25"
+dependencies = [
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-sgsap"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65c5136d04e34aef70647272a2739a1811e2f3b75a98b56655db43ceef7727d0"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-sip"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58d67f11fcd071cfbc5b8916be73c57ef1a5ae4e55780e8f00f2140780ef8eea"
+checksum = "488a109246a7235c88586bd059c99b1163199b801b30895b990c709af91bff69"
 dependencies = [
  "httparse",
  "packet-dissector-core",
 ]
 
 [[package]]
-name = "packet-dissector-srv6"
-version = "0.5.0"
+name = "packet-dissector-snmp"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a668530e8735a1874b2d322868fe5f7fa3f025b062e2f9e7b57400d0bee61fa"
+checksum = "3dcbe8084475b213585fd6501dc1b5aa220e689531fa4741d4b3b37d115ee976"
+dependencies = [
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-srv6"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e0fe9d25b66202089d68626a78df3faa69b1d926a879b786de5c00453304846"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-stp"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ad750f8219397d79470343b835bf9a128b28c876e6c837c94f026952518cb7d"
+checksum = "9925c6a13e8d7dcb006b44a6a429235655b4f24d02c0c2df67a75d5a550865d0"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-stun"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45209d8e8b62fe30ad61b7a453b6b9e1b6cbe883b1bfa4abdabf07f6bc0fbe3c"
+checksum = "08d3976e7d358b18971702e4229f8b4e696e2978c5f8e3e22a2147db1ecd391d"
+dependencies = [
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-tcap"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dfa88926406544b75986b87e80de3bb04340fecf770ef53a8f37f273c1d312f4"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-tcp"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab4ebbebf4db36ed7f9194fccee71f3ef15f18d1a95dac469024deddc7068d51"
+checksum = "e700da7318a1a43a0c410bf3717515f7bf83b400c48257af4732337d0827a559"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-test-alloc"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22c50215b7fc46b1f55b017de90df955e3c5d659774d031833113a3ab2a6258d"
+checksum = "af2fe2eb4211682e982bc7abaff3819da4a44b646cbf130c809861878c17ec1e"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-tls"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e150472866b673d4064368bd68434c84e0b2bfe3fb17eb78838d32b44306841a"
+checksum = "3cec922a7f5e0389483791e0cc5f348f95bc6da292bc14d17f4949aa4287d5ae"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-udp"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "304ab55ca23a62f49bb326f0250dd5feffbe18e33cbcd6cb4d48c227f7252325"
+checksum = "a90e35f7cc654e62dc7f6f6c3088c329409bb62701776135cd137416e4a23474"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-vrrp"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20d90e037bdaa3e18cc769bc8f3baeced1a8d1b7f232cfdd04f8e328b78a6a53"
+checksum = "2e6ecbc98d86dc6c50e88079338f8f33c839ee1bd61d4d60a8913519c38eb594"
 dependencies = [
  "packet-dissector-core",
 ]
 
 [[package]]
 name = "packet-dissector-vxlan"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96bc65a4e1539368659324196bf75a76ea53b07551ac70ee2539f648be54f12e"
+checksum = "92e0fad1f036ed2f8153523ab7e2c8c3f32ac40caeed5838baeaae66b81122d1"
 dependencies = [
+ "packet-dissector-core",
+]
+
+[[package]]
+name = "packet-dissector-xnap"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89754b6353b35dc968bf5544384f1c58366d0ae6b2ef7871091fd4ca037c4e6"
+dependencies = [
+ "packet-dissector-aper",
  "packet-dissector-core",
 ]
 
@@ -1734,6 +2129,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51bae2ac328883f7acdfea3d66a7c35751187f870bc81f94563733a154d7a670"
 dependencies = [
  "plotters-backend",
+]
+
+[[package]]
+name = "poly1305"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e2d0073b297041425c7c3df6eb4792d598a15323fe63346852b092eca02904c"
+dependencies = [
+ "cpufeatures",
+ "universal-hash",
 ]
 
 [[package]]
@@ -2104,6 +2509,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "sha2"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
 ]
 
 [[package]]

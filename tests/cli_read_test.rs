@@ -945,3 +945,122 @@ fn read_without_raw_bytes_omits_field() {
         "raw_bytes must be absent when --raw-bytes is not set"
     );
 }
+
+// -- TLS default fields --
+
+/// Build a TCP-over-IPv4 frame (PSH+ACK) carrying `payload`.
+fn tcp_payload_frame(
+    src: [u8; 4],
+    dst: [u8; 4],
+    src_port: u16,
+    dst_port: u16,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut tcp = Vec::new();
+    tcp.extend_from_slice(&src_port.to_be_bytes());
+    tcp.extend_from_slice(&dst_port.to_be_bytes());
+    tcp.extend_from_slice(&1u32.to_be_bytes()); // sequence number
+    tcp.extend_from_slice(&1u32.to_be_bytes()); // acknowledgment number
+    tcp.push(0x50); // data offset = 5 (20 bytes)
+    tcp.push(0x18); // flags: PSH + ACK
+    tcp.extend_from_slice(&0x2000u16.to_be_bytes()); // window
+    tcp.extend_from_slice(&0u16.to_be_bytes()); // checksum (unchecked)
+    tcp.extend_from_slice(&0u16.to_be_bytes()); // urgent pointer
+    tcp.extend_from_slice(payload);
+    eth_ipv4_frame(src, dst, 6, &tcp)
+}
+
+/// A TLS 1.2 record holding a ClientHello with one cipher suite
+/// (TLS_AES_128_GCM_SHA256) and a server_name extension for "example.com".
+///
+/// RFC 8446, Section 4.1.2 (ClientHello); RFC 6066, Section 3 (server_name).
+/// <https://www.rfc-editor.org/rfc/rfc8446#section-4.1.2>
+/// <https://www.rfc-editor.org/rfc/rfc6066#section-3>
+fn tls_client_hello_record() -> Vec<u8> {
+    let host = b"example.com";
+
+    let mut sni = Vec::new();
+    sni.extend_from_slice(&((host.len() + 3) as u16).to_be_bytes()); // server_name_list length
+    sni.push(0); // name_type = host_name
+    sni.extend_from_slice(&(host.len() as u16).to_be_bytes());
+    sni.extend_from_slice(host);
+
+    let mut extensions = Vec::new();
+    extensions.extend_from_slice(&0u16.to_be_bytes()); // extension type = server_name
+    extensions.extend_from_slice(&(sni.len() as u16).to_be_bytes());
+    extensions.extend_from_slice(&sni);
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&[0x03, 0x03]); // legacy_version = TLS 1.2
+    body.extend_from_slice(&[0xAB; 32]); // random
+    body.push(0); // legacy_session_id length
+    body.extend_from_slice(&2u16.to_be_bytes()); // cipher_suites length
+    body.extend_from_slice(&[0x13, 0x01]); // TLS_AES_128_GCM_SHA256
+    body.push(1); // legacy_compression_methods length
+    body.push(0); // null compression
+    body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
+    body.extend_from_slice(&extensions);
+
+    let mut handshake = vec![0x01]; // msg_type = client_hello
+    handshake.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
+    handshake.extend_from_slice(&body);
+
+    let mut record = vec![0x16, 0x03, 0x01]; // handshake, legacy_record_version
+    record.extend_from_slice(&(handshake.len() as u16).to_be_bytes());
+    record.extend_from_slice(&handshake);
+    record
+}
+
+/// The default field config keeps the handshake type, cipher suite and SNI
+/// of a ClientHello visible in non-verbose output.
+#[test]
+fn tls_client_hello_default_fields_show_handshake_type_and_sni() {
+    let frame = tcp_payload_frame(
+        [10, 0, 0, 1],
+        [10, 0, 0, 2],
+        50000,
+        443,
+        &tls_client_hello_record(),
+    );
+    let mut pcap = Vec::new();
+    pcap.extend_from_slice(&0xA1B2C3D4u32.to_le_bytes());
+    pcap.extend_from_slice(&2u16.to_le_bytes());
+    pcap.extend_from_slice(&4u16.to_le_bytes());
+    pcap.extend_from_slice(&0i32.to_le_bytes());
+    pcap.extend_from_slice(&0u32.to_le_bytes());
+    pcap.extend_from_slice(&65535u32.to_le_bytes());
+    pcap.extend_from_slice(&1u32.to_le_bytes()); // Ethernet
+    pcap.extend_from_slice(&1u32.to_le_bytes()); // ts_sec
+    pcap.extend_from_slice(&0u32.to_le_bytes()); // ts_usec
+    pcap.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+    pcap.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+    pcap.extend_from_slice(&frame);
+    let mut tmp = NamedTempFile::with_suffix(".pcap").unwrap();
+    tmp.write_all(&pcap).unwrap();
+
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args(["read", tmp.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let tls = v["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["protocol"].as_str().is_some_and(|p| p.starts_with("TLS")))
+        .unwrap_or_else(|| panic!("TLS layer should be present: {stdout}"));
+
+    let hello = &tls["fields"]["handshake_messages"][0];
+    assert_eq!(hello["type_name"], "Client Hello", "{tls}");
+    assert_eq!(hello["cipher_suites"][0], 0x1301, "{tls}");
+    let ext = &hello["extensions"][0];
+    assert_eq!(ext["type_name"], "server_name", "{tls}");
+    assert_eq!(ext["server_name"], "example.com", "{tls}");
+    assert!(
+        hello.get("random").is_none(),
+        "random is a verbose-only field: {tls}"
+    );
+}
