@@ -316,6 +316,9 @@ mod tests {
         ("NAS-5G", "only reached from inside NGAP"),
     ];
 
+    /// Returns a message for every pattern in `config_toml` that matches no
+    /// field, skipping the protocols in `without_schema`.
+    ///
     /// Every exact (non-wildcard) pattern in `default_fields.toml` must name
     /// a field the dissector can emit, or the value it was meant to show is
     /// silently hidden in non-verbose output. The container of a nested
@@ -336,12 +339,11 @@ mod tests {
     /// (packet-dissector `TcpReassemblyService::add_reassembly_fields`), so
     /// those two names are accepted as top-level fields of any protocol.
     #[cfg(feature = "tcp")]
-    #[test]
-    fn exact_patterns_name_existing_fields() {
+    fn stale_patterns(config_toml: &str, without_schema: &[(&str, &str)]) -> Vec<String> {
         use packet_dissector::registry::DissectorRegistry;
         use packet_dissector_core::field::FieldDescriptor;
 
-        let raw: RawConfig = toml::from_str(DEFAULT_CONFIG).unwrap();
+        let raw: RawConfig = toml::from_str(config_toml).unwrap();
         let registry = DissectorRegistry::default();
         let schemas = registry.all_field_schemas();
 
@@ -357,7 +359,7 @@ mod tests {
 
         let mut failures = Vec::new();
 
-        for (name, _) in PROTOCOLS_WITHOUT_SCHEMA {
+        for (name, _) in without_schema {
             if !raw.protocols.contains_key(*name) {
                 failures.push(format!(
                     "PROTOCOLS_WITHOUT_SCHEMA entry \"{name}\" is not a default_fields.toml section"
@@ -372,9 +374,7 @@ mod tests {
             let schema = schemas
                 .iter()
                 .find(|s| s.short_name == protocol && !s.fields.is_empty());
-            let excluded = PROTOCOLS_WITHOUT_SCHEMA
-                .iter()
-                .any(|(name, _)| name == protocol);
+            let excluded = without_schema.iter().any(|(name, _)| name == protocol);
             let schema = match (schema, excluded) {
                 (Some(schema), false) => schema,
                 (None, true) => continue,
@@ -433,10 +433,58 @@ mod tests {
         }
 
         failures.sort();
+        failures
+    }
+
+    #[cfg(feature = "tcp")]
+    #[test]
+    fn exact_patterns_name_existing_fields() {
+        let failures = stale_patterns(DEFAULT_CONFIG, PROTOCOLS_WITHOUT_SCHEMA);
         assert!(
             failures.is_empty(),
             "default_fields.toml has patterns that match no field:\n{}",
             failures.join("\n")
+        );
+    }
+
+    /// The checker itself reports each kind of stale entry.
+    #[cfg(feature = "tcp")]
+    #[test]
+    fn stale_patterns_reports_each_kind_of_drift() {
+        let config = r#"
+            [DNS]
+            fields = [
+              "id",
+              "questions.name",
+              "answers.rdata_*",
+              "reassembly_in_progress",
+              "nope",
+              "nope_name",
+              "questions.nope",
+              "nosuch.*",
+            ]
+
+            [IPv4]
+            fields = ["src"]
+
+            [HTTP]
+            fields = ["unchecked"]
+
+            [NotCompiledIn]
+            fields = ["unchecked"]
+        "#;
+        let without_schema = [("IPv4", "test"), ("HTTP", "test"), ("Missing", "test")];
+
+        assert_eq!(
+            stale_patterns(config, &without_schema),
+            [
+                "PROTOCOLS_WITHOUT_SCHEMA entry \"Missing\" is not a default_fields.toml section",
+                "[DNS] pattern \"nope\": no field or _name companion \"nope\" in the DNS descriptor tree",
+                "[DNS] pattern \"nope_name\": no field or _name companion \"nope_name\" in the DNS descriptor tree",
+                "[DNS] pattern \"nosuch.*\": no container field \"nosuch\"",
+                "[DNS] pattern \"questions.nope\": no field or _name companion \"nope\" in the questions descriptor tree",
+                "[IPv4] now has a field schema: remove it from PROTOCOLS_WITHOUT_SCHEMA",
+            ]
         );
     }
 
