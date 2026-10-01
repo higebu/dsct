@@ -101,6 +101,7 @@ default = [
   "sccp",
   "tcap",
   "map",
+  "ip-reassembly",
 ]
 sqlite = ["dep:rusqlite"]
 tui = [
@@ -194,6 +195,7 @@ m3ua = ["packet-dissector/m3ua"]
 sccp = ["packet-dissector/sccp"]
 tcap = ["packet-dissector/tcap"]
 map = ["packet-dissector/map"]
+ip-reassembly = ["packet-dissector/ip-reassembly"]
 
 [dependencies]
 packet-dissector = { version = "0.6.1", default-features = false }

@@ -3,7 +3,18 @@
 //! Splits the packet index into chunks and evaluates the filter expression on
 //! each chunk concurrently.  Each worker opens the capture file independently
 //! and creates its own [`DissectorRegistry`], avoiding shared mutable state.
+//!
+//! Workers cannot reproduce state kept across packets (TCP streams, IP
+//! fragment reassembly, ...), so the scan is optimistic.  A packet whose
+//! dissection did not use such state
+//! ([`DissectBuffer::used_cross_packet_state`]) gives the same result in any
+//! registry, so its worker result is kept.  A packet whose dissection did is
+//! listed instead, and the caller dissects the listed packets in capture
+//! order with one fresh registry ([`ScanPoll::InOrder`]).  Unlisted packets
+//! never touch the state, so this equals a sequential scan from the start
+//! with a fresh registry.
 
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -20,11 +31,24 @@ use super::state::{CaptureMap, PacketIndex};
 /// Number of packets processed by each worker per chunk.
 const CHUNK_SIZE: usize = 8192;
 
+/// A worker whose chunk had at least this share (in percent) of packets that
+/// used cross-packet state lists its next [`SKIP_CHUNKS`] chunks without
+/// dissecting them: they are dissected in order anyway.
+const MOSTLY_IN_ORDER_PERCENT: usize = 90;
+
+/// See [`MOSTLY_IN_ORDER_PERCENT`].
+const SKIP_CHUNKS: u32 = 3;
+
 /// A result chunk from a worker thread.
-///
-/// Contains the chunk index (for ordering) and the matching packet indices
-/// within the original snapshot.
-type ChunkResult = (usize, Vec<usize>);
+struct ChunkResult {
+    /// Chunk index (for ordering).
+    chunk_id: usize,
+    /// Matching packet indices within the original snapshot, in order,
+    /// among the packets whose dissection did not use cross-packet state.
+    matches: Vec<usize>,
+    /// Index runs of the packets that must be dissected in order, in order.
+    in_order: Vec<Range<usize>>,
+}
 
 /// Result of polling a [`ParallelFilterScan`] via [`ParallelFilterScan::drain`].
 pub(super) enum ScanPoll {
@@ -32,6 +56,15 @@ pub(super) enum ScanPoll {
     Running,
     /// Scan finished; contains the matching packets as a bitmap.
     Complete(FilterBitmap),
+    /// Scan finished, but the packets in `in_order` used cross-packet state:
+    /// the caller must dissect them in capture order with one fresh registry
+    /// and merge their matches with `matches`.
+    InOrder {
+        /// Matches among the packets not in `in_order`.
+        matches: FilterBitmap,
+        /// The packets to dissect in order.
+        in_order: FilterBitmap,
+    },
     /// All workers exited before the scan completed (e.g. the capture file
     /// could not be reopened).  The caller must fall back to sequential
     /// scanning; the parallel scan can never finish.
@@ -52,7 +85,7 @@ pub(super) struct ParallelFilterScan {
     scanned: Arc<AtomicUsize>,
     chunks_total: usize,
     chunks_done: usize,
-    chunk_results: Vec<Option<Vec<usize>>>,
+    chunk_results: Vec<Option<ChunkResult>>,
 }
 
 impl ParallelFilterScan {
@@ -62,7 +95,7 @@ impl ParallelFilterScan {
     /// builds a [`DissectorRegistry`] configured with `decode_as_args`, parses
     /// the filter string, and scans its assigned chunks.
     ///
-    /// Returns `Err` if the first worker fails to open the capture file.
+    /// Returns `Err` if a worker thread cannot be spawned.
     pub fn new(
         file_path: PathBuf,
         decode_as_args: Vec<String>,
@@ -118,7 +151,7 @@ impl ParallelFilterScan {
             scanned,
             chunks_total,
             chunks_done: 0,
-            chunk_results: vec![None; chunks_total],
+            chunk_results: (0..chunks_total).map(|_| None).collect(),
         })
     }
 
@@ -133,8 +166,8 @@ impl ParallelFilterScan {
 
     /// Drain available results non-blockingly.
     ///
-    /// Returns [`ScanPoll::Complete`] with the matching packet bitmap when
-    /// the scan is complete, [`ScanPoll::Running`] while workers are still
+    /// Returns [`ScanPoll::Complete`] or [`ScanPoll::InOrder`] once every
+    /// chunk has been scanned, [`ScanPoll::Running`] while workers are still
     /// producing results, or [`ScanPoll::Failed`] when every worker exited
     /// (channel disconnected) before all chunks were delivered — for example
     /// because the capture file could not be reopened.
@@ -143,9 +176,10 @@ impl ParallelFilterScan {
         let mut disconnected = false;
         loop {
             match self.receiver.try_recv() {
-                Ok((chunk_id, matches)) => {
-                    if chunk_id < self.chunk_results.len() {
-                        self.chunk_results[chunk_id] = Some(matches);
+                Ok(result) => {
+                    let chunk_id = result.chunk_id;
+                    if let Some(slot) = self.chunk_results.get_mut(chunk_id) {
+                        *slot = Some(result);
                         self.chunks_done += 1;
                     }
                 }
@@ -161,16 +195,23 @@ impl ParallelFilterScan {
         }
 
         if self.chunks_done >= self.chunks_total {
-            // All chunks received — concatenate in order into a bitmap.  Chunk
-            // results arrive ordered and each chunk's matches are increasing,
-            // so the concatenation is strictly increasing (append-friendly).
-            let ordered = self
-                .chunk_results
-                .iter()
-                .flatten()
-                .flat_map(|matches| matches.iter().copied());
-            let result = FilterBitmap::from_sorted_indices(self.total, ordered);
-            ScanPoll::Complete(result)
+            // All chunks received — concatenate in order.  Chunk results
+            // arrive ordered and each chunk's lists are increasing, so the
+            // concatenations are strictly increasing (append-friendly).
+            let chunks = || self.chunk_results.iter().flatten();
+            let matches = FilterBitmap::from_sorted_indices(
+                self.total,
+                chunks().flat_map(|c| c.matches.iter().copied()),
+            );
+            let mut in_order = FilterBitmap::new();
+            for run in chunks().flat_map(|c| c.in_order.iter()) {
+                in_order.push_set_range(run.clone());
+            }
+            if in_order.is_empty() {
+                return ScanPoll::Complete(matches);
+            }
+            in_order.extend_universe(self.total);
+            ScanPoll::InOrder { matches, in_order }
         } else if disconnected {
             // Workers are gone but chunks are missing — the scan can never
             // complete.  Signal the caller to fall back to sequential scanning.
@@ -205,7 +246,18 @@ struct WorkerContext {
     chunks_total: usize,
 }
 
+/// A registry configured with the `decode-as` overrides, or `None` if they
+/// do not apply (they were validated at startup, so this does not happen).
+fn worker_registry(decode_as_args: &[String]) -> Option<DissectorRegistry> {
+    let mut registry = DissectorRegistry::default();
+    crate::decode_as::parse_and_apply(&mut registry, decode_as_args).ok()?;
+    Some(registry)
+}
+
 /// Entry point for a single worker thread.
+///
+/// Any setup failure ends the worker without results; the scan then reports
+/// [`ScanPoll::Failed`] and the caller scans sequentially.
 fn worker_thread(ctx: WorkerContext) {
     // Open an independent file handle and mmap for this worker.
     let file = match std::fs::File::open(&ctx.file_path) {
@@ -218,10 +270,9 @@ fn worker_thread(ctx: WorkerContext) {
     };
 
     // Build an independent registry for this worker.
-    let mut registry = DissectorRegistry::default();
-    if crate::decode_as::parse_and_apply(&mut registry, &ctx.decode_as_args).is_err() {
+    let Some(mut registry) = worker_registry(&ctx.decode_as_args) else {
         return;
-    }
+    };
 
     // Parse the filter expression.
     let expr = match FilterExpr::parse(&ctx.filter_str) {
@@ -231,6 +282,7 @@ fn worker_thread(ctx: WorkerContext) {
 
     let total = ctx.indices.len();
     let mut dissect_buf = DissectBuffer::new();
+    let mut skip_chunks = 0u32;
 
     loop {
         if ctx.cancel.load(Ordering::Acquire) {
@@ -245,34 +297,64 @@ fn worker_thread(ctx: WorkerContext) {
         let start = chunk_id * CHUNK_SIZE;
         let end = (start + CHUNK_SIZE).min(total);
         let mut matches = Vec::new();
+        let mut in_order = Vec::new();
 
-        for i in start..end {
-            let number = (i as u64) + 1;
-            let index = &ctx.indices[i];
-            if let Some(data) = capture.packet_data(index) {
-                let buf = dissect_buf.clear_into();
-                if registry
-                    .dissect_with_link_type(data, index.link_type as u32, buf)
-                    .is_ok()
-                {
-                    let packet = Packet::new(buf, data);
-                    if expr.matches_with_number(&packet, number) {
-                        matches.push(i);
+        if skip_chunks > 0 {
+            // Dissecting a packet in order is always correct.
+            skip_chunks -= 1;
+            in_order.push(start..end);
+        } else {
+            for i in start..end {
+                let number = (i as u64) + 1;
+                let index = &ctx.indices[i];
+                if let Some(data) = capture.packet_data(index) {
+                    let buf = dissect_buf.clear_into();
+                    let dissected =
+                        registry.dissect_with_link_type(data, index.link_type as u32, buf);
+                    if buf.used_cross_packet_state() {
+                        match in_order.last_mut() {
+                            Some(run) if run.end == i => run.end = i + 1,
+                            _ => in_order.push(i..i + 1),
+                        }
+                        continue;
+                    }
+                    if dissected.is_ok() {
+                        let packet = Packet::new(buf, data);
+                        if expr.matches_with_number(&packet, number) {
+                            matches.push(i);
+                        }
                     }
                 }
+            }
+            if !in_order.is_empty() {
+                // Drop the state this chunk built up; it is never used, since
+                // every packet that touched it is dissected in order.
+                let Some(fresh) = worker_registry(&ctx.decode_as_args) else {
+                    return;
+                };
+                registry = fresh;
+            }
+            let listed: usize = in_order.iter().map(ExactSizeIterator::len).sum();
+            if listed * 100 >= (end - start) * MOSTLY_IN_ORDER_PERCENT {
+                skip_chunks = SKIP_CHUNKS;
             }
         }
 
         ctx.scanned.fetch_add(end - start, Ordering::Release);
 
-        if ctx.tx.send((chunk_id, matches)).is_err() {
+        let result = ChunkResult {
+            chunk_id,
+            matches,
+            in_order,
+        };
+        if ctx.tx.send(result).is_err() {
             return;
         }
     }
 }
 
 #[cfg(all(test, feature = "tui"))]
-mod tests {
+pub(in crate::tui) mod tests {
     use super::*;
     use std::io::Write;
 
@@ -282,7 +364,7 @@ mod tests {
     use super::super::state::CaptureMap;
 
     /// Build a pcap with `udp_count` UDP packets then `tcp_count` TCP packets.
-    fn build_mixed_pcap_for_test(udp_count: usize, tcp_count: usize) -> Vec<u8> {
+    pub(in crate::tui) fn build_mixed_pcap_for_test(udp_count: usize, tcp_count: usize) -> Vec<u8> {
         let mut pcap_buf = Vec::new();
         // Global header: magic, version 2.4, Ethernet link type
         pcap_buf.extend_from_slice(&0xA1B2C3D4u32.to_le_bytes());
@@ -336,6 +418,20 @@ mod tests {
         (tmp, capture, indices)
     }
 
+    /// Drive `scan` until it stops running.
+    fn drive(scan: &mut ParallelFilterScan) -> ScanPoll {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            match scan.drain() {
+                ScanPoll::Running => {
+                    assert!(std::time::Instant::now() < deadline, "scan never finished");
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                done => return done,
+            }
+        }
+    }
+
     #[test]
     fn parallel_scan_udp_filter_matches_sequential() {
         let pcap = build_mixed_pcap_for_test(10, 5);
@@ -374,22 +470,69 @@ mod tests {
         )
         .unwrap();
 
-        let par_bitmap = loop {
-            match scan.drain() {
-                ScanPoll::Complete(r) => break r,
-                ScanPoll::Failed => panic!("parallel scan failed"),
-                ScanPoll::Running => std::thread::sleep(std::time::Duration::from_millis(10)),
-            }
+        // The TCP packets use cross-packet state (stream tracking), so the
+        // parallel scan lists them for in-order dissection.
+        let ScanPoll::InOrder { matches, in_order } = drive(&mut scan) else {
+            panic!("expected the TCP packets to be listed for in-order dissection");
         };
-
-        let par_results: Vec<usize> = par_bitmap.iter().collect();
         assert_eq!(
-            par_results, seq_results,
-            "parallel and sequential must agree"
+            in_order.iter().collect::<Vec<_>>(),
+            (10..15).collect::<Vec<_>>()
         );
-        assert_eq!(par_results.len(), 10, "expected 10 UDP packets");
-        // The bitmap universe must cover every scanned packet.
-        assert_eq!(par_bitmap.universe(), 15);
+        let matches: Vec<usize> = matches.iter().collect();
+        assert_eq!(matches, seq_results, "parallel and sequential must agree");
+        assert_eq!(matches.len(), 10, "expected 10 UDP packets");
+    }
+
+    #[test]
+    fn parallel_scan_lists_stateful_packets_across_chunks() {
+        // The TCP packets start in the third chunk and fill the fourth one,
+        // which makes the worker that scanned it skip its next chunks.
+        let udp = 2 * CHUNK_SIZE + 100;
+        let tcp = 3 * CHUNK_SIZE;
+        let mut pcap = build_mixed_pcap_for_test(udp, tcp);
+        // Append UDP packets after the TCP ones.
+        let tail = build_mixed_pcap_for_test(CHUNK_SIZE, 0);
+        pcap.extend_from_slice(&tail[24..]);
+        let (tmp, _capture, indices) = write_temp_pcap(&pcap);
+        let mut scan = ParallelFilterScan::new(
+            tmp.path().to_path_buf(),
+            vec![],
+            indices.into(),
+            "udp OR tcp".to_string(),
+            4,
+        )
+        .unwrap();
+        let ScanPoll::InOrder { matches, in_order } = drive(&mut scan) else {
+            panic!("expected the TCP packets to be listed");
+        };
+        // Every TCP packet is listed; skipped chunks may list UDP packets
+        // too, which in-order dissection handles just as well.
+        let tcp_range = udp..udp + tcp;
+        assert!(tcp_range.clone().all(|i| in_order.contains(i)));
+        // Every packet is either a parallel match (UDP) or listed.
+        let total = udp + tcp + CHUNK_SIZE;
+        assert_eq!(matches.count_ones() + in_order.count_ones(), total);
+        assert!(matches.iter().all(|i| !tcp_range.contains(&i)));
+        assert_eq!(in_order.universe(), total);
+    }
+
+    #[test]
+    fn parallel_scan_without_state_completes() {
+        let pcap = build_mixed_pcap_for_test(CHUNK_SIZE + 10, 0);
+        let (tmp, _capture, indices) = write_temp_pcap(&pcap);
+        let mut scan = ParallelFilterScan::new(
+            tmp.path().to_path_buf(),
+            vec![],
+            indices.into(),
+            "udp".to_string(),
+            4,
+        )
+        .unwrap();
+        let ScanPoll::Complete(results) = drive(&mut scan) else {
+            panic!("a capture without cross-packet state must stay parallel");
+        };
+        assert_eq!(results.count_ones(), CHUNK_SIZE + 10);
     }
 
     #[test]
@@ -411,6 +554,7 @@ mod tests {
             match scan.drain() {
                 ScanPoll::Complete(r) => break r,
                 ScanPoll::Failed => panic!("parallel scan failed"),
+                ScanPoll::InOrder { .. } => panic!("UDP-only capture must stay parallel"),
                 ScanPoll::Running => std::thread::sleep(std::time::Duration::from_millis(10)),
             }
         };
@@ -442,6 +586,7 @@ mod tests {
             match scan.drain() {
                 ScanPoll::Complete(_) => break,
                 ScanPoll::Failed => panic!("parallel scan failed"),
+                ScanPoll::InOrder { .. } => panic!("UDP-only capture must stay parallel"),
                 ScanPoll::Running => std::thread::sleep(std::time::Duration::from_millis(5)),
             }
         }
@@ -472,7 +617,9 @@ mod tests {
         loop {
             match scan.drain() {
                 ScanPoll::Failed => break,
-                ScanPoll::Complete(_) => panic!("scan must not complete without workers"),
+                ScanPoll::Complete(_) | ScanPoll::InOrder { .. } => {
+                    panic!("scan must not complete without workers")
+                }
                 ScanPoll::Running => {
                     assert!(
                         std::time::Instant::now() < deadline,

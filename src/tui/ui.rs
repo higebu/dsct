@@ -370,6 +370,8 @@ mod tests {
             expr: None,
             cursor: 0,
             results: super::super::filter_bitmap::FilterBitmap::new(),
+            registry: packet_dissector::registry::DissectorRegistry::default(),
+            in_order: None,
         });
         let dump = render_to_string(120, 30, |f| render(f, &mut app));
         assert!(dump.contains("Filtering"));

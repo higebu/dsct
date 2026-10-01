@@ -193,14 +193,25 @@ DSCT_THREADS=4 dsct read capture.pcap -f "arp" --no-limit
 ```
 
 `--threads` distributes dissection and filter evaluation across N worker
-threads when every packet the filter can match is free of cross-packet state,
-which holds for filters requiring `arp`, `lacp`, `icmp`, `icmpv6` or `igmp`.
-Any other filter (`tcp`, `udp`, `ipv4`, `http`, `tls`, ...) may match packets
-whose output depends on earlier packets — TCP `stream_id` and reassembled
-payloads, HTTP/2 HPACK state, IPFIX templates, or TCP inside a UDP tunnel — so
-it automatically falls back to sequential processing regardless of
-`--threads`, keeping the output identical.  Stdin input always uses the
-sequential path.
+threads for file input with a `--filter` (except filters on packet numbers
+only, and runs with `--esp-sa`, which stay sequential).  Dissection is
+optimistic: a packet whose dissection does not touch state kept across
+packets keeps its parallel result, and a packet whose dissection does — TCP
+stream tracking and reassembly (`tcp.stream_id`, HTTP, TLS, ...), HTTP/2
+HPACK, NetFlow v9 / IPFIX templates, or IP fragment reassembly — is
+dissected again in capture order on the main thread.  The output is always
+identical to `--threads 1`.  Captures without such packets (ICMP, ARP, plain
+UDP such as DNS, ...) run fully in parallel; the more stateful packets a
+capture has, the smaller the speed-up, down to roughly sequential speed for
+an all-TCP capture.  Stdin input always uses the sequential path.
+
+IPv4 and IPv6 fragments are reassembled: the fragment that completes a
+datagram carries the reassembled upper layers.  The TUI filter scan does
+the same, but the packet list and detail pane dissect packets on demand in
+display order with one shared registry, so, as with TCP stream state, they
+show reassembled layers only when the earlier fragments were displayed
+first, and may show a completing fragment unreassembled when it is
+dissected again.
 
 Query a capture with SQL (the SQLite index is built on first use and reused
 afterwards):
