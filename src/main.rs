@@ -135,9 +135,10 @@ struct ReadOptions {
 
     /// Number of worker threads for parallel filter evaluation.
     /// Default: physical CPU count. Honoured only for file input with a
-    /// parallel-safe `--filter`. The `DSCT_THREADS` environment variable
-    /// is also honoured (flag takes precedence). Filters that require TCP
-    /// reassembly (HTTP, DNS-over-TCP, TLS, `tcp.stream_id`, etc.) and
+    /// `--filter` that requires ARP, LACP, ICMP, ICMPv6 or IGMP, whose packets
+    /// carry no cross-packet state. The `DSCT_THREADS` environment variable
+    /// is also honoured (flag takes precedence). Any other filter — packets
+    /// that may contain TCP (stream IDs, reassembly), HTTP/2 or IPFIX — and
     /// stdin input always fall back to sequential processing.
     #[arg(long)]
     threads: Option<usize>,
@@ -499,12 +500,15 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
         1 // not consulted; sequential path always used
     };
 
-    // Determine whether the parallel path is eligible.
+    // Determine whether the parallel path is eligible. The filter must
+    // evaluate the same in any order, and the packets it matches must not
+    // carry layers whose output depends on earlier packets (TCP stream IDs,
+    // reassembled payloads, ...), which independent workers cannot reproduce.
     let use_parallel = !is_stdin
         && resolved_threads > 1
-        && filter_expr
-            .as_ref()
-            .is_some_and(|e| !e.is_packet_number_only() && e.is_parallel_safe())
+        && filter_expr.as_ref().is_some_and(|e| {
+            !e.is_packet_number_only() && e.is_parallel_safe() && e.matches_only_stateless_packets()
+        })
         && esp_sa_args.is_empty();
 
     if use_parallel {

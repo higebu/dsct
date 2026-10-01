@@ -1,7 +1,8 @@
 //! Pipeline-parallel filter evaluation for the `dsct read` command.
 //!
 //! When the filter expression is
-//! [`parallel-safe`](crate::filter_expr::FilterExpr::is_parallel_safe)
+//! [`parallel-safe`](crate::filter_expr::FilterExpr::is_parallel_safe),
+//! [matches only state-free packets](crate::filter_expr::FilterExpr::matches_only_stateless_packets)
 //! and input is a file (not stdin), packets are distributed across N worker
 //! threads for dissection and filtering.  The merger re-assembles results in
 //! original packet order so the output is byte-identical to the sequential
@@ -155,7 +156,8 @@ struct OutputBatch {
 /// The caller is responsible for ensuring that:
 /// - `opts.path` is a regular file (not `"-"`).
 /// - The filter has already been parsed and verified as
-///   [`parallel_safe`](FilterExpr::is_parallel_safe).
+///   [`parallel_safe`](FilterExpr::is_parallel_safe) and as
+///   [matching only state-free packets](FilterExpr::matches_only_stateless_packets).
 /// - `opts.threads >= 2`.
 ///
 /// Callbacks:

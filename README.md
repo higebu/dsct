@@ -164,15 +164,19 @@ dsct read capture.pcap --raw-bytes --count 1
 Speed up filter evaluation on large files with `--threads`:
 
 ```bash
-dsct read capture.pcap -f "udp" --no-limit --threads 4
-DSCT_THREADS=4 dsct read capture.pcap -f "tcp.dst_port > 1024" --no-limit
+dsct read capture.pcap -f "icmp" --no-limit --threads 4
+DSCT_THREADS=4 dsct read capture.pcap -f "arp" --no-limit
 ```
 
 `--threads` distributes dissection and filter evaluation across N worker
-threads when the filter is stateless (L2–L4 protocols: `tcp`, `udp`, `ipv4`,
-etc.).  Filters that require TCP reassembly such as `http`, `dns`, `tls`, and
-`tcp.stream_id` automatically fall back to sequential processing regardless of
-`--threads`.  Stdin input always uses the sequential path.
+threads when every packet the filter can match is free of cross-packet state,
+which holds for filters requiring `arp`, `lacp`, `icmp`, `icmpv6` or `igmp`.
+Any other filter (`tcp`, `udp`, `ipv4`, `http`, `tls`, ...) may match packets
+whose output depends on earlier packets — TCP `stream_id` and reassembled
+payloads, HTTP/2 HPACK state, IPFIX templates, or TCP inside a UDP tunnel — so
+it automatically falls back to sequential processing regardless of
+`--threads`, keeping the output identical.  Stdin input always uses the
+sequential path.
 
 Query a capture with SQL (the SQLite index is built on first use and reused
 afterwards):
