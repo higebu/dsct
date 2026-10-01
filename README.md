@@ -355,7 +355,7 @@ Resource limits can be tuned via environment variables:
 `dsct read` emits one JSON object per line:
 
 ```jsonl
-{"number":1,"timestamp":"2024-01-15T10:30:00.123456Z","length":71,"original_length":71,"stack":"Ethernet:IPv4:UDP:DNS","layers":[{"protocol":"Ethernet","fields":{"dst":"ff:ff:ff:ff:ff:ff","src":"00:11:22:33:44:55","ethertype":2048,"ethertype_name":"IPv4"}},{"protocol":"IPv4","fields":{"ttl":64,"protocol":17,"src":"10.0.0.1","dst":"10.0.0.2"}},{"protocol":"UDP","fields":{"src_port":12345,"dst_port":53}},{"protocol":"DNS","fields":{"id":4660,"qr":0,"opcode":0,"rcode":0,"questions":[{"name":"example.com","type":1,"class":1}]}}]}
+{"number":1,"timestamp":"2024-01-15T10:30:00.123456Z","length":71,"original_length":71,"stack":"Ethernet:IPv4:UDP:DNS","layers":[{"protocol":"Ethernet","fields":{"dst":"ff:ff:ff:ff:ff:ff","src":"00:11:22:33:44:55","ethertype":2048,"ethertype_name":"IPv4"}},{"protocol":"IPv4","fields":{"ttl":64,"protocol":17,"protocol_name":"UDP","src":"10.0.0.1","dst":"10.0.0.2"}},{"protocol":"UDP","fields":{"src_port":12345,"dst_port":53}},{"protocol":"DNS","fields":{"id":4660,"qr":0,"qr_name":"Query","opcode":0,"opcode_name":"QUERY","rcode":0,"rcode_name":"NOERROR","questions":[{"name":"example.com","type":1,"type_name":"A","class":1,"class_name":"IN"}]}}]}
 ```
 
 `dsct sql` emits one JSON object per result row, keyed by column name:

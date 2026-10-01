@@ -1305,3 +1305,38 @@ fn dns_over_tcp_partial_segment_shows_reassembly_status() {
     assert_eq!(dns["fields"]["reassembly_in_progress"], 1, "{dns}");
     assert_eq!(dns["fields"]["segment_count"], 1, "{dns}");
 }
+
+/// Default (non-verbose) output pairs every shown enumerated value with its
+/// `_name` companion, so a reader does not need `--verbose` to interpret
+/// `protocol: 17` or `rcode: 0`.
+#[test]
+fn read_default_output_shows_name_companions() {
+    let tmp = write_mixed_pcap();
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args(["read", "-n", "4", tmp.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let layer = |proto: &str| {
+        v["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["protocol"] == proto)
+            .unwrap_or_else(|| panic!("{proto} layer should be present: {stdout}"))
+            .clone()
+    };
+
+    let ipv4 = layer("IPv4");
+    assert_eq!(ipv4["fields"]["protocol_name"], "UDP", "{ipv4}");
+
+    let dns = &layer("DNS")["fields"];
+    assert_eq!(dns["qr_name"], "Query", "{dns}");
+    assert_eq!(dns["opcode_name"], "QUERY", "{dns}");
+    assert_eq!(dns["rcode_name"], "NOERROR", "{dns}");
+    assert_eq!(dns["questions"][0]["type_name"], "A", "{dns}");
+    assert_eq!(dns["questions"][0]["class_name"], "IN", "{dns}");
+}
