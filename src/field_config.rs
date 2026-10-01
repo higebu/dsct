@@ -294,27 +294,13 @@ mod tests {
     /// Protocols in `default_fields.toml` whose field schema dsct cannot read
     /// yet, so their patterns cannot be checked.
     ///
-    /// packet-dissector 0.6 `all_field_schemas()` only walks the dispatch
-    /// tables, so dissectors reached through a dispatcher or from inside
-    /// another dissector have no (or an empty) schema (tracked upstream as
-    /// "field schemas and protocol info miss dissectors behind
-    /// dispatchers"). The test fails once one of them gains a non-empty
-    /// schema, so the entry is removed and its patterns get checked.
+    /// Since packet-dissector 0.6.1 `all_field_schemas()` also reports the
+    /// dissectors behind dispatchers (HTTP, HTTP/2, L2TP, RTP, NAS-5G, ...),
+    /// so every section is checked.  The test fails once an entry here gains
+    /// a non-empty schema, so the entry is removed and its patterns get
+    /// checked.
     #[cfg(feature = "tcp")]
-    const PROTOCOLS_WITHOUT_SCHEMA: &[(&str, &str)] = &[
-        (
-            "HTTP",
-            "registered as HttpDispatcher with empty field descriptors",
-        ),
-        ("HTTP2", "only reached through the HTTP dispatcher"),
-        (
-            "L2TP",
-            "registered as L2tpDispatcher with empty field descriptors",
-        ),
-        ("L2TPv3-UDP", "only reached through the L2TP dispatcher"),
-        ("RTP", "only reached through decode-as or heuristics"),
-        ("NAS-5G", "only reached from inside NGAP"),
-    ];
+    const PROTOCOLS_WITHOUT_SCHEMA: &[(&str, &str)] = &[];
 
     /// Returns a message for every pattern in `config_toml` that matches no
     /// field, skipping the protocols in `without_schema`.
@@ -467,13 +453,13 @@ mod tests {
             [IPv4]
             fields = ["src"]
 
-            [HTTP]
+            [NoSchema]
             fields = ["unchecked"]
 
             [NotCompiledIn]
             fields = ["unchecked"]
         "#;
-        let without_schema = [("IPv4", "test"), ("HTTP", "test"), ("Missing", "test")];
+        let without_schema = [("IPv4", "test"), ("NoSchema", "test"), ("Missing", "test")];
 
         assert_eq!(
             stale_patterns(config, &without_schema),
