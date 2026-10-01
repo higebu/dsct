@@ -11,7 +11,6 @@ use dsct::mcp;
 use dsct::parallel;
 use dsct::parallel_read;
 use dsct::schema;
-use dsct::serialize;
 use dsct::stats;
 
 use std::io::{self, Write};
@@ -27,7 +26,6 @@ use crate::field_config::FieldConfig;
 use crate::filter::{PacketNumberFilter, normalize_protocol_name};
 use crate::filter_expr::FilterExpr;
 use crate::input::CaptureReader;
-use crate::serialize::write_packet_json;
 use dsct::error::{DsctError, Result, ResultExt, format_error};
 
 /// LLM-friendly packet dissector CLI.
@@ -142,13 +140,15 @@ struct ReadOptions {
     #[arg(long)]
     raw_bytes: bool,
 
-    /// Number of worker threads for parallel filter evaluation.
+    /// Number of worker threads for parallel dissection and filter evaluation.
     /// Default: physical CPU count. Honoured only for file input with a
-    /// `--filter` that requires ARP, LACP, ICMP, ICMPv6 or IGMP, whose packets
-    /// carry no cross-packet state. The `DSCT_THREADS` environment variable
-    /// is also honoured (flag takes precedence). Any other filter — packets
-    /// that may contain TCP (stream IDs, reassembly), HTTP/2 or IPFIX — and
-    /// stdin input always fall back to sequential processing.
+    /// `--filter` that does not test packet numbers only, and without
+    /// `--esp-sa`; stdin input is always processed sequentially. The
+    /// `DSCT_THREADS` environment variable is also honoured (flag takes
+    /// precedence). Packets whose dissection uses state kept across packets
+    /// (TCP streams and reassembly, HTTP/2 HPACK, IPFIX templates, IP fragment
+    /// reassembly) are dissected again in capture order, so the output always
+    /// equals `--threads 1`.
     #[arg(long)]
     threads: Option<usize>,
 }
@@ -518,8 +518,9 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
 
     // Validate --decode-as / --esp-sa up front so both the parallel and the
     // sequential path reject malformed arguments with a structured error.
-    // The sequential path reuses this registry; parallel workers build their
-    // own from the already-validated argument strings.
+    // The sequential path, and the parallel path for packets that use
+    // cross-packet state, dissect with this registry; parallel workers build
+    // their own from the already-validated argument strings.
     let mut registry = DissectorRegistry::default();
     decode_as::parse_and_apply(&mut registry, &decode_as_args).invalid_argument()?;
     esp_sa::parse_and_apply(&registry, &esp_sa_args).invalid_argument()?;
@@ -532,22 +533,20 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
         1 // not consulted; sequential path always used
     };
 
-    // Determine whether the parallel path is eligible. The filter must
-    // evaluate the same in any order, and the packets it matches must not
-    // carry layers whose output depends on earlier packets (TCP stream IDs,
-    // reassembled payloads, ...), which independent workers cannot reproduce.
-    let use_parallel = !is_stdin
-        && resolved_threads > 1
-        && filter_expr.as_ref().is_some_and(|e| {
-            !e.is_packet_number_only() && e.is_parallel_safe() && e.matches_only_stateless_packets()
-        })
-        && esp_sa_args.is_empty();
+    // Determine whether the parallel path is eligible.  Packets whose
+    // dissection uses cross-packet state (TCP stream IDs, reassembly, ...)
+    // need not be excluded here: the parallel engine dissects them again in
+    // capture order with `registry`, keeping the output identical.
+    // Packet-number-only filters are cheap enough sequentially, and workers
+    // carry no ESP Security Associations.
+    let parallel_filter = filter_expr.as_ref().filter(|e| {
+        !is_stdin && resolved_threads > 1 && !e.is_packet_number_only() && esp_sa_args.is_empty()
+    });
 
-    if use_parallel {
+    if let Some(filter) = parallel_filter {
         // ------------------------------------------------------------------
         // Parallel path
         // ------------------------------------------------------------------
-        let filter_str_ref = filter_str.as_deref().unwrap_or("");
         let stdout = io::stdout();
         let mut writer = io::BufWriter::new(stdout.lock());
         let start_time = Instant::now();
@@ -555,7 +554,7 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
         let outcome = parallel_read::run(
             &parallel_read::ParallelReadOptions {
                 path: &file,
-                filter_str: filter_str_ref,
+                filter,
                 decode_as_args: &decode_as_args,
                 threads: resolved_threads,
                 sample_rate,
@@ -566,6 +565,7 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
                 raw_bytes,
                 progress_interval: progress.unwrap_or(0),
             },
+            &registry,
             &mut writer,
             &mut |number, message| emit_warning(number, message),
             &mut |packets_processed, packets_written| {
@@ -582,111 +582,43 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
     }
 
     // ------------------------------------------------------------------------
-    // Sequential path (unchanged from before)
+    // Sequential path
     // ------------------------------------------------------------------------
-    let pn_max = pn_filter.as_ref().and_then(PacketNumberFilter::max);
-
     let stdout = io::stdout();
     let mut writer: Box<dyn Write> = if is_stdin {
         Box::new(io::LineWriter::new(stdout.lock()))
     } else {
         Box::new(io::BufWriter::new(stdout.lock()))
     };
-
-    let mut packets_processed = 0u64;
-    let mut packets_written = 0u64;
-    let mut filter_matches = 0u64;
-    let mut results_matched = 0u64;
-    let mut truncated_by_limit = false;
     let start_time = Instant::now();
-    // Reusable buffer for JSONL mode: write_packet_json writes many small
-    // fragments, so batching them into a Vec<u8> first avoids dynamic dispatch
-    // overhead from Box<dyn Write>.
-    let mut pkt_buf: Vec<u8> = Vec::with_capacity(4096);
-
     let reader = CaptureReader::open(&file).context("failed to open capture file")?;
 
-    let mut dissect_buf = packet_dissector_core::packet::DissectBuffer::new();
-    reader.for_each_packet(|meta, data| {
-        packets_processed += 1;
-
-        // --- progress reporting ---
-        if let Some(interval) = progress
-            && interval > 0
-            && packets_processed.is_multiple_of(interval)
-        {
-            emit_progress(packets_processed, packets_written, &start_time);
-        }
-
-        // --- packet-number filter (pre-dissect, lightweight) ---
-        if let Some(ref pnf) = pn_filter
-            && !pnf.contains(meta.number)
-        {
-            // Early exit once we've passed all specified packet numbers.
-            if pn_max.is_some_and(|m| meta.number > m) {
-                return Ok(ControlFlow::Break(()));
-            }
-            return Ok(ControlFlow::Continue(()));
-        }
-
-        // --- dissect (reuse buffer across packets) ---
-        let dissect_buf = dissect_buf.clear_into();
-        if let Err(e) = registry.dissect_with_link_type(data, meta.link_type, dissect_buf) {
-            emit_warning(meta.number, &format!("{e}"));
-            return Ok(ControlFlow::Continue(()));
-        }
-        let packet = packet_dissector_core::packet::Packet::new(dissect_buf, data);
-
-        // --- apply filter expression ---
-        if let Some(ref expr) = filter_expr
-            && !expr.matches_with_number(&packet, meta.number)
-        {
-            return Ok(ControlFlow::Continue(()));
-        }
-
-        // --- apply sample rate (every Nth filter-passing packet) ---
-        filter_matches += 1;
-        if sample_rate > 1 && !(filter_matches - 1).is_multiple_of(sample_rate) {
-            return Ok(ControlFlow::Continue(()));
-        }
-
-        // --- apply result-based offset (consistent with --count) ---
-        results_matched += 1;
-        if results_matched <= offset {
-            return Ok(ControlFlow::Continue(()));
-        }
-        // Write to a reusable buffer first, then flush to the writer
-        // in a single write_all call.  This avoids per-field dynamic
-        // dispatch overhead when the writer is Box<dyn Write>.
-        pkt_buf.clear();
-        write_packet_json(
-            &mut pkt_buf,
-            &meta,
-            dissect_buf,
-            data,
-            field_config.as_ref(),
+    let outcome = parallel_read::run_sequential(
+        reader,
+        &registry,
+        &parallel_read::SequentialReadOptions {
+            filter: filter_expr.as_ref(),
+            sample_rate,
+            offset,
+            count,
+            pn_filter: pn_filter.as_ref(),
+            field_config: field_config.as_ref(),
             raw_bytes,
-        )?;
-        pkt_buf.push(b'\n');
-        writer.write_all(&pkt_buf)?;
-        packets_written += 1;
-
-        if let Some(max) = count
-            && packets_written >= max
-        {
-            truncated_by_limit = true;
-            return Ok(ControlFlow::Break(()));
-        }
-
-        Ok(ControlFlow::Continue(()))
-    })?;
+            progress_interval: progress.unwrap_or(0),
+        },
+        &mut writer,
+        &mut |number, message| emit_warning(number, message),
+        &mut |packets_processed, packets_written| {
+            emit_progress(packets_processed, packets_written, &start_time);
+        },
+    )?;
 
     // Flush first so a closed stdout ends the command before the warning.
     writer.flush()?;
 
     // Warn only when the default limit actually truncated output (i.e. the
     // loop broke due to the count limit, not because we reached EOF).
-    if is_default_limit && truncated_by_limit {
+    if is_default_limit && outcome.truncated_by_limit {
         emit_truncation_warning(limits::DEFAULT_PACKET_COUNT);
     }
 

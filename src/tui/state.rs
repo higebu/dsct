@@ -406,11 +406,38 @@ pub struct FilterProgress {
     pub cursor: usize,
     /// Accumulated matching indices as a bitmap.
     pub results: super::filter_bitmap::FilterBitmap,
+    /// Registry the scan dissects with.  Every scan starts from a fresh one,
+    /// so its result does not depend on what the display dissected before.
+    pub registry: packet_dissector::registry::DissectorRegistry,
+    /// Set when finishing a parallel scan: only these packets are dissected.
+    pub in_order: Option<InOrderScan>,
+}
+
+/// The part of a parallel filter scan left to do in capture order: the
+/// packets whose dissection used cross-packet state.
+pub struct InOrderScan {
+    /// Matches among the packets the parallel scan resolved.
+    pub matches: super::filter_bitmap::FilterBitmap,
+    /// The packets to dissect in order.
+    pub in_order: super::filter_bitmap::FilterBitmap,
+    /// Number of packets of `in_order` dissected so far.
+    pub done: usize,
+    /// Matches among the packets of `in_order` dissected so far.
+    pub found: super::filter_bitmap::FilterBitmap,
 }
 
 impl FilterProgress {
-    /// Fraction complete (0.0 to 1.0).
+    /// Fraction complete (0.0 to 1.0).  While finishing a parallel scan this
+    /// is the share of the in-order packets dissected so far.
     pub fn fraction(&self, total: usize) -> f64 {
+        if let Some(scan) = &self.in_order {
+            let listed = scan.in_order.count_ones();
+            return if listed == 0 {
+                1.0
+            } else {
+                scan.done as f64 / listed as f64
+            };
+        }
         if total == 0 {
             1.0
         } else {
