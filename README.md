@@ -44,6 +44,24 @@ The optional TUI is designed for large captures too:
 - the selected packet is decoded in detail only when needed
 - the hex view reads directly from the mapped file
 
+The packet list and detail pane show every packet exactly as `dsct read`
+dissects it, whatever order you view packets in.  A packet whose
+dissection depends on earlier packets — TCP stream tracking and reassembly
+(`tcp.stream_id`, HTTP, TLS, ...), HTTP/2 HPACK, NetFlow v9 / IPFIX
+templates, or IP fragment reassembly — is taken from a background pass that
+dissects the capture once in capture order.  Until that pass reaches such a
+packet, its row and detail show `Dissecting packets in capture order...`.
+The pass keeps those results in a temporary file under
+`$XDG_CACHE_HOME/dsct` (or `~/.cache/dsct`, falling back to the system temp
+directory) that is removed on exit: about 200 bytes for a plain TCP
+segment, plus the reassembled data for a packet that completes a
+reassembly.  In memory it keeps 8 bytes per packet.  If the pass fails
+(for example, the disk is full), the TUI reports it and dissects the
+remaining packets on demand.  Follow Stream scans the capture in order
+with a fresh registry, so it finds the stream ID shown in the detail pane;
+`:stats` dissects the displayed packets in order with a fresh registry, so
+its result does not depend on what was viewed before.
+
 ## Installation
 
 CLI only:
@@ -206,12 +224,7 @@ capture has, the smaller the speed-up, down to roughly sequential speed for
 an all-TCP capture.  Stdin input always uses the sequential path.
 
 IPv4 and IPv6 fragments are reassembled: the fragment that completes a
-datagram carries the reassembled upper layers.  The TUI filter scan does
-the same, but the packet list and detail pane dissect packets on demand in
-display order with one shared registry, so, as with TCP stream state, they
-show reassembled layers only when the earlier fragments were displayed
-first, and may show a completing fragment unreassembled when it is
-dissected again.
+datagram carries the reassembled upper layers.
 
 Query a capture with SQL (the SQLite index is built on first use and reused
 afterwards):

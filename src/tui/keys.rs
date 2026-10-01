@@ -860,12 +860,7 @@ impl App {
             }
             "stats" => {
                 self.stats_output = None;
-                self.stats_progress = Some(super::state::StatsProgress {
-                    cursor: 0,
-                    collector: crate::stats::StatsCollector::from_flags(
-                        &crate::stats::StatsFlags::all_protocols(true, true),
-                    ),
-                });
+                self.start_stats();
             }
             _ => {
                 self.detail_tree.yank_message = Some(format!("Unknown command: {cmd}"));

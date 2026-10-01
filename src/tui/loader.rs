@@ -102,13 +102,69 @@ pub fn dissect_selected(
     let mut buf = DissectBuffer::new();
     // Partial dissection is acceptable; the tree shows whatever layers succeeded.
     let _ = registry.dissect_with_link_type(data, link_type, &mut buf);
-    let packet_view = Packet::new(&buf, data);
+    selected_from_buf(&buf, data, pkt_idx)
+}
+
+/// Build the selected-packet view of the dissection `buf` of `data`.
+pub(super) fn selected_from_buf(
+    buf: &DissectBuffer<'_>,
+    data: &[u8],
+    pkt_idx: usize,
+) -> SelectedPacket {
+    let packet_view = Packet::new(buf, data);
     let tree_nodes = tree::build_tree(&packet_view);
-    let owned = OwnedPacket::from_dissect_buf(&buf, data);
+    let owned = OwnedPacket::from_dissect_buf(buf, data);
     SelectedPacket {
         pkt_idx,
         packet: owned,
         tree_nodes,
+        pending: false,
+    }
+}
+
+/// Build the selected-packet view of an already dissected packet.
+pub(super) fn selected_from_owned(packet: OwnedPacket, pkt_idx: usize) -> SelectedPacket {
+    let tree_nodes = {
+        let buf = packet.to_dissect_buf();
+        tree::build_tree(&Packet::new(&buf, &packet.data))
+    };
+    SelectedPacket {
+        pkt_idx,
+        packet,
+        tree_nodes,
+        pending: false,
+    }
+}
+
+/// Text shown for a packet whose in-order dissection result is not ready yet.
+pub(super) const PENDING_TEXT: &str = "Dissecting packets in capture order...";
+
+/// Placeholder selected-packet view while the in-order dissection pass has
+/// not reached the packet yet.
+pub(super) fn pending_selected(data: &[u8], pkt_idx: usize) -> SelectedPacket {
+    SelectedPacket {
+        pkt_idx,
+        packet: OwnedPacket::from_dissect_buf(&DissectBuffer::new(), data),
+        tree_nodes: vec![super::state::TreeNode {
+            label: PENDING_TEXT.to_string(),
+            depth: 0,
+            expanded: false,
+            byte_range: 0..0,
+            children_count: 0,
+            is_layer: false,
+        }],
+        pending: true,
+    }
+}
+
+/// Placeholder packet list row while the in-order dissection pass has not
+/// reached the packet yet.
+pub(super) fn pending_row_summary() -> RowSummary {
+    RowSummary {
+        source: String::new(),
+        destination: String::new(),
+        protocol: "",
+        info: PENDING_TEXT.to_string(),
     }
 }
 
@@ -119,28 +175,35 @@ pub fn extract_row_summary(
     registry: &DissectorRegistry,
 ) -> RowSummary {
     let mut buf = DissectBuffer::new();
-    match registry.dissect_with_link_type(data, link_type, &mut buf) {
-        Ok(()) => {
-            let protocol = buf
-                .layers()
-                .last()
-                .map(|l| l.display_name.unwrap_or(l.name))
-                .unwrap_or("");
-            let (source, destination) = extract_addresses(&buf);
-            let info = extract_info(&buf, data);
-            RowSummary {
-                source,
-                destination,
-                protocol,
-                info,
-            }
-        }
-        Err(_) => RowSummary {
+    let ok = registry
+        .dissect_with_link_type(data, link_type, &mut buf)
+        .is_ok();
+    row_summary_from_buf(&buf, data, ok)
+}
+
+/// Build the packet list row of the dissection `buf` of `data`; `ok` tells
+/// whether the dissection returned `Ok`.
+pub(super) fn row_summary_from_buf(buf: &DissectBuffer<'_>, data: &[u8], ok: bool) -> RowSummary {
+    if !ok {
+        return RowSummary {
             source: String::new(),
             destination: String::new(),
             protocol: "???",
             info: "dissection error".to_string(),
-        },
+        };
+    }
+    let protocol = buf
+        .layers()
+        .last()
+        .map(|l| l.display_name.unwrap_or(l.name))
+        .unwrap_or("");
+    let (source, destination) = extract_addresses(buf);
+    let info = extract_info(buf, data);
+    RowSummary {
+        source,
+        destination,
+        protocol,
+        info,
     }
 }
 

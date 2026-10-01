@@ -6,6 +6,10 @@
 //!   LRU cache for smooth scrolling.
 //! - The selected packet is fully dissected to build the protocol detail tree.
 //! - Hex dump reads directly from the mmap (zero-copy).
+//! - Packets whose dissection depends on earlier packets (TCP streams,
+//!   reassembly, ...) are shown from a background pass that dissects the
+//!   capture in order (`ordered_pass`), so the display does not depend on
+//!   the order packets are viewed in.
 
 mod app;
 mod bg_indexer;
@@ -20,7 +24,9 @@ mod keys;
 mod live;
 #[doc(hidden)]
 pub mod loader;
+mod ordered_pass;
 mod owned_packet;
+mod packet_codec;
 mod parallel_scan;
 mod state;
 mod stats_collect;
@@ -54,10 +60,16 @@ fn cache_dir() -> Option<PathBuf> {
     None
 }
 
+/// A registry configured by the `--decode-as` arguments.
+fn new_registry(decode_as_args: &[String]) -> Result<DissectorRegistry> {
+    let mut registry = DissectorRegistry::default();
+    decode_as::parse_and_apply(&mut registry, decode_as_args)?;
+    Ok(registry)
+}
+
 /// Entry point for `dsct tui <file>`.
 pub fn run(file: PathBuf, decode_as_args: Vec<String>) -> Result<()> {
-    let mut registry = DissectorRegistry::default();
-    decode_as::parse_and_apply(&mut registry, &decode_as_args)?;
+    let registry = new_registry(&decode_as_args)?;
 
     // Memory-map the file for display/dissection on the main thread.
     let capture = loader::open_and_mmap(&file)?;
@@ -70,8 +82,17 @@ pub fn run(file: PathBuf, decode_as_args: Vec<String>) -> Result<()> {
     // Start the TUI immediately with an empty index; packets will appear
     // incrementally as the background thread delivers results.
     let indices = Vec::new();
+    // Dissect the capture in order in the background, for packets whose
+    // dissection uses state kept across packets.
+    let ordered = ordered_pass::OrderedPass::spawn(
+        loader::open_and_mmap(&file)?,
+        new_registry(&decode_as_args)?,
+        cache_dir().as_deref(),
+    )?;
+
     let mut app = app::App::new(capture, indices, registry, &file, decode_as_args);
     app.bg_indexer = Some(bg_indexer);
+    app.ordered = Some(ordered);
 
     let mut terminal = event::init_terminal()?;
     let result = event::run_event_loop(&mut terminal, app);
@@ -81,8 +102,7 @@ pub fn run(file: PathBuf, decode_as_args: Vec<String>) -> Result<()> {
 
 /// Entry point for `dsct tui -` (live stdin capture).
 pub fn run_live(decode_as_args: Vec<String>) -> Result<()> {
-    let mut registry = DissectorRegistry::default();
-    decode_as::parse_and_apply(&mut registry, &decode_as_args)?;
+    let registry = new_registry(&decode_as_args)?;
 
     // Create a temp file that will be automatically deleted on drop.
     // Prefer $XDG_CACHE_HOME/dsct/ over the system temp directory.
@@ -134,11 +154,17 @@ pub fn run_live(decode_as_args: Vec<String>) -> Result<()> {
     let mut terminal = event::init_terminal()?;
 
     let result = (|| {
+        let ordered = ordered_pass::OrderedPass::spawn(
+            state::CaptureMap::new_live(file.try_clone()?)?,
+            new_registry(&decode_as_args)?,
+            cache_dir().as_deref(),
+        )?;
         // Create a live-mode mmap (initially empty or near-empty).
         let capture = state::CaptureMap::new_live(file)?;
         let indices = Vec::new();
 
-        let app = app::App::new_live(capture, indices, registry, copier, decode_as_args);
+        let mut app = app::App::new_live(capture, indices, registry, copier, decode_as_args);
+        app.ordered = Some(ordered);
         event::run_event_loop(&mut terminal, app)
     })();
 
