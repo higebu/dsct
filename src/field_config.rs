@@ -506,7 +506,7 @@ mod tests {
                 .flat_map(|s| s.fields.iter())
                 .filter(|fd| fd.name == parent)
                 .find_map(|fd| fd.children)
-                .unwrap_or_else(|| panic!("[{proto}] has no container {parent}"));
+                .expect("the container exists in the schema");
             assert!(
                 children.iter().any(|fd| fd.name == field
                     || field
@@ -537,7 +537,9 @@ mod tests {
     fn dispatched_sections_show_name_companions() {
         let config = FieldConfig::default_config().unwrap();
         let registry = packet_dissector::registry::DissectorRegistry::default();
-        let mut failures = Vec::new();
+        // (protocol, container, companion) for every shown field with a
+        // `display_fn`; `container` is `None` for top-level fields.
+        let mut companions: Vec<(&str, Option<&str>, String)> = Vec::new();
         let mut checked = 0;
         for schema in registry.all_field_schemas() {
             let proto = schema.short_name;
@@ -549,39 +551,33 @@ mod tests {
                 if !config.should_include(proto, fd.name) {
                     continue;
                 }
-                if fd.display_fn.is_some()
-                    && !config.should_include(proto, &format!("{}_name", fd.name))
-                {
-                    failures.push(format!("[{proto}] {} without {}_name", fd.name, fd.name));
+                if fd.display_fn.is_some() {
+                    companions.push((proto, None, format!("{}_name", fd.name)));
                 }
                 for child in fd.children.unwrap_or_default() {
-                    if child.display_fn.is_some()
-                        && config.should_include_nested(proto, fd.name, child.name)
-                        && !config.should_include_nested(
-                            proto,
-                            fd.name,
-                            &format!("{}_name", child.name),
-                        )
-                    {
-                        failures.push(format!(
-                            "[{proto}] {}.{} without {}.{}_name",
-                            fd.name, child.name, fd.name, child.name
-                        ));
+                    let shown = config.should_include_nested(proto, fd.name, child.name);
+                    if child.display_fn.is_some() && shown {
+                        companions.push((proto, Some(fd.name), format!("{}_name", child.name)));
                     }
                 }
             }
         }
-        failures.sort();
-        failures.dedup();
         assert_eq!(
             checked,
             SECTIONS_CHECKED_SINCE_0_6_1.len(),
             "every section has a schema"
         );
+        assert!(!companions.is_empty());
+        let hidden: Vec<&(&str, Option<&str>, String)> = companions
+            .iter()
+            .filter(|(proto, parent, name)| match parent {
+                None => !config.should_include(proto, name),
+                Some(parent) => !config.should_include_nested(proto, parent, name),
+            })
+            .collect();
         assert!(
-            failures.is_empty(),
-            "default_fields.toml hides _name companions:\n{}",
-            failures.join("\n")
+            hidden.is_empty(),
+            "default_fields.toml hides _name companions: {hidden:?}"
         );
     }
 
