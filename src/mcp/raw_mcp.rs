@@ -452,6 +452,9 @@ fn tools_list_result() -> Value {
     serde_json::json!({ "tools": tools })
 }
 
+/// Format of an `esp_sa` entry, shared by every tool schema that takes one.
+const ESP_SA_FORMAT: &str = "Format: \"spi:null\", \"spi:enc_algo:enc_key_hex\", or \"spi:enc_algo:enc_key_hex:auth_algo:auth_key_hex\", optionally followed by \":esn\" (Extended Sequence Numbers, high-order 32 bits 0) or \":esn=HIGH\" (decimal or 0x hex), which GCM, CCM and ChaCha20-Poly1305 need when the SA uses ESN (e.g. \"0x1001:aes-128-gcm:0x<16-byte key><4-byte salt>:esn\").";
+
 #[cfg(feature = "sqlite")]
 fn query_sql_schema() -> Value {
     serde_json::json!({
@@ -499,7 +502,7 @@ fn query_sql_schema() -> Value {
                 "type": "array",
                 "items": { "type": "string" },
                 "default": [],
-                "description": "ESP Security Association for decryption when building the index."
+                "description": format!("ESP Security Association for decryption when building the index. {ESP_SA_FORMAT}")
             }
         },
         "additionalProperties": false
@@ -553,7 +556,7 @@ fn read_packets_schema() -> Value {
                 "type": "array",
                 "items": { "type": "string" },
                 "default": [],
-                "description": "ESP Security Association for decryption. Format: \"spi:null\", \"spi:enc_algo:enc_key_hex\", or \"spi:enc_algo:enc_key_hex:auth_algo:auth_key_hex\"."
+                "description": format!("ESP Security Association for decryption. {ESP_SA_FORMAT}")
             },
             "verbose": {
                 "type": "boolean",
@@ -624,7 +627,7 @@ fn get_stats_schema() -> Value {
                 "type": "array",
                 "items": { "type": "string" },
                 "default": [],
-                "description": "ESP Security Association for decryption. Format: \"spi:null\", \"spi:enc_algo:enc_key_hex\", or \"spi:enc_algo:enc_key_hex:auth_algo:auth_key_hex\"."
+                "description": format!("ESP Security Association for decryption. {ESP_SA_FORMAT}")
             }
         },
         "additionalProperties": false
@@ -1520,6 +1523,22 @@ mod tests {
         let raw = &schema["properties"]["raw_bytes"];
         assert_eq!(raw["type"], "boolean");
         assert_eq!(raw["default"], false);
+    }
+
+    #[test]
+    fn esp_sa_schemas_document_esn() {
+        let schemas = [
+            read_packets_schema(),
+            get_stats_schema(),
+            #[cfg(feature = "sqlite")]
+            query_sql_schema(),
+        ];
+        for schema in schemas {
+            let description = schema["properties"]["esp_sa"]["description"]
+                .as_str()
+                .unwrap();
+            assert!(description.contains(":esn=HIGH"), "{description}");
+        }
     }
 
     #[test]

@@ -796,6 +796,115 @@ fn esp_sa_null_decrypts_payload_fields() {
     );
 }
 
+/// KEYMAT for [`build_esp_gcm_esn_pcap`]: AES-128 key 00..0f followed by the
+/// 4-byte salt cafebabe (RFC 4106, Section 8.1).
+#[cfg(feature = "esp-decrypt")]
+const ESP_GCM_ESN_KEYMAT: &str = "0x000102030405060708090a0b0c0d0e0fcafebabe";
+
+/// Build a pcap with one AES-128-GCM-16 ESP frame (SPI=0x1001) whose SA uses
+/// Extended Sequence Numbers: the 64-bit sequence number is 0x0000_0001_0000_0001
+/// and only its low-order 32 bits are on the wire (RFC 4303, Section 2.2.1).
+///
+/// The ciphertext was sealed with the 12-octet AAD
+/// SPI || ESN high || ESN low = `00001001 00000001 00000001`
+/// (RFC 4106, Section 5, Figure 4), nonce = salt || IV, IV = 0000000000000001.
+/// The plaintext is a UDP header (src=1234, dst=5678, length=8) followed by
+/// padding 01 02, pad_length 2 and next_header 17.
+/// <https://www.rfc-editor.org/rfc/rfc4303#section-2.2.1>
+/// <https://www.rfc-editor.org/rfc/rfc4106#section-5>
+#[cfg(feature = "esp-decrypt")]
+fn build_esp_gcm_esn_pcap() -> Vec<u8> {
+    let mut pcap = Vec::new();
+    pcap.extend_from_slice(&0xA1B2C3D4u32.to_le_bytes());
+    pcap.extend_from_slice(&2u16.to_le_bytes());
+    pcap.extend_from_slice(&4u16.to_le_bytes());
+    pcap.extend_from_slice(&0i32.to_le_bytes());
+    pcap.extend_from_slice(&0u32.to_le_bytes());
+    pcap.extend_from_slice(&65535u32.to_le_bytes());
+    pcap.extend_from_slice(&1u32.to_le_bytes());
+
+    // IPv4 total length = 20 + 8 (SPI + seq) + 8 (IV) + 12 (ciphertext) + 16 (ICV) = 64.
+    let pkt: &[u8] = &[
+        // Ethernet (14)
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x08, 0x00,
+        // IPv4 (20): total length = 64, protocol = 50 (ESP)
+        0x45, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x40, 0x32, 0x00, 0x00, 0x0A, 0x00, 0x00,
+        0x01, 0x0A, 0x00, 0x00, 0x02, // ESP header (8): SPI + low-order 32 bits of the ESN
+        0x00, 0x00, 0x10, 0x01, 0x00, 0x00, 0x00, 0x01, // IV (8)
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // Ciphertext (12) + ICV (16)
+        0xB6, 0xD7, 0x0F, 0xB7, 0x4A, 0x77, 0x51, 0xF4, 0x9A, 0x19, 0xC3, 0x0C, 0x6B, 0x17, 0x75,
+        0x0C, 0x73, 0xD8, 0x13, 0xBE, 0x5D, 0xAC, 0x26, 0x4D, 0x42, 0x05, 0x1D, 0x7E,
+    ];
+
+    pcap.extend_from_slice(&0u32.to_le_bytes());
+    pcap.extend_from_slice(&0u32.to_le_bytes());
+    pcap.extend_from_slice(&(pkt.len() as u32).to_le_bytes());
+    pcap.extend_from_slice(&(pkt.len() as u32).to_le_bytes());
+    pcap.extend_from_slice(pkt);
+    pcap
+}
+
+/// Run `dsct read` on [`build_esp_gcm_esn_pcap`] with one `--esp-sa` and
+/// return the ESP layer's fields.
+#[cfg(feature = "esp-decrypt")]
+fn read_esp_gcm_esn(esp_sa: &str) -> serde_json::Map<String, serde_json::Value> {
+    let mut tmp = NamedTempFile::with_suffix(".pcap").unwrap();
+    tmp.write_all(&build_esp_gcm_esn_pcap()).unwrap();
+
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args(["read", "--esp-sa", esp_sa, tmp.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    v["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["protocol"] == "ESP")
+        .expect("ESP layer should be present")["fields"]
+        .as_object()
+        .unwrap()
+        .clone()
+}
+
+/// RFC 4106, Section 5 — with ESN the GCM AAD is SPI || 64-bit sequence
+/// number; `:esn=HIGH` supplies the high-order 32 bits so the tag verifies
+/// and the inner UDP header is dissected.
+#[cfg(feature = "esp-decrypt")]
+#[test]
+fn esp_sa_gcm_with_esn_decrypts() {
+    let fields = read_esp_gcm_esn(&format!("0x1001:aes-128-gcm:{ESP_GCM_ESN_KEYMAT}:esn=1"));
+
+    assert_eq!(fields.get("next_header").and_then(|x| x.as_u64()), Some(17));
+    assert_eq!(fields.get("pad_length").and_then(|x| x.as_u64()), Some(2));
+    assert!(
+        fields.get("encrypted_data").is_none(),
+        "encrypted_data should not be emitted when decryption succeeds"
+    );
+}
+
+/// The same packet does not decrypt with the 8-octet AAD (no ESN) or with
+/// the wrong high-order bits, so the test above really exercises ESN.
+#[cfg(feature = "esp-decrypt")]
+#[test]
+fn esp_sa_gcm_without_matching_esn_does_not_decrypt() {
+    for sa in [
+        format!("0x1001:aes-128-gcm:{ESP_GCM_ESN_KEYMAT}"),
+        format!("0x1001:aes-128-gcm:{ESP_GCM_ESN_KEYMAT}:esn"),
+    ] {
+        let fields = read_esp_gcm_esn(&sa);
+        assert!(fields.get("next_header").is_none(), "{sa}: {fields:?}");
+    }
+}
+
 /// Build a pcap with a NULL-encrypted ESP frame whose inner transport payload
 /// is a minimal UDP datagram (8-byte header, no data: src=1234, dst=5678).
 /// next_header=17 is recognised by the 0.2.3 heuristic; pad_length=0 requires
