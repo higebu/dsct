@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.3.0] - 2026-10-01
+
+### 🚀 Features
+
+- [**breaking**] Bump packet-dissector to 0.6 ([#97](https://github.com/higebu/dsct/issues/97))
+- *(esp)* Accept ESN in --esp-sa and MCP esp_sa ([#99](https://github.com/higebu/dsct/issues/99))
+- *(read)* Use the cross-packet state flag for parallel dissection ([#102](https://github.com/higebu/dsct/issues/102))
+
+### 🐛 Bug Fixes
+
+- *(fields)* Correct stale default field patterns ([#100](https://github.com/higebu/dsct/issues/100))
+- *(cli)* Exit quietly when stdout is closed ([#101](https://github.com/higebu/dsct/issues/101))
+- *(fields)* Check default fields of dispatched protocols against their schemas ([#104](https://github.com/higebu/dsct/issues/104))
+- *(fields)* Show _name companions of every shown field by default ([#105](https://github.com/higebu/dsct/issues/105))
+- *(tui)* Show stateful packets as dissected in capture order ([#106](https://github.com/higebu/dsct/issues/106))
+
+### 📦 Dependencies
+
+- *(deps)* Update bencherdev/bencher digest to 2d5a7d1 ([#80](https://github.com/higebu/dsct/issues/80))
+- *(deps)* Update taiki-e/install-action digest to 9114bf4 ([#81](https://github.com/higebu/dsct/issues/81))
+- *(deps)* Update release-plz/action digest to b8d6b54 ([#82](https://github.com/higebu/dsct/issues/82))
+- *(deps)* Update taiki-e/install-action digest to 94c31af ([#85](https://github.com/higebu/dsct/issues/85))
+- *(deps)* Update bencherdev/bencher digest to b97d2fc ([#84](https://github.com/higebu/dsct/issues/84))
+- *(deps)* Lock file maintenance ([#86](https://github.com/higebu/dsct/issues/86))
+- *(deps)* Update rust crate lru to v0.18.5 ([#89](https://github.com/higebu/dsct/issues/89))
+- *(deps)* Update bencherdev/bencher digest to 2e58545 ([#88](https://github.com/higebu/dsct/issues/88))
+- *(deps)* Update taiki-e/install-action digest to 7623a79 ([#87](https://github.com/higebu/dsct/issues/87))
+- *(deps)* Update rust crate thiserror to v2.0.21 ([#90](https://github.com/higebu/dsct/issues/90))
+- *(deps)* Update taiki-e/install-action digest to 9983c65 ([#91](https://github.com/higebu/dsct/issues/91))
+- *(deps)* Update taiki-e/install-action digest to 4cef141 ([#93](https://github.com/higebu/dsct/issues/93))
+- *(deps)* Update bencherdev/bencher digest to f64a2e8 ([#92](https://github.com/higebu/dsct/issues/92))
+- *(deps)* Lock file maintenance ([#94](https://github.com/higebu/dsct/issues/94))
+- *(deps)* Update taiki-e/install-action digest to 83ac0ad ([#96](https://github.com/higebu/dsct/issues/96))
+- *(deps)* Update bencherdev/bencher digest to b06e9a0 ([#95](https://github.com/higebu/dsct/issues/95))
+- *(deps)* Update bencherdev/bencher digest to dcefffa ([#98](https://github.com/higebu/dsct/issues/98))
 ## [0.2.15] - 2026-09-17
 
 ### 🐛 Bug Fixes
