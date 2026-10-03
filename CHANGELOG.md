@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.3.1] - 2026-10-03
+
+### 📦 Dependencies
+
+- *(deps)* Update taiki-e/install-action digest to 861a07c ([#109](https://github.com/higebu/dsct/issues/109))
+- *(deps)* Update bencherdev/bencher digest to 3114639 ([#108](https://github.com/higebu/dsct/issues/108))
+- *(deps)* Update dtolnay/rust-toolchain digest to 89b1218 ([#107](https://github.com/higebu/dsct/issues/107))
 ## [0.3.0] - 2026-10-01
 
 ### 🚀 Features
