@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.3.1] - 2026-10-24
+
+### 📦 Dependencies
+
+- *(deps)* Update taiki-e/install-action digest to 861a07c ([#109](https://github.com/higebu/dsct/issues/109))
+- *(deps)* Update bencherdev/bencher digest to 3114639 ([#108](https://github.com/higebu/dsct/issues/108))
+- *(deps)* Update dtolnay/rust-toolchain digest to 89b1218 ([#107](https://github.com/higebu/dsct/issues/107))
+- *(deps)* Update taiki-e/install-action digest to e407f7b ([#111](https://github.com/higebu/dsct/issues/111))
+- *(deps)* Update taiki-e/install-action digest to 183e429 ([#114](https://github.com/higebu/dsct/issues/114))
+- *(deps)* Update taiki-e/install-action digest to f7e5d7c ([#115](https://github.com/higebu/dsct/issues/115))
+- *(deps)* Update rust crate toml to v1.1.7 ([#117](https://github.com/higebu/dsct/issues/117))
+- *(deps)* Update release-plz/action digest to 18641b6 ([#116](https://github.com/higebu/dsct/issues/116))
+- *(deps)* Update rust crate toml to v1.1.8 ([#119](https://github.com/higebu/dsct/issues/119))
+- *(deps)* Update release-plz/action digest to f393a7b ([#121](https://github.com/higebu/dsct/issues/121))
+- *(deps)* Update rust crate serde_json to v1.0.152 ([#122](https://github.com/higebu/dsct/issues/122))
+- *(deps)* Update rust crate serde_json to v1.0.154 ([#123](https://github.com/higebu/dsct/issues/123))
+- *(deps)* Update bencherdev/bencher digest to f5e5b73 ([#112](https://github.com/higebu/dsct/issues/112))
+- *(deps)* Update dtolnay/rust-toolchain digest to 686976e ([#118](https://github.com/higebu/dsct/issues/118))
+- *(deps)* Lock file maintenance ([#113](https://github.com/higebu/dsct/issues/113))
+- *(deps)* Update release-plz/action digest to 8921286 ([#125](https://github.com/higebu/dsct/issues/125))
+- *(deps)* Update actions/create-github-app-token digest to 64ab729 ([#124](https://github.com/higebu/dsct/issues/124))
+- *(deps)* Update dtolnay/rust-toolchain digest to b725eda ([#127](https://github.com/higebu/dsct/issues/127))
+- *(deps)* Update bencherdev/bencher digest to 1e5aa31 ([#126](https://github.com/higebu/dsct/issues/126))
+- *(deps)* Update bencherdev/bencher digest to 3d648eb ([#128](https://github.com/higebu/dsct/issues/128))
+- *(deps)* Update bencherdev/bencher digest to 4e37244 ([#129](https://github.com/higebu/dsct/issues/129))
+- *(deps)* Lock file maintenance ([#131](https://github.com/higebu/dsct/issues/131))
+- *(deps)* Update bencherdev/bencher digest to 1094736 ([#132](https://github.com/higebu/dsct/issues/132))
+- *(deps)* Update release-plz/action digest to 6caa8d3 ([#134](https://github.com/higebu/dsct/issues/134))
+- *(deps)* Update bencherdev/bencher digest to e2c5af8 ([#133](https://github.com/higebu/dsct/issues/133))
+- *(deps)* Update taiki-e/install-action digest to 8cca091 ([#120](https://github.com/higebu/dsct/issues/120))
+- *(deps)* Update swatinem/rust-cache digest to d1527c8 ([#135](https://github.com/higebu/dsct/issues/135))
+- *(deps)* Update rust crate memmap2 to v0.9.12 ([#137](https://github.com/higebu/dsct/issues/137))
+- *(deps)* Update taiki-e/install-action digest to a4d3f3f ([#138](https://github.com/higebu/dsct/issues/138))
+- *(deps)* Update bencherdev/bencher digest to 768200b ([#139](https://github.com/higebu/dsct/issues/139))
+- *(deps)* Update taiki-e/install-action digest to 1e29709 ([#141](https://github.com/higebu/dsct/issues/141))
+- *(deps)* Update bencherdev/bencher digest to 5906f30 ([#140](https://github.com/higebu/dsct/issues/140))
 ## [0.3.0] - 2026-10-01
 
 ### 🚀 Features
