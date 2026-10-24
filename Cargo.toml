@@ -217,7 +217,7 @@ rustix = { version = "1", features = ["stdio"], optional = true }
 lru = { version = "0.18", optional = true }
 num_cpus = "1"
 sqlparser = "0.63.0"
-rusqlite = { version = "0.40", features = [
+rusqlite = { version = "0.41", features = [
   "bundled",
   "hooks",
 ], optional = true }
