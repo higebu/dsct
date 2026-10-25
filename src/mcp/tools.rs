@@ -352,7 +352,7 @@ fn do_query_sql_inner(
         &mut |_| {},
     )?;
 
-    let conn = open_read_only(&resolved.db_path)?;
+    let mut conn = open_read_only(&resolved.db_path)?;
     // Interrupt long-running queries once the tool deadline has passed.
     conn.progress_handler(10_000, Some(move || Instant::now() > deadline))
         .context("failed to install query timeout handler")?;
