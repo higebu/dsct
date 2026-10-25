@@ -124,7 +124,6 @@ pub fn run_query(
     }
     let columns: Vec<Vec<u8>> = stmt
         .column_names()
-        .iter()
         .map(|name| {
             let mut escaped = Vec::with_capacity(name.len() + 3);
             escaped.push(b'"');
