@@ -59,6 +59,43 @@ pub fn first_highlighted_line(highlight: &Range<usize>) -> usize {
     highlight.start / HEX_BYTES_PER_LINE
 }
 
+/// Hues (in turns) of the protocols seen most, chosen apart from each other
+/// so the rows of a typical capture are told apart at a glance.
+const COMMON_HUES: &[(&str, f32)] = &[
+    ("TCP", 0.75),
+    ("UDP", 0.58),
+    ("DNS", 0.50),
+    ("HTTP", 0.33),
+    ("HTTP2", 0.28),
+    ("TLS", 0.08),
+    ("QUIC", 0.13),
+    ("ARP", 0.17),
+    ("ICMP", 0.92),
+    ("ICMPv6", 0.95),
+];
+
+/// Number of hues the remaining protocols are spread over.
+const OTHER_HUES: usize = 16;
+
+/// Hue (0.0–1.0) tinting the rows of `protocol`, or `None` for rows without
+/// a protocol yet (placeholders).
+///
+/// Common protocols have fixed hues ([`COMMON_HUES`]); any other name is
+/// hashed (FNV-1a) into one of [`OTHER_HUES`] evenly spaced hues, so the same
+/// name always gets the same tint without a table of every protocol.
+pub fn protocol_hue(protocol: &str) -> Option<f32> {
+    if protocol.is_empty() {
+        return None;
+    }
+    if let Some((_, hue)) = COMMON_HUES.iter().find(|(name, _)| *name == protocol) {
+        return Some(*hue);
+    }
+    let hash = protocol
+        .bytes()
+        .fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619));
+    Some((hash as usize % OTHER_HUES) as f32 / OTHER_HUES as f32)
+}
+
 /// Progress as a whole percentage, for the status bar.
 pub fn percent(fraction: f64) -> u32 {
     (fraction.clamp(0.0, 1.0) * 100.0).round() as u32
@@ -111,6 +148,23 @@ mod tests {
         assert!(!next.cells[2].highlighted);
         assert_eq!(first_highlighted_line(&(14..18)), 0);
         assert_eq!(first_highlighted_line(&(17..18)), 1);
+    }
+
+    #[test]
+    fn protocol_hue_is_stable_and_in_range() {
+        let common = ["TCP", "UDP", "DNS", "HTTP", "TLS", "QUIC", "ARP", "ICMP"];
+        let hues: Vec<f32> = common.iter().map(|n| protocol_hue(n).unwrap()).collect();
+        for (i, a) in hues.iter().enumerate() {
+            for b in &hues[i + 1..] {
+                assert_ne!(a, b, "common protocols share a tint");
+            }
+        }
+        for name in common.iter().chain(&["SIP", "GTPv2-C", "NGAP", "x"]) {
+            let hue = protocol_hue(name).unwrap();
+            assert!((0.0..1.0).contains(&hue), "{name}: {hue}");
+            assert_eq!(protocol_hue(name), Some(hue));
+        }
+        assert_eq!(protocol_hue(""), None);
     }
 
     #[test]

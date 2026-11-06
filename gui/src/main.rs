@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use dsct::session::Session;
+use gpui_kit::component::Theme;
 use gpui_kit::*;
 
 use crate::app::DsctApp;
@@ -28,6 +29,11 @@ fn main() {
 
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
+        // The selected packet row must stand out from the protocol tints.
+        Theme::update(cx, |theme| {
+            theme.table_active = theme.blue.opacity(0.35);
+            theme.table_active_border = theme.blue;
+        });
 
         #[cfg(target_os = "macos")]
         cx.bind_keys([

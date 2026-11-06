@@ -1,10 +1,23 @@
 //! The packet list: a virtual table over the session's filtered packets.
 
 use dsct::session::loader;
+use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::table::{Column, TableDelegate, TableState};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::SharedSession;
+use crate::format;
+
+/// Opacity of a row's protocol tint, low enough to keep the text readable
+/// and the selected row distinct.
+const TINT_ALPHA: f32 = 0.14;
+
+/// Columns of numbers and times: right-aligned (numbers) in a monospace font
+/// so their digits line up.
+const NO_COL: usize = 0;
+const TIME_COL: usize = 1;
+const LEN_COL: usize = 5;
 
 /// Column keys and titles, in display order.
 const COLUMNS: [(&str, &str, f32); 7] = [
@@ -26,6 +39,18 @@ impl PacketTable {
     /// A table showing the packets of `session`.
     pub fn new(session: SharedSession) -> Self {
         Self { session }
+    }
+
+    /// The protocol of the packet at `row`, dissecting it on demand.
+    fn protocol(&self, row: usize) -> &'static str {
+        let mut guard = self.session.borrow_mut();
+        let Some(session) = guard.as_mut() else {
+            return "";
+        };
+        let Some(pkt_idx) = session.filtered.select(row) else {
+            return "";
+        };
+        session.get_or_dissect_summary(pkt_idx).protocol
     }
 
     /// The text of cell (`row`, `col`), dissecting the row's packet on
@@ -72,7 +97,25 @@ impl TableDelegate for PacketTable {
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
         let (key, name, width) = COLUMNS[col_ix];
-        Column::new(key, name).width(px(width))
+        let column = Column::new(key, name).width(px(width));
+        if matches!(col_ix, NO_COL | LEN_COL) {
+            column.text_right()
+        } else {
+            column
+        }
+    }
+
+    fn render_tr(
+        &mut self,
+        row_ix: usize,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
+        let tint =
+            format::protocol_hue(self.protocol(row_ix)).map(|h| hsla(h, 0.75, 0.5, TINT_ALPHA));
+        div()
+            .id(("row", row_ix))
+            .when_some(tint, |row, tint| row.bg(tint))
     }
 
     fn render_td(
@@ -80,11 +123,15 @@ impl TableDelegate for PacketTable {
         row_ix: usize,
         col_ix: usize,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
+        let mono = cx.theme().mono_font_family.clone();
         div()
             .overflow_hidden()
             .whitespace_nowrap()
+            .when(matches!(col_ix, NO_COL | TIME_COL | LEN_COL), |d| {
+                d.font_family(mono)
+            })
             .child(self.cell(row_ix, col_ix))
     }
 

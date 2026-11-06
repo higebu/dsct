@@ -21,7 +21,7 @@ use crate::packet_table::PacketTable;
 use crate::{Open, SharedSession};
 
 /// How often background work (indexing, the in-order pass, filter scans)
-/// is driven while the window is open.
+/// is driven while there is any; nothing runs while the session is idle.
 const TICK_INTERVAL: Duration = Duration::from_millis(16);
 
 /// Contents of the bottom panel.
@@ -74,9 +74,13 @@ pub struct DsctApp {
     bottom: Option<BottomPanel>,
     /// Last error or notice, shown in the status bar.
     message: Option<(String, bool)>,
+    /// The filter could not be applied: shown under the filter input.
+    filter_error: Option<String>,
     /// Whether background work was running at the last tick, so the status
     /// bar is redrawn once more when it stops.
     busy: bool,
+    /// Whether the tick loop is running (see [`Self::ensure_ticking`]).
+    ticking: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -96,22 +100,21 @@ impl DsctApp {
                 }
             }),
             cx.subscribe_in(&filter, window, |this, state, event: &InputEvent, _, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    let text = state.read(cx).value().to_string();
-                    this.apply_filter(&text, cx);
+                match event {
+                    InputEvent::PressEnter { .. } => {
+                        let text = state.read(cx).value().to_string();
+                        this.apply_filter(&text, cx);
+                    }
+                    // Editing the filter dismisses its error and updates
+                    // the "Enter to apply" hint.
+                    InputEvent::Change => {
+                        this.filter_error = None;
+                        cx.notify();
+                    }
+                    _ => {}
                 }
             }),
         ];
-
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(TICK_INTERVAL).await;
-                if this.update(cx, |app, cx| app.tick(cx)).is_err() {
-                    break;
-                }
-            }
-        })
-        .detach();
 
         let mut app = Self {
             session,
@@ -125,7 +128,9 @@ impl DsctApp {
             },
             bottom: None,
             message: None,
+            filter_error: None,
             busy: false,
+            ticking: false,
             _subscriptions: subscriptions,
         };
         if let Some(path) = path {
@@ -162,21 +167,47 @@ impl DsctApp {
                 self.tree.visible.clear();
                 self.bottom = None;
                 self.message = None;
+                self.filter_error = None;
                 self.table.update(cx, |table, cx| {
                     table.clear_selection(cx);
                     table.refresh(cx);
                 });
+                self.ensure_ticking(cx);
             }
             Err(e) => self.message = Some((format!("Cannot open {}: {e}", path.display()), true)),
         }
         cx.notify();
     }
 
+    /// Run [`Self::tick`] every [`TICK_INTERVAL`] until the session has no
+    /// background work left. Call after anything that may start some.
+    fn ensure_ticking(&mut self, cx: &mut Context<Self>) {
+        if self.ticking {
+            return;
+        }
+        self.ticking = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(TICK_INTERVAL).await;
+                match this.update(cx, |app, cx| app.tick(cx)) {
+                    Ok(true) => {}
+                    // Idle, or the window is gone.
+                    Ok(false) | Err(_) => break,
+                }
+            }
+        })
+        .detach();
+    }
+
     /// Drive the session's background work and refresh what changed.
-    fn tick(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// Returns whether work is left; when there is none, the tick loop stops
+    /// (`ticking` is cleared) until [`Self::ensure_ticking`] starts it again.
+    fn tick(&mut self, cx: &mut Context<Self>) -> bool {
         let mut guard = self.session.borrow_mut();
         let Some(session) = guard.as_mut() else {
-            return;
+            self.ticking = false;
+            return false;
         };
         let mut changed = false;
         let mut reload = false;
@@ -207,7 +238,7 @@ impl DsctApp {
             Tick::Running => changed = true,
             Tick::Done(outcome) => {
                 if let FilterOutcome::Failed(msg) = outcome {
-                    self.message = Some((msg, true));
+                    self.filter_error = Some(msg);
                 }
                 self.selected_row = (session.displayed_count() > 0).then_some(0);
                 reload = true;
@@ -251,6 +282,7 @@ impl DsctApp {
             || session.stats_running();
         changed |= busy != self.busy;
         self.busy = busy;
+        self.ticking = busy;
         drop(guard);
 
         if rows_changed || reload {
@@ -269,6 +301,7 @@ impl DsctApp {
         if changed || rows_changed || reload {
             cx.notify();
         }
+        busy
     }
 
     /// Show the packet at displayed `row`.
@@ -282,6 +315,9 @@ impl DsctApp {
             session.load_packet(row);
             self.tree.reset(session);
         }
+        drop(guard);
+        // A placeholder waits for the in-order pass.
+        self.ensure_ticking(cx);
         cx.notify();
     }
 
@@ -290,13 +326,16 @@ impl DsctApp {
         let Some(session) = guard.as_mut() else {
             return;
         };
-        self.message = None;
+        self.filter_error = None;
         match session.apply_filter(text) {
-            Err(msg) => self.message = Some((msg, true)),
-            Ok(None) => {}
+            Err(msg) => self.filter_error = Some(msg),
+            Ok(None) => {
+                drop(guard);
+                self.ensure_ticking(cx);
+            }
             Ok(Some(outcome)) => {
                 if let FilterOutcome::Failed(msg) = outcome {
-                    self.message = Some((msg, true));
+                    self.filter_error = Some(msg);
                 }
                 self.selected_row = (session.displayed_count() > 0).then_some(0);
                 session.load_packet(0);
@@ -316,19 +355,25 @@ impl DsctApp {
     }
 
     fn follow_stream(&mut self, cx: &mut Context<Self>) {
-        if let Some(session) = self.session.borrow_mut().as_mut()
-            && let Err(msg) = session.start_follow_stream()
-        {
-            self.message = Some((msg, true));
-        }
-        cx.notify();
+        let started = self
+            .session
+            .borrow_mut()
+            .as_mut()
+            .map(Session::start_follow_stream);
+        self.start_job(started, cx);
     }
 
     fn stats(&mut self, cx: &mut Context<Self>) {
-        if let Some(session) = self.session.borrow_mut().as_mut()
-            && let Err(msg) = session.start_stats()
-        {
-            self.message = Some((msg, true));
+        let started = self.session.borrow_mut().as_mut().map(Session::start_stats);
+        self.start_job(started, cx);
+    }
+
+    /// Report a job that failed to start, or drive the one that did.
+    fn start_job(&mut self, started: Option<Result<(), String>>, cx: &mut Context<Self>) {
+        match started {
+            Some(Ok(())) => self.ensure_ticking(cx),
+            Some(Err(msg)) => self.message = Some((msg, true)),
+            None => {}
         }
         cx.notify();
     }
@@ -371,24 +416,39 @@ impl DsctApp {
     // -- Rendering ------------------------------------------------------------
 
     fn render_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let has_session = self.session.borrow().is_some();
-        let has_packet = self
-            .session
-            .borrow()
-            .as_ref()
-            .is_some_and(|s| s.selected.is_some());
-        h_flex()
+        let (has_session, has_packet, applied) = match self.session.borrow().as_ref() {
+            Some(s) => (true, s.selected.is_some(), s.applied_filter.clone()),
+            None => (false, false, String::new()),
+        };
+        // The text in the input is not the filter in effect until Enter.
+        let edited = has_session && *self.filter.read(cx).value() != *applied;
+        let theme = cx.theme();
+        let (danger, muted, border) = (theme.danger, theme.muted_foreground, theme.border);
+        let filter = h_flex()
+            .flex_1()
+            .gap_2()
+            .child(
+                div()
+                    .flex_1()
+                    .rounded(px(6.))
+                    .when(self.filter_error.is_some(), |d| {
+                        d.border_1().border_color(danger)
+                    })
+                    .child(Input::new(&self.filter).small()),
+            )
+            .when(edited && self.filter_error.is_none(), |d| {
+                d.child(div().text_xs().text_color(muted).child("Enter to apply"))
+            });
+        let toolbar = h_flex()
             .gap_2()
             .p_2()
-            .border_b_1()
-            .border_color(cx.theme().border)
             .child(
                 Button::new("open")
                     .label("Open…")
                     .small()
                     .on_click(cx.listener(|this, _, _, cx| this.prompt_open(cx))),
             )
-            .child(div().flex_1().child(Input::new(&self.filter).small()))
+            .child(filter)
             .child(
                 Button::new("follow")
                     .label("Follow Stream")
@@ -402,7 +462,19 @@ impl DsctApp {
                     .small()
                     .disabled(!has_session)
                     .on_click(cx.listener(|this, _, _, cx| this.stats(cx))),
-            )
+            );
+        v_flex()
+            .border_b_1()
+            .border_color(border)
+            .child(toolbar)
+            .children(self.filter_error.as_ref().map(|msg| {
+                div()
+                    .px_2()
+                    .pb_2()
+                    .text_sm()
+                    .text_color(danger)
+                    .child(format!("Filter error: {msg}"))
+            }))
     }
 
     fn render_tree(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
