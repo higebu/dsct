@@ -63,9 +63,8 @@ impl App {
 
         // Ignore mouse during overlays.
         if self.stream_view.is_some()
-            || self.filter_progress.is_some()
-            || self.parallel_scan.is_some()
-            || self.stream_build_progress.is_some()
+            || self.session.filter_running()
+            || self.session.stream_running()
         {
             return;
         }
@@ -141,7 +140,7 @@ impl App {
         }
 
         // Clamp detail tree scroll offset.
-        if let Some(sel) = &self.selected {
+        if let Some(sel) = &self.session.selected {
             let tree_len = sel.tree_nodes.len();
             if tree_len == 0 {
                 self.detail_tree.scroll_offset = 0;
@@ -196,7 +195,7 @@ impl App {
                     self.detail_tree.search_query.clear();
                 } else {
                     self.active_pane = Pane::FilterInput;
-                    self.filter.buf.input = self.filter.applied.clone();
+                    self.filter.buf.input = self.session.applied_filter.clone();
                     self.filter.buf.cursor = self.filter.buf.input.len();
                 }
             }
@@ -243,11 +242,11 @@ impl App {
             KeyCode::Char('n') => self.tree_search_next(),
             KeyCode::Char('N') => self.tree_search_prev(),
             KeyCode::Enter | KeyCode::Char(' ') => self.toggle_tree_node(),
-            KeyCode::Char('p') if self.live_mode == Some(LiveMode::Live) => {
-                self.live_mode = Some(LiveMode::Paused);
+            KeyCode::Char('p') if self.session.live_mode == Some(LiveMode::Live) => {
+                self.session.live_mode = Some(LiveMode::Paused);
             }
-            KeyCode::Char('r') if self.live_mode == Some(LiveMode::Paused) => {
-                self.live_mode = Some(LiveMode::Live);
+            KeyCode::Char('r') if self.session.live_mode == Some(LiveMode::Paused) => {
+                self.session.live_mode = Some(LiveMode::Live);
             }
             KeyCode::Char('f') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.start_follow_stream();
@@ -423,7 +422,7 @@ impl App {
             return;
         }
 
-        let sel = match &self.selected {
+        let sel = match &self.session.selected {
             Some(s) => s,
             None => {
                 self.detail_tree.search_completions.clear();
@@ -474,7 +473,7 @@ impl App {
         if query.is_empty() {
             return;
         }
-        let sel = match &self.selected {
+        let sel = match &self.session.selected {
             Some(s) => s,
             None => return,
         };
@@ -505,7 +504,7 @@ impl App {
         if query.is_empty() {
             return;
         }
-        let sel = match &self.selected {
+        let sel = match &self.session.selected {
             Some(s) => s,
             None => return,
         };
@@ -533,7 +532,7 @@ impl App {
     // -- Visual selection and yank --
 
     fn start_char_selection(&mut self) {
-        if let Some(sel) = &self.selected {
+        if let Some(sel) = &self.session.selected {
             let idx = self.detail_tree.selected;
             if let Some(node) = sel.tree_nodes.get(idx) {
                 self.detail_tree.selection = Some(SelectionState {
@@ -557,7 +556,7 @@ impl App {
     }
 
     fn yank_current_line(&mut self) {
-        if self.selected.is_some() {
+        if self.session.selected.is_some() {
             self.active_pane = Pane::YankPrompt;
         }
     }
@@ -590,7 +589,7 @@ impl App {
             }
             KeyCode::Char('l') | KeyCode::Right => {
                 if mode == SelectionMode::Char
-                    && let Some(sel) = &self.selected
+                    && let Some(sel) = &self.session.selected
                 {
                     let max_len = sel
                         .tree_nodes
@@ -637,7 +636,7 @@ impl App {
             Some(s) if s.mode == SelectionMode::Char => s,
             _ => return,
         };
-        if let Some(sel) = &self.selected
+        if let Some(sel) = &self.session.selected
             && let Some(node) = sel.tree_nodes.get(sel_state.anchor_node)
         {
             let start = sel_state.anchor_char;
@@ -654,7 +653,7 @@ impl App {
     }
 
     fn copy_as_text(&mut self) {
-        let sel = match &self.selected {
+        let sel = match &self.session.selected {
             Some(s) => s,
             None => return,
         };
@@ -700,7 +699,7 @@ impl App {
 
         let range = if let Some(sel_state) = &self.detail_tree.selection {
             if sel_state.mode == SelectionMode::Line {
-                let Some(sel) = self.selected.as_ref() else {
+                let Some(sel) = self.session.selected.as_ref() else {
                     return;
                 };
                 let vis = visible_nodes(&sel.tree_nodes)
@@ -872,18 +871,19 @@ impl App {
         let file = std::fs::File::create(path)?;
 
         let link_type = self
+            .session
             .filtered
             .first()
-            .and_then(|i| self.indices.get(i))
+            .and_then(|i| self.session.indices.get(i))
             .map(|idx| idx.link_type as u32)
             .unwrap_or(1);
 
         let mut writer = packet_dissector_pcap::PcapWriter::new(file, link_type)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
 
-        for pkt_idx in self.filtered.iter() {
-            let index = &self.indices[pkt_idx];
-            let data = match self.capture.packet_data(index) {
+        for pkt_idx in self.session.filtered.iter() {
+            let index = &self.session.indices[pkt_idx];
+            let data = match self.session.capture.packet_data(index) {
                 Some(d) => d,
                 None => continue,
             };
@@ -953,17 +953,21 @@ impl App {
                     protocol,
                     field,
                     value_query,
-                    &self.capture,
-                    &self.indices,
-                    &self.registry,
+                    &self.session.capture,
+                    &self.session.indices,
+                    &self.session.registry,
                 )
             } else {
                 Vec::new()
             }
         } else {
             // Protocol name or field name completion.
-            self.completion_engine
-                .complete(&token, &self.capture, &self.indices, &self.registry)
+            self.session.completion_engine.complete(
+                &token,
+                &self.session.capture,
+                &self.session.indices,
+                &self.session.registry,
+            )
         };
 
         self.filter.completions = items
@@ -976,7 +980,8 @@ impl App {
 
     /// Return the flat-array indices of all currently visible tree nodes.
     fn visible_node_indices(&self) -> Vec<usize> {
-        self.selected
+        self.session
+            .selected
             .as_ref()
             .map(|sel| visible_nodes(&sel.tree_nodes).map(|(idx, _)| idx).collect())
             .unwrap_or_default()
@@ -1173,7 +1178,7 @@ impl App {
         if self.active_pane != Pane::DetailTree {
             return;
         }
-        if let Some(sel) = &mut self.selected {
+        if let Some(sel) = &mut self.session.selected {
             let idx = self.detail_tree.selected;
             if idx < sel.tree_nodes.len() && sel.tree_nodes[idx].children_count > 0 {
                 sel.tree_nodes[idx].expanded = !sel.tree_nodes[idx].expanded;
@@ -1185,7 +1190,7 @@ impl App {
     ///
     /// If any node is expanded, collapse all. Otherwise, expand all.
     fn toggle_tree_expand_all(&mut self) {
-        if let Some(sel) = &mut self.selected {
+        if let Some(sel) = &mut self.session.selected {
             let any_expanded = sel
                 .tree_nodes
                 .iter()
@@ -1218,7 +1223,7 @@ impl App {
         if self.active_pane != Pane::DetailTree {
             return;
         }
-        if let Some(sel) = &mut self.selected {
+        if let Some(sel) = &mut self.session.selected {
             let idx = self.detail_tree.selected;
             if idx < sel.tree_nodes.len() && sel.tree_nodes[idx].children_count > 0 {
                 if !sel.tree_nodes[idx].expanded {
@@ -1243,7 +1248,7 @@ impl App {
         if self.active_pane != Pane::DetailTree {
             return;
         }
-        if let Some(sel) = &mut self.selected {
+        if let Some(sel) = &mut self.session.selected {
             let idx = self.detail_tree.selected;
             if idx < sel.tree_nodes.len() {
                 if sel.tree_nodes[idx].expanded && sel.tree_nodes[idx].children_count > 0 {
@@ -1308,14 +1313,14 @@ impl App {
             }
             // num is 1-based global packet number → find in the filter bitmap.
             let target_idx = num - 1; // 0-based index into `indices`
-            if self.filtered.contains(target_idx) {
-                self.packet_list.selected = self.filtered.rank(target_idx);
+            if self.session.filtered.contains(target_idx) {
+                self.packet_list.selected = self.session.filtered.rank(target_idx);
                 self.load_selected();
-            } else if target_idx < self.indices.len() {
+            } else if target_idx < self.session.indices.len() {
                 // Packet exists but not in current filter — jump to the nearest
                 // displayed packet (ties keep the lower packet index).
-                if let Some(nearest) = self.filtered.nearest(target_idx) {
-                    self.packet_list.selected = self.filtered.rank(nearest);
+                if let Some(nearest) = self.session.filtered.nearest(target_idx) {
+                    self.packet_list.selected = self.session.filtered.rank(nearest);
                     self.load_selected();
                 }
             }
@@ -1397,7 +1402,7 @@ mod tests {
             app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(app.stats_progress.is_some());
+        assert!(app.session.stats_progress.is_some());
     }
 
     #[test]

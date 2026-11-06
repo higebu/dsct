@@ -1,80 +1,31 @@
-//! Stats collection tick logic.
-
-use packet_dissector_core::packet::{DissectBuffer, Packet};
+//! Stats for the TUI: collects them in the [`Session`] and shows the
+//! result in the stats overlay.
+//!
+//! [`Session`]: super::session::Session
 
 use super::app::App;
-use super::state::StatsProgress;
+use super::session::Tick;
 
 impl App {
     /// Start collecting stats over the displayed packets.
     pub(super) fn start_stats(&mut self) {
-        let registry = match self.scan_registry() {
-            Ok(r) => r,
-            Err(e) => {
-                self.detail_tree.yank_message = Some(format!("Error: {e}"));
-                return;
-            }
-        };
-        self.stats_progress = Some(StatsProgress {
-            cursor: 0,
-            collector: crate::stats::StatsCollector::from_flags(
-                &crate::stats::StatsFlags::all_protocols(true, true),
-            ),
-            registry,
-        });
+        if let Err(msg) = self.session.start_stats() {
+            self.detail_tree.yank_message = Some(msg);
+        }
     }
-
-    /// Number of packets to scan per tick during stats collection.
-    const STATS_CHUNK_SIZE: usize = 10_000;
 
     /// Process one chunk of the in-progress stats collection.
     ///
     /// Returns `true` while the collection is still running.
     pub fn stats_tick(&mut self) -> bool {
-        let total = self.filtered.count_ones();
-        let progress = match &mut self.stats_progress {
-            Some(p) => p,
-            None => return false,
-        };
-
-        let end = (progress.cursor + Self::STATS_CHUNK_SIZE).min(total);
-        let mut dissect_buf = DissectBuffer::new();
-        // One select to position at the cursor, then cheap iteration over the
-        // chunk's matching packet indices.
-        let chunk_len = end - progress.cursor;
-        for idx in self.filtered.iter_from(progress.cursor).take(chunk_len) {
-            let index = &self.indices[idx];
-            let data = match self.capture.packet_data(index) {
-                Some(d) => d,
-                None => continue,
-            };
-            let buf = dissect_buf.clear_into();
-            if progress
-                .registry
-                .dissect_with_link_type(data, index.link_type as u32, buf)
-                .is_ok()
-            {
-                let packet = Packet::new(buf, data);
-                progress
-                    .collector
-                    .record_meta(index.timestamp_secs, index.timestamp_usecs);
-                progress.collector.process_packet(
-                    &packet,
-                    index.timestamp_secs,
-                    index.timestamp_usecs,
-                    index.original_len,
-                );
+        match self.session.stats_tick() {
+            Tick::Idle => false,
+            Tick::Running => true,
+            Tick::Done(output) => {
+                self.stats_output = Some(output);
+                false
             }
         }
-        progress.cursor = end;
-
-        if progress.cursor >= total {
-            if let Some(sp) = std::mem::take(&mut self.stats_progress) {
-                self.stats_output = Some(sp.collector.finalize(10));
-            }
-            return false;
-        }
-        true
     }
 }
 
@@ -87,7 +38,7 @@ mod tests {
     #[test]
     fn stats_tick_idle_returns_false() {
         let mut app = make_test_app(3);
-        assert!(app.stats_progress.is_none());
+        assert!(app.session.stats_progress.is_none());
         assert!(!app.stats_tick());
         assert!(app.stats_output.is_none());
     }
@@ -95,7 +46,7 @@ mod tests {
     #[test]
     fn stats_tick_runs_to_completion() {
         let mut app = make_test_app(5);
-        app.stats_progress = Some(StatsProgress {
+        app.session.stats_progress = Some(StatsProgress {
             cursor: 0,
             collector: StatsCollector::from_flags(&StatsFlags::all_protocols(true, true)),
             registry: packet_dissector::registry::DissectorRegistry::default(),

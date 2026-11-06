@@ -360,8 +360,6 @@ pub const DEFAULT_PANE_WEIGHTS: [u16; 3] = [35, 35, 30];
 pub struct FilterState {
     /// Text buffer with cursor for the filter input.
     pub buf: CursorBuffer,
-    /// The last successfully applied filter text.
-    pub applied: String,
     /// Error message from the most recent filter parse failure.
     pub error_message: Option<String>,
     /// Completion candidates for the current token.

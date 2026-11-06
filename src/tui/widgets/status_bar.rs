@@ -76,7 +76,7 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
             .add_modifier(Modifier::BOLD),
     ));
     // Live mode indicator (between MODE and file name sections).
-    if let Some(live_mode) = app.live_mode {
+    if let Some(live_mode) = app.session.live_mode {
         let (label, bg) = match live_mode {
             LiveMode::Live => ("\u{25B6} Live", LIVE_BG),
             LiveMode::Paused => ("\u{23F8} Paused", PAUSED_BG),
@@ -98,11 +98,11 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(SEP_RIGHT, Style::default().fg(bg).bg(INFO_BG)));
-    } else if app.index_progress.is_some() || app.bg_indexer.is_some() {
+    } else if app.session.index_progress.is_some() || app.session.bg_indexer.is_some() {
         // File indexing in progress indicator.
-        let pct = if let Some(ref bg) = app.bg_indexer {
+        let pct = if let Some(ref bg) = app.session.bg_indexer {
             (bg.fraction() * 100.0) as u32
-        } else if let Some(ref progress) = app.index_progress {
+        } else if let Some(ref progress) = app.session.index_progress {
             (progress.fraction() * 100.0) as u32
         } else {
             0
@@ -132,7 +132,7 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Section 2: File name + packet counts
     spans.push(Span::styled(
-        format!(" {} ", app.file_name),
+        format!(" {} ", app.session.file_name),
         Style::default().fg(INFO_FG).bg(INFO_BG),
     ));
     spans.push(Span::styled(
@@ -142,7 +142,7 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Section 3: Packet counts + time format
     let time_label = app.time_format.label();
-    let count_text = if !app.filter.applied.is_empty() {
+    let count_text = if !app.session.applied_filter.is_empty() {
         format!(" {displayed}/{total} [{time_label}] ")
     } else {
         format!(" {total} pkts [{time_label}] ")
@@ -154,10 +154,11 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Section 4: Selected packet summary (middle, dim)
     let sel_pkt_idx = app
+        .session
         .filtered
         .select(app.packet_list.selected)
         .unwrap_or(usize::MAX);
-    if let Some(summary) = app.summary_cache.get(&sel_pkt_idx) {
+    if let Some(summary) = app.session.summary_cache.get(&sel_pkt_idx) {
         spans.push(Span::styled(
             format!(
                 " {} {} \u{2192} {} ",
@@ -256,7 +257,7 @@ mod tests {
     #[test]
     fn status_bar_with_applied_filter_shows_ratio() {
         let mut app = make_test_app(3);
-        app.filter.applied = "udp".into();
+        app.session.applied_filter = "udp".into();
         let dump = render_to_string(120, 1, |f| {
             let area = Rect {
                 x: 0,

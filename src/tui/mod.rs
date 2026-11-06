@@ -28,6 +28,7 @@ mod ordered_pass;
 mod owned_packet;
 mod packet_codec;
 mod parallel_scan;
+mod session;
 mod state;
 mod stats_collect;
 mod stream;
@@ -91,8 +92,8 @@ pub fn run(file: PathBuf, decode_as_args: Vec<String>) -> Result<()> {
     )?;
 
     let mut app = app::App::new(capture, indices, registry, &file, decode_as_args);
-    app.bg_indexer = Some(bg_indexer);
-    app.ordered = Some(ordered);
+    app.session.bg_indexer = Some(bg_indexer);
+    app.session.ordered = Some(ordered);
 
     let mut terminal = event::init_terminal()?;
     let result = event::run_event_loop(&mut terminal, app);
@@ -164,7 +165,7 @@ pub fn run_live(decode_as_args: Vec<String>) -> Result<()> {
         let indices = Vec::new();
 
         let mut app = app::App::new_live(capture, indices, registry, copier, decode_as_args);
-        app.ordered = Some(ordered);
+        app.session.ordered = Some(ordered);
         event::run_event_loop(&mut terminal, app)
     })();
 

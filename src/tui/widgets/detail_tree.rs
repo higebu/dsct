@@ -21,6 +21,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let nodes = app
+        .session
         .selected
         .as_ref()
         .map(|sel| sel.tree_nodes.as_slice())

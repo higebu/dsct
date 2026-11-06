@@ -57,27 +57,29 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
     let prefetch_start = offset.saturating_sub(10);
     let prefetch_end = total.min(visible_end + 10);
     let prefetch_pkt_indices: Vec<usize> = app
+        .session
         .filtered
         .iter_from(prefetch_start)
         .take(prefetch_end - prefetch_start)
         .collect();
     for &pkt_idx in &prefetch_pkt_indices {
-        let _ = app.get_or_dissect_summary(pkt_idx);
+        let _ = app.session.get_or_dissect_summary(pkt_idx);
     }
 
     // Collect visible packet metadata first (avoids borrow conflicts with cache).
     let visible_packets: Vec<(usize, PacketIndex)> = app
+        .session
         .filtered
         .iter_from(offset)
         .take(visible_end.saturating_sub(offset))
         .filter_map(|pkt_idx| {
-            let index = app.indices.get(pkt_idx)?.clone();
+            let index = app.session.indices.get(pkt_idx)?.clone();
             Some((pkt_idx, index))
         })
         .collect();
 
     // Base packet for relative timestamps.
-    let base_index = app.indices.first().cloned();
+    let base_index = app.session.indices.first().cloned();
     let time_format = app.time_format;
 
     // Build visible rows and measure actual Source/Destination widths.
@@ -87,7 +89,7 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
     let rows: Vec<Row> = visible_packets
         .iter()
         .map(|(pkt_idx, index)| {
-            let summary = app.get_or_dissect_summary(*pkt_idx);
+            let summary = app.session.get_or_dissect_summary(*pkt_idx);
             let timestamp = match time_format {
                 TimeFormat::Absolute => loader::format_index_timestamp(index),
                 TimeFormat::Relative => {

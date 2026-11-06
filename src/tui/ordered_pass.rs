@@ -568,7 +568,7 @@ mod tests {
         let indices = loader::build_index(capture.as_bytes()).unwrap();
         let mut app = App::new(capture, indices, DissectorRegistry::default(), path, vec![]);
         let pass_capture = CaptureMap::new(&file).unwrap();
-        app.ordered =
+        app.session.ordered =
             Some(OrderedPass::spawn(pass_capture, DissectorRegistry::default(), None).unwrap());
         app
     }
@@ -578,8 +578,8 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             app.ordered_tick();
-            let pass = app.ordered.as_ref().unwrap();
-            if pass.processed() == app.indices.len() {
+            let pass = app.session.ordered.as_ref().unwrap();
+            if pass.processed() == app.session.indices.len() {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "pass did not finish");
@@ -591,7 +591,7 @@ mod tests {
     fn shown(app: &mut App, pkt_idx: usize) -> Shown {
         app.packet_list.selected = pkt_idx;
         app.load_selected();
-        let sel = app.selected.as_ref().unwrap();
+        let sel = app.session.selected.as_ref().unwrap();
         assert_eq!(sel.pkt_idx, pkt_idx);
         assert!(!sel.pending);
         let json = read_json(pkt_idx, &sel.packet.to_dissect_buf(), &sel.packet.data);
@@ -600,8 +600,8 @@ mod tests {
             .iter()
             .map(|n| (n.depth, n.label.clone()))
             .collect();
-        app.summary_cache.clear();
-        let s = app.get_or_dissect_summary(pkt_idx);
+        app.session.summary_cache.clear();
+        let s = app.session.get_or_dissect_summary(pkt_idx);
         Shown {
             tree,
             row: (
@@ -710,8 +710,8 @@ mod tests {
         for i in [4, 1, 6, 2, 8, 7] {
             app.packet_list.selected = i;
             app.load_selected();
-            assert!(app.selected.as_ref().unwrap().pending);
-            let _ = app.get_or_dissect_summary(i);
+            assert!(app.session.selected.as_ref().unwrap().pending);
+            let _ = app.session.get_or_dissect_summary(i);
         }
     }
 
@@ -782,23 +782,26 @@ mod tests {
 
         app.packet_list.selected = 6;
         app.load_selected();
-        let sel = app.selected.as_ref().unwrap();
+        let sel = app.session.selected.as_ref().unwrap();
         assert!(sel.pending);
         assert_eq!(sel.tree_nodes.len(), 1);
         assert_eq!(sel.tree_nodes[0].label, loader::PENDING_TEXT);
-        assert_eq!(app.get_or_dissect_summary(7).info, loader::PENDING_TEXT);
+        assert_eq!(
+            app.session.get_or_dissect_summary(7).info,
+            loader::PENDING_TEXT
+        );
         assert!(app.ordered_needs_tick());
 
         finish_pass(&mut app);
         assert!(!app.ordered_needs_tick());
-        let sel = app.selected.as_ref().unwrap();
+        let sel = app.session.selected.as_ref().unwrap();
         assert!(!sel.pending);
         let labels: Vec<&str> = sel.tree_nodes.iter().map(|n| n.label.as_str()).collect();
         assert_eq!(labels, self::labels(&reference[6]));
         // The placeholder row was dropped from the cache and is redone.
-        assert!(app.pending_rows.is_empty());
-        assert!(app.summary_cache.peek(&7).is_none());
-        let s = app.get_or_dissect_summary(7);
+        assert!(app.session.pending_rows.is_empty());
+        assert!(app.session.summary_cache.peek(&7).is_none());
+        let s = app.session.get_or_dissect_summary(7);
         assert_eq!(s.info, reference[7].row.3);
     }
 
@@ -809,7 +812,7 @@ mod tests {
         let tmp = write_pcap(&stateful_frames());
         let mut app = open_app(tmp.path());
         finish_pass(&mut app);
-        let pass = app.ordered.as_ref().unwrap();
+        let pass = app.session.ordered.as_ref().unwrap();
         let statuses: Vec<Status> = (0..10).map(|i| pass.status(i)).collect();
         use Status::{Stateful as F, Stateless as L};
         assert_eq!(statuses, [F, F, F, F, F, F, F, F, F, L]);
@@ -824,17 +827,17 @@ mod tests {
         let mut app = open_app(tmp.path());
         app.packet_list.selected = 6;
         app.load_selected();
-        assert!(app.selected.as_ref().unwrap().pending);
+        assert!(app.session.selected.as_ref().unwrap().pending);
 
         // Dropping the sender ends the pass thread.
-        app.ordered.as_mut().unwrap().feeder = None;
+        app.session.ordered.as_mut().unwrap().feeder = None;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while app.ordered.as_ref().unwrap().status(6) != Status::Unavailable {
+        while app.session.ordered.as_ref().unwrap().status(6) != Status::Unavailable {
             assert!(std::time::Instant::now() < deadline, "pass did not stop");
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert!(app.ordered_tick());
-        let sel = app.selected.as_ref().unwrap();
+        let sel = app.session.selected.as_ref().unwrap();
         assert!(!sel.pending);
         assert!(sel.tree_nodes.iter().any(|n| n.label == "TCP"));
         assert!(!app.ordered_needs_tick());
@@ -845,7 +848,8 @@ mod tests {
     fn pass_errors_are_reported() {
         let tmp = write_pcap(&stateful_frames());
         let mut app = open_app(tmp.path());
-        super::lock(&app.ordered.as_ref().unwrap().shared).error = Some("disk full".to_string());
+        super::lock(&app.session.ordered.as_ref().unwrap().shared).error =
+            Some("disk full".to_string());
         assert!(app.ordered_tick());
         let msg = app.detail_tree.yank_message.take().unwrap();
         assert!(msg.contains("disk full"), "{msg}");
@@ -878,9 +882,9 @@ mod tests {
         let mut app = open_app(tmp.path());
         app.packet_list.selected = 2;
         app.load_selected();
-        assert!(app.selected.as_ref().unwrap().pending);
+        assert!(app.session.selected.as_ref().unwrap().pending);
         app.start_follow_stream();
-        assert!(app.stream_build_progress.is_none());
+        assert!(app.session.stream_build_progress.is_none());
         assert!(app.detail_tree.yank_message.is_some());
     }
 }

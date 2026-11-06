@@ -1,45 +1,18 @@
 //! TUI application state and core accessors.
 
-use std::collections::HashSet;
-use std::num::NonZeroUsize;
-
-use lru::LruCache;
-use packet_dissector::registry::DissectorRegistry;
-
-use super::completion::CompletionEngine;
-use super::filter_bitmap::FilterBitmap;
 use super::live::StdinCopier;
-use super::loader;
-use super::ordered_pass::{self, OrderedPass, Status};
+use super::session::Session;
 use super::state::{
-    CaptureMap, CommandState, DEFAULT_PANE_WEIGHTS, DetailTreeState, FilterProgress, FilterState,
-    HexDumpState, IndexProgress, LiveMode, PacketIndex, PacketListState, Pane, PaneLayout,
-    RowSummary, SelectedPacket, StatsProgress, StreamBuildProgress, StreamViewState, TimeFormat,
+    CaptureMap, CommandState, DEFAULT_PANE_WEIGHTS, DetailTreeState, FilterState, HexDumpState,
+    LiveMode, PacketIndex, PacketListState, Pane, PaneLayout, StreamViewState, TimeFormat,
     TreeNode,
 };
+use packet_dissector::registry::DissectorRegistry;
 
-/// Maximum number of cached row summaries.
-#[allow(clippy::unwrap_used)]
-const SUMMARY_CACHE_CAPACITY: NonZeroUsize = NonZeroUsize::new(2000).unwrap();
-
-/// Top-level application state.
+/// Top-level application state: the [`Session`] and how the TUI shows it.
 pub struct App {
-    /// Capture file name (for status line display).
-    pub file_name: String,
-    /// Memory-mapped capture file.
-    pub capture: CaptureMap,
-    /// Minimal index of all packets (32 bytes each).
-    pub indices: Vec<PacketIndex>,
-    /// Bitmap of packets matching the current filter (one bit per packet).
-    pub filtered: FilterBitmap,
-    /// Dissector registry (for on-demand dissection).
-    pub registry: DissectorRegistry,
-    /// Fuzzy completion engine for filter input.
-    pub completion_engine: CompletionEngine,
-    /// LRU cache of dissected row summaries.
-    pub summary_cache: LruCache<usize, RowSummary>,
-    /// The currently selected packet's full data (loaded on demand).
-    pub selected: Option<SelectedPacket>,
+    /// The capture being explored, independent of how it is shown.
+    pub session: Session,
     /// Currently focused pane.
     pub active_pane: Pane,
     /// Packet list pane state.
@@ -50,14 +23,6 @@ pub struct App {
     pub hex_dump: HexDumpState,
     /// Filter input state.
     pub filter: FilterState,
-    /// In-progress filter scan (None = idle).
-    pub filter_progress: Option<FilterProgress>,
-    /// In-progress parallel filter scan (None = idle).
-    pub parallel_scan: Option<super::parallel_scan::ParallelFilterScan>,
-    /// Path of the capture file (None in live mode).
-    pub capture_path: Option<std::path::PathBuf>,
-    /// Decode-as arguments for rebuilding registries in parallel workers.
-    pub decode_as_args: Vec<String>,
     /// Maximized pane (None = normal layout).
     pub maximized_pane: Option<Pane>,
     /// Per-pane height weights [packet_list, detail_tree, hex_dump].
@@ -70,34 +35,14 @@ pub struct App {
     pub time_format: TimeFormat,
     /// Follow Stream view (None = not showing).
     pub stream_view: Option<StreamViewState>,
-    /// In-progress stream collection (chunked).
-    pub stream_build_progress: Option<StreamBuildProgress>,
     /// `:` command mode state (None = inactive).
     pub command: Option<CommandState>,
-    /// In-progress stats collection (None = idle).
-    pub stats_progress: Option<StatsProgress>,
     /// Completed stats output (shown as overlay).
     pub stats_output: Option<crate::stats::StatsOutput>,
     /// Cached pane layout rectangles (updated each render).
     pub pane_layout: PaneLayout,
     /// Whether the application is still running.
     pub running: bool,
-    /// Live capture mode (None for static file mode).
-    pub live_mode: Option<LiveMode>,
-    /// Background stdin copier (None for static file mode).
-    pub stdin_copier: Option<StdinCopier>,
-    /// Number of bytes already indexed (for incremental live indexing).
-    pub indexed_bytes: usize,
-    /// In-progress initial file indexing (None = idle or complete).
-    pub index_progress: Option<IndexProgress>,
-    /// Background indexer thread (None = idle or complete).
-    pub bg_indexer: Option<super::bg_indexer::BackgroundIndexer>,
-    /// In-order dissection pass providing the results of packets whose
-    /// dissection uses cross-packet state (None = dissect everything on
-    /// demand with `registry`).
-    pub ordered: Option<OrderedPass>,
-    /// Packet list rows cached as placeholders waiting for `ordered`.
-    pub pending_rows: HashSet<usize>,
 }
 
 impl App {
@@ -109,54 +54,13 @@ impl App {
         file_path: &std::path::Path,
         decode_as_args: Vec<String>,
     ) -> Self {
-        let file_name = file_path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| file_path.display().to_string());
-        let completion_engine = CompletionEngine::from_registry(&registry);
-        let filtered = FilterBitmap::all_set(indices.len());
-        let loaded_history = super::state::load_history();
-        let mut app = Self {
-            file_name,
+        Self::with_session(Session::new(
             capture,
             indices,
-            filtered,
             registry,
-            completion_engine,
-            summary_cache: LruCache::new(SUMMARY_CACHE_CAPACITY),
-            selected: None,
-            active_pane: Pane::PacketList,
-            packet_list: PacketListState::default(),
-            detail_tree: DetailTreeState::default(),
-            hex_dump: HexDumpState::default(),
-            filter: FilterState::default(),
-            filter_progress: None,
-            parallel_scan: None,
-            capture_path: Some(file_path.to_path_buf()),
+            file_path,
             decode_as_args,
-            maximized_pane: None,
-            pane_weights: DEFAULT_PANE_WEIGHTS,
-            pending_count: String::new(),
-            show_help: false,
-            stream_view: None,
-            stream_build_progress: None,
-            command: None,
-            stats_progress: None,
-            stats_output: None,
-            time_format: TimeFormat::default(),
-            pane_layout: PaneLayout::default(),
-            running: true,
-            live_mode: None,
-            stdin_copier: None,
-            indexed_bytes: 0,
-            index_progress: None,
-            bg_indexer: None,
-            ordered: None,
-            pending_rows: HashSet::new(),
-        };
-        app.filter.history = loaded_history;
-        app.load_selected();
-        app
+        ))
     }
 
     /// Create a new App for live stdin capture mode.
@@ -167,49 +71,35 @@ impl App {
         copier: StdinCopier,
         decode_as_args: Vec<String>,
     ) -> Self {
-        let completion_engine = CompletionEngine::from_registry(&registry);
-        // Start at 0 so the first live_tick() ingests any data that was
-        // already in the mmap (e.g. written before CaptureMap::new_live).
-        let indexed_bytes = 0;
-        let filtered = FilterBitmap::all_set(indices.len());
-        let loaded_history = super::state::load_history();
-        let mut app = Self {
-            file_name: "<stdin>".to_string(),
+        Self::with_session(Session::new_live(
             capture,
             indices,
-            filtered,
             registry,
-            completion_engine,
-            summary_cache: LruCache::new(SUMMARY_CACHE_CAPACITY),
-            selected: None,
+            copier,
+            decode_as_args,
+        ))
+    }
+
+    /// Create an App showing `session`, with the packet list focused.
+    fn with_session(session: Session) -> Self {
+        let loaded_history = super::state::load_history();
+        let mut app = Self {
+            session,
             active_pane: Pane::PacketList,
             packet_list: PacketListState::default(),
             detail_tree: DetailTreeState::default(),
             hex_dump: HexDumpState::default(),
             filter: FilterState::default(),
-            filter_progress: None,
-            parallel_scan: None,
-            capture_path: None,
-            decode_as_args,
             maximized_pane: None,
             pane_weights: DEFAULT_PANE_WEIGHTS,
             pending_count: String::new(),
             show_help: false,
             stream_view: None,
-            stream_build_progress: None,
             command: None,
-            stats_progress: None,
             stats_output: None,
             time_format: TimeFormat::default(),
             pane_layout: PaneLayout::default(),
             running: true,
-            live_mode: Some(LiveMode::Live),
-            stdin_copier: Some(copier),
-            indexed_bytes,
-            index_progress: None,
-            bg_indexer: None,
-            ordered: None,
-            pending_rows: HashSet::new(),
         };
         app.filter.history = loaded_history;
         app.load_selected();
@@ -218,17 +108,18 @@ impl App {
 
     /// Number of displayed (filtered) packets.
     pub fn displayed_count(&self) -> usize {
-        self.filtered.count_ones()
+        self.session.displayed_count()
     }
 
     /// Total number of packets in the capture.
     pub fn total_count(&self) -> usize {
-        self.indices.len()
+        self.session.total_count()
     }
 
     /// Get the selected packet number (1-based), or 0 if nothing selected.
     pub fn selected_number(&self) -> u64 {
-        self.filtered
+        self.session
+            .filtered
             .select(self.packet_list.selected)
             .map(|idx| idx as u64 + 1)
             .unwrap_or(0)
@@ -236,80 +127,22 @@ impl App {
 
     /// Get the raw bytes of the selected packet from the mmap (zero-copy).
     pub fn selected_raw_bytes(&self) -> Option<&[u8]> {
-        let sel = self.selected.as_ref()?;
-        let index = self.indices.get(sel.pkt_idx)?;
-        self.capture.packet_data(index)
+        self.session.selected_raw_bytes()
     }
 
     /// Get the byte range highlighted by the currently selected tree node.
     pub fn selected_byte_range(&self) -> Option<std::ops::Range<usize>> {
-        let sel = self.selected.as_ref()?;
+        let sel = self.session.selected.as_ref()?;
         sel.tree_nodes
             .get(self.detail_tree.selected)
             .map(|node| node.byte_range.clone())
-    }
-
-    /// Get or compute a row summary for the given packet index.
-    ///
-    /// Uses the summary cache to avoid re-dissecting packets that have already
-    /// been rendered.
-    pub fn get_or_dissect_summary(&mut self, pkt_idx: usize) -> &RowSummary {
-        if !self.summary_cache.contains(&pkt_idx)
-            && let Some(index) = self.indices.get(pkt_idx)
-            && let Some(data) = self.capture.packet_data(index)
-        {
-            let (summary, pending) = ordered_pass::row_summary(
-                &self.registry,
-                self.ordered.as_ref(),
-                pkt_idx,
-                data,
-                index.link_type as u32,
-            );
-            if pending {
-                self.pending_rows.insert(pkt_idx);
-            }
-            self.summary_cache.put(pkt_idx, summary);
-        }
-        static DEFAULT: RowSummary = RowSummary {
-            source: String::new(),
-            destination: String::new(),
-            protocol: "",
-            info: String::new(),
-        };
-        self.summary_cache.get(&pkt_idx).unwrap_or(&DEFAULT)
     }
 
     /// Load the full data for the currently selected packet from the mmap.
     pub(super) fn load_selected(&mut self) {
         self.detail_tree.selected = 0;
         self.detail_tree.scroll_offset = 0;
-
-        if let Some(pkt_idx) = self.filtered.select(self.packet_list.selected) {
-            if let Some(index) = self.indices.get(pkt_idx) {
-                if let Some(data) = self.capture.packet_data(index) {
-                    self.selected = Some(ordered_pass::selected_packet(
-                        &self.registry,
-                        self.ordered.as_ref(),
-                        pkt_idx,
-                        data,
-                        index.link_type as u32,
-                    ));
-                } else {
-                    self.selected = None;
-                }
-            } else {
-                self.selected = None;
-            }
-        } else {
-            self.selected = None;
-        }
-    }
-
-    /// A fresh registry configured like `registry`, for scans that dissect
-    /// packets in capture order and must not see the state the on-demand
-    /// display dissection left in `registry`.
-    pub(super) fn scan_registry(&self) -> crate::error::Result<DissectorRegistry> {
-        super::new_registry(&self.decode_as_args)
+        self.session.load_packet(self.packet_list.selected);
     }
 
     // -- In-order dissection pass ---------------------------------------------
@@ -319,178 +152,29 @@ impl App {
     ///
     /// Returns `true` if the display changed.
     pub fn ordered_tick(&mut self) -> bool {
-        let Some(pass) = &mut self.ordered else {
-            return false;
-        };
-        pass.feed(&self.indices);
-        let pass = &*pass;
-
-        let mut changed = false;
-        if let Some(e) = pass.take_error() {
+        let tick = self.session.ordered_tick();
+        if let Some(e) = &tick.error {
             self.detail_tree.yank_message =
                 Some(format!("Error: {e}; dissecting packets on demand instead"));
-            changed = true;
         }
-        let summary_cache = &mut self.summary_cache;
-        self.pending_rows.retain(|&pkt_idx| {
-            if pass.status(pkt_idx) == Status::Pending {
-                return true;
-            }
-            changed |= summary_cache.pop(&pkt_idx).is_some();
-            false
-        });
-        let reload = self
-            .selected
-            .as_ref()
-            .is_some_and(|sel| sel.pending && pass.status(sel.pkt_idx) != Status::Pending);
-        if reload {
+        if tick.reload_selected {
             self.load_selected();
-            changed = true;
         }
-        changed
+        tick.changed
     }
 
     /// Whether the event loop must keep calling [`ordered_tick`](Self::ordered_tick):
     /// packets are left to feed or placeholders are shown.
     pub fn ordered_needs_tick(&self) -> bool {
-        let Some(pass) = &self.ordered else {
-            return false;
-        };
-        !pass.fully_fed(self.indices.len())
-            || !self.pending_rows.is_empty()
-            || self.selected.as_ref().is_some_and(|sel| sel.pending)
+        self.session.ordered_needs_tick()
     }
 
     // -- Chunked file indexing ------------------------------------------------
 
-    /// Number of records to index per tick (used for synchronous fallback).
-    const INDEX_CHUNK_SIZE: usize = 5_000;
-
-    /// Maximum wall-clock time to spend indexing per tick before yielding back
-    /// to the event loop.  Targeting ~60 fps keeps the UI responsive.
-    const INDEX_TIME_BUDGET: std::time::Duration = std::time::Duration::from_millis(16);
-
-    /// Maximum number of entries to pre-allocate on first tick.
-    ///
-    /// Caps the upfront allocation to ~32 MB (indices) + ~8 MB (filtered)
-    /// regardless of file size.  The vecs grow naturally beyond this if needed.
-    const MAX_PREALLOC: usize = 1_000_000;
-
-    /// Drive one tick of file indexing.
-    ///
-    /// When a [`BackgroundIndexer`] is active, this drains results from the
-    /// background thread's channel — the main thread never does indexing work
-    /// itself, keeping the event loop fully responsive.
-    ///
-    /// Falls back to synchronous chunked indexing via [`IndexProgress`] when
-    /// no background indexer is present (e.g. live capture mode).
+    /// Drive one tick of file indexing (see [`Session::index_tick`]).
     pub fn index_tick(&mut self) {
-        if self.bg_indexer.is_some() {
-            self.bg_index_tick();
-        } else {
-            self.sync_index_tick();
-        }
-    }
-
-    /// Drain results from the background indexer thread.
-    fn bg_index_tick(&mut self) {
-        let bg = match &self.bg_indexer {
-            Some(b) => b,
-            None => return,
-        };
-
-        let (new_records, done) = bg.drain();
-
-        if !new_records.is_empty() {
-            // Capped pre-allocation on first batch.
-            if self.indices.is_empty() {
-                let estimate = (bg.total_bytes / 80).min(Self::MAX_PREALLOC);
-                self.indices.reserve(estimate);
-                self.filtered.reserve(estimate);
-            }
-
-            let old_count = self.indices.len();
-            let new_count = new_records.len();
-            self.indices.extend(new_records);
-            // No filter is active during initial indexing: every new packet is
-            // displayed, so set the corresponding bits (identity growth).
-            self.filtered
-                .push_set_range(old_count..old_count + new_count);
-
-            // Select the first packet as soon as we have data.
-            if old_count == 0 && !self.indices.is_empty() && self.selected.is_none() {
-                self.load_selected();
-            }
-        }
-
-        if done {
-            self.bg_indexer = None;
-        }
-    }
-
-    /// Synchronous chunked indexing fallback (used when no background thread
-    /// is available, e.g. during live capture incremental re-indexing).
-    fn sync_index_tick(&mut self) {
-        let progress = match &mut self.index_progress {
-            Some(p) => p,
-            None => return,
-        };
-
-        // Capped pre-allocation on the first tick.
-        if self.indices.is_empty() {
-            let estimate = (progress.total_bytes / 80).min(Self::MAX_PREALLOC);
-            self.indices.reserve(estimate);
-            self.filtered.reserve(estimate);
-        }
-
-        let deadline = std::time::Instant::now() + Self::INDEX_TIME_BUDGET;
-
-        loop {
-            let progress = match &mut self.index_progress {
-                Some(p) => p,
-                None => return,
-            };
-
-            let data = self.capture.as_bytes();
-            let new_records =
-                match loader::index_chunk(data, &mut progress.state, Self::INDEX_CHUNK_SIZE) {
-                    Ok(records) => records,
-                    Err(_) => {
-                        // Indexing failed; finalize with what we have.
-                        self.index_progress = None;
-                        if !self.indices.is_empty() {
-                            self.load_selected();
-                        }
-                        return;
-                    }
-                };
-
-            let old_count = self.indices.len();
-            let new_count = new_records.len();
-            self.indices.extend(new_records);
-
-            // Set bits for the new packets (no filter is active during initial
-            // indexing).
-            self.filtered
-                .push_set_range(old_count..old_count + new_count);
-
-            // Read `done` before releasing the mutable borrow on `index_progress`
-            // so that `self.load_selected()` can borrow `self` mutably.
-            let done = progress.state.done;
-
-            // Select the first packet as soon as we have some data.
-            if old_count == 0 && !self.indices.is_empty() && self.selected.is_none() {
-                self.load_selected();
-            }
-
-            if done {
-                self.index_progress = None;
-                return;
-            }
-
-            if std::time::Instant::now() >= deadline {
-                break;
-            }
+        if self.session.index_tick() {
+            self.load_selected();
         }
     }
 
@@ -498,14 +182,9 @@ impl App {
 
     /// Check the background copier for EOF and transition to Complete if so.
     pub fn check_eof(&mut self) {
-        if let Some(ref copier) = self.stdin_copier
-            && copier.eof.load(std::sync::atomic::Ordering::Acquire)
-        {
-            self.live_mode = Some(LiveMode::Complete);
-            // Do a final refresh to pick up any remaining data.
-            // Refresh failure is benign; the next tick will retry.
-            let _ = self.capture.refresh();
-            self.ingest_new_packets();
+        let old_displayed = self.session.displayed_count();
+        if self.session.check_eof() {
+            self.follow_new_packets(old_displayed);
         }
     }
 
@@ -513,73 +192,22 @@ impl App {
     /// optionally auto-scroll.  Called from the event loop when
     /// `live_mode == Live`.
     pub fn live_tick(&mut self) {
-        if self.live_mode != Some(LiveMode::Live) {
-            return;
+        let old_displayed = self.session.displayed_count();
+        if self.session.live_tick() {
+            self.follow_new_packets(old_displayed);
         }
-
-        // Check for EOF first.
-        if let Some(ref copier) = self.stdin_copier
-            && copier.eof.load(std::sync::atomic::Ordering::Acquire)
-        {
-            self.live_mode = Some(LiveMode::Complete);
-        }
-
-        // Check if the file has grown.
-        let new_bytes = self
-            .stdin_copier
-            .as_ref()
-            .map(|c| c.bytes_written.load(std::sync::atomic::Ordering::Acquire) as usize)
-            .unwrap_or(0);
-        if new_bytes <= self.indexed_bytes {
-            return;
-        }
-
-        // Refresh the mmap to see new data, then re-index.
-        // We call ingest even if refresh() returns false: the initial mmap
-        // created by new_live() may already contain unindexed data (e.g.
-        // after wait_for_first_data).
-        // Refresh failure is benign; ingest_new_packets tolerates stale data.
-        let _ = self.capture.refresh();
-        self.ingest_new_packets();
     }
 
-    /// Re-index the capture data and append any new packets found.
-    fn ingest_new_packets(&mut self) {
-        let data = self.capture.as_bytes();
-        if data.len() < 4 {
-            return;
-        }
-        let all_indices = match loader::build_index(data) {
-            Ok(idx) => idx,
-            Err(_) => return,
-        };
-
-        let old_count = self.indices.len();
-        let old_displayed = self.filtered.count_ones();
+    /// Auto-scroll after the capture was re-indexed: if the selection was on
+    /// the last of the `old_displayed` packets, follow new packets.
+    fn follow_new_packets(&mut self, old_displayed: usize) {
         let was_at_bottom =
             old_displayed == 0 || self.packet_list.selected >= old_displayed.saturating_sub(1);
-
-        if all_indices.len() > old_count {
-            let new_packets = &all_indices[old_count..];
-            self.indices.extend_from_slice(new_packets);
-
-            let start = old_count;
-            let end = self.indices.len();
-            if self.filter.applied.is_empty() {
-                // No filter active: display the new packets (set their bits).
-                self.filtered.push_set_range(start..end);
-            } else {
-                // A filter is active: new packets are not in the view, but the
-                // universe must still grow so rank/select stay consistent.
-                self.filtered.extend_universe(end);
-            }
-        }
-
-        self.indexed_bytes = data.len();
-
-        // Auto-scroll: if user was at the bottom, follow new packets.
-        if was_at_bottom && self.live_mode == Some(LiveMode::Live) && !self.filtered.is_empty() {
-            self.packet_list.selected = self.filtered.count_ones() - 1;
+        if was_at_bottom
+            && self.session.live_mode == Some(LiveMode::Live)
+            && !self.session.filtered.is_empty()
+        {
+            self.packet_list.selected = self.session.filtered.count_ones() - 1;
             self.load_selected();
         }
     }
@@ -604,6 +232,8 @@ pub fn visible_nodes(nodes: &[TreeNode]) -> impl Iterator<Item = (usize, &TreeNo
 
 #[cfg(test)]
 mod tests {
+    use super::super::loader;
+    use super::super::session::SUMMARY_CACHE_CAPACITY;
     use super::super::state::{DEFAULT_PANE_WEIGHTS, SelectionMode, StreamLine, StreamViewState};
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -641,7 +271,7 @@ mod tests {
         assert_eq!(app.displayed_count(), 5);
         assert_eq!(app.total_count(), 5);
         assert!(app.running);
-        assert!(app.selected.is_some());
+        assert!(app.session.selected.is_some());
     }
 
     #[test]
@@ -729,7 +359,7 @@ mod tests {
         let mut app = make_test_app(0);
         app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
         assert_eq!(app.packet_list.selected, 0);
-        assert!(app.selected.is_none());
+        assert!(app.session.selected.is_none());
     }
 
     #[test]
@@ -744,12 +374,12 @@ mod tests {
     fn summary_cache_works() {
         let mut app = make_test_app(5);
         // First call — cache miss, dissects
-        let s = app.get_or_dissect_summary(0);
+        let s = app.session.get_or_dissect_summary(0);
         assert_eq!(s.source, "10.0.0.1");
-        assert_eq!(app.summary_cache.len(), 1);
+        assert_eq!(app.session.summary_cache.len(), 1);
         // Second call — cache hit
-        let _ = app.get_or_dissect_summary(0);
-        assert_eq!(app.summary_cache.len(), 1);
+        let _ = app.session.get_or_dissect_summary(0);
+        assert_eq!(app.session.summary_cache.len(), 1);
     }
 
     #[test]
@@ -832,6 +462,7 @@ mod tests {
         let mut app = make_test_app(1);
         // Initially all collapsed.
         let all_collapsed = app
+            .session
             .selected
             .as_ref()
             .unwrap()
@@ -843,6 +474,7 @@ mod tests {
         // Expand all.
         app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
         let any_expanded = app
+            .session
             .selected
             .as_ref()
             .unwrap()
@@ -854,6 +486,7 @@ mod tests {
         // Collapse all.
         app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
         let all_collapsed = app
+            .session
             .selected
             .as_ref()
             .unwrap()
@@ -1121,7 +754,7 @@ mod tests {
         use ratatui::backend::TestBackend;
 
         let mut app = make_test_app(3);
-        app.filter.applied = "udp".into();
+        app.session.applied_filter = "udp".into();
 
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1146,11 +779,11 @@ mod tests {
     #[test]
     fn payload_to_ascii_converts() {
         assert_eq!(
-            super::super::stream::payload_to_ascii(b"Hello\x00\x01"),
+            super::super::session::payload_to_ascii(b"Hello\x00\x01"),
             "Hello.."
         );
-        assert_eq!(super::super::stream::payload_to_ascii(b"AB\nCD"), "AB\nCD");
-        assert_eq!(super::super::stream::payload_to_ascii(b"\t \r"), "\t \r");
+        assert_eq!(super::super::session::payload_to_ascii(b"AB\nCD"), "AB\nCD");
+        assert_eq!(super::super::session::payload_to_ascii(b"\t \r"), "\t \r");
     }
 
     // -- visible_nodes edge cases --
@@ -1194,6 +827,7 @@ mod tests {
         // 'l' on a collapsed node should expand it
         app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
         let expanded = app
+            .session
             .selected
             .as_ref()
             .unwrap()
@@ -1206,6 +840,7 @@ mod tests {
         // 'h' on an expanded node should collapse it
         app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
         let expanded = app
+            .session
             .selected
             .as_ref()
             .unwrap()
@@ -1256,6 +891,7 @@ mod tests {
         // Enter toggles expand on node with children
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let expanded = app
+            .session
             .selected
             .as_ref()
             .unwrap()
@@ -1267,6 +903,7 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let collapsed = app
+            .session
             .selected
             .as_ref()
             .unwrap()
@@ -1703,11 +1340,11 @@ mod tests {
         let mut app = make_test_app(5);
         // Fill cache with entries
         for i in 0..5 {
-            let _ = app.get_or_dissect_summary(i);
+            let _ = app.session.get_or_dissect_summary(i);
         }
-        assert_eq!(app.summary_cache.len(), 5);
+        assert_eq!(app.session.summary_cache.len(), 5);
         // LRU eviction keeps the cache bounded without full wipe
-        assert!(app.summary_cache.len() <= SUMMARY_CACHE_CAPACITY.get());
+        assert!(app.session.summary_cache.len() <= SUMMARY_CACHE_CAPACITY.get());
     }
 
     // -- jump_to_packet_number edge cases --
@@ -1934,8 +1571,11 @@ mod tests {
     #[test]
     fn live_mode_initial_state() {
         let (app, _tmp) = make_live_test_app();
-        assert_eq!(app.live_mode, Some(super::super::state::LiveMode::Live));
-        assert_eq!(app.file_name, "<stdin>");
+        assert_eq!(
+            app.session.live_mode,
+            Some(super::super::state::LiveMode::Live)
+        );
+        assert_eq!(app.session.file_name, "<stdin>");
         assert_eq!(app.total_count(), 3);
         assert_eq!(app.displayed_count(), 3);
     }
@@ -1945,23 +1585,23 @@ mod tests {
         use super::super::state::LiveMode;
 
         let (mut app, _tmp) = make_live_test_app();
-        assert_eq!(app.live_mode, Some(LiveMode::Live));
+        assert_eq!(app.session.live_mode, Some(LiveMode::Live));
 
         // Press 'p' → Paused.
         app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
-        assert_eq!(app.live_mode, Some(LiveMode::Paused));
+        assert_eq!(app.session.live_mode, Some(LiveMode::Paused));
 
         // Press 'p' again → still Paused (idempotent).
         app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
-        assert_eq!(app.live_mode, Some(LiveMode::Paused));
+        assert_eq!(app.session.live_mode, Some(LiveMode::Paused));
 
         // Press 'r' → Live.
         app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
-        assert_eq!(app.live_mode, Some(LiveMode::Live));
+        assert_eq!(app.session.live_mode, Some(LiveMode::Live));
 
         // Press 'r' again → still Live (idempotent).
         app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
-        assert_eq!(app.live_mode, Some(LiveMode::Live));
+        assert_eq!(app.session.live_mode, Some(LiveMode::Live));
     }
 
     #[test]
@@ -1969,25 +1609,25 @@ mod tests {
         use super::super::state::LiveMode;
 
         let (mut app, _tmp) = make_live_test_app();
-        app.live_mode = Some(LiveMode::Complete);
+        app.session.live_mode = Some(LiveMode::Complete);
 
         app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
-        assert_eq!(app.live_mode, Some(LiveMode::Complete));
+        assert_eq!(app.session.live_mode, Some(LiveMode::Complete));
 
         app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
-        assert_eq!(app.live_mode, Some(LiveMode::Complete));
+        assert_eq!(app.session.live_mode, Some(LiveMode::Complete));
     }
 
     #[test]
     fn live_pause_resume_ignored_in_file_mode() {
         let mut app = make_test_app(5);
-        assert_eq!(app.live_mode, None);
+        assert_eq!(app.session.live_mode, None);
 
         app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
-        assert_eq!(app.live_mode, None);
+        assert_eq!(app.session.live_mode, None);
 
         app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
-        assert_eq!(app.live_mode, None);
+        assert_eq!(app.session.live_mode, None);
     }
 
     #[test]
@@ -2005,7 +1645,7 @@ mod tests {
         tmp.flush().unwrap();
 
         // Update the copier's bytes_written so live_tick sees growth.
-        if let Some(ref copier) = app.stdin_copier {
+        if let Some(ref copier) = app.session.stdin_copier {
             copier
                 .bytes_written
                 .store(pcap_6.len() as u64, std::sync::atomic::Ordering::Release);
@@ -2023,7 +1663,7 @@ mod tests {
         use std::io::{Seek, Write};
 
         let (mut app, mut tmp) = make_live_test_app();
-        app.live_mode = Some(LiveMode::Paused);
+        app.session.live_mode = Some(LiveMode::Paused);
 
         // Grow the file.
         let pcap_6 = super::super::loader::tests::build_pcap_for_test(6);
@@ -2032,7 +1672,7 @@ mod tests {
         tmp.write_all(&pcap_6).unwrap();
         tmp.flush().unwrap();
 
-        if let Some(ref copier) = app.stdin_copier {
+        if let Some(ref copier) = app.session.stdin_copier {
             copier
                 .bytes_written
                 .store(pcap_6.len() as u64, std::sync::atomic::Ordering::Release);
@@ -2049,15 +1689,15 @@ mod tests {
         use super::super::state::LiveMode;
 
         let (mut app, _tmp) = make_live_test_app();
-        assert_eq!(app.live_mode, Some(LiveMode::Live));
+        assert_eq!(app.session.live_mode, Some(LiveMode::Live));
 
         // Signal EOF.
-        if let Some(ref copier) = app.stdin_copier {
+        if let Some(ref copier) = app.session.stdin_copier {
             copier.eof.store(true, std::sync::atomic::Ordering::Release);
         }
 
         app.check_eof();
-        assert_eq!(app.live_mode, Some(LiveMode::Complete));
+        assert_eq!(app.session.live_mode, Some(LiveMode::Complete));
     }
 
     #[test]
@@ -2075,7 +1715,7 @@ mod tests {
         tmp.write_all(&pcap_6).unwrap();
         tmp.flush().unwrap();
 
-        if let Some(ref copier) = app.stdin_copier {
+        if let Some(ref copier) = app.session.stdin_copier {
             copier
                 .bytes_written
                 .store(pcap_6.len() as u64, std::sync::atomic::Ordering::Release);
@@ -2102,7 +1742,7 @@ mod tests {
         tmp.write_all(&pcap_6).unwrap();
         tmp.flush().unwrap();
 
-        if let Some(ref copier) = app.stdin_copier {
+        if let Some(ref copier) = app.session.stdin_copier {
             copier
                 .bytes_written
                 .store(pcap_6.len() as u64, std::sync::atomic::Ordering::Release);
@@ -2305,7 +1945,7 @@ mod tests {
         tmp.as_file().flush().unwrap();
 
         // Update bytes_written (copier would do this).
-        if let Some(ref copier) = app.stdin_copier {
+        if let Some(ref copier) = app.session.stdin_copier {
             copier
                 .bytes_written
                 .store(pcap.len() as u64, std::sync::atomic::Ordering::Release);
