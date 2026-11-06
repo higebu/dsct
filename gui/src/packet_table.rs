@@ -33,12 +33,17 @@ const COLUMNS: [(&str, &str, f32); 7] = [
 /// Rows of the table are the session's displayed (filtered) packets.
 pub struct PacketTable {
     session: SharedSession,
+    /// How the Time column shows timestamps.
+    pub time_format: format::TimeFormat,
 }
 
 impl PacketTable {
     /// A table showing the packets of `session`.
     pub fn new(session: SharedSession) -> Self {
-        Self { session }
+        Self {
+            session,
+            time_format: format::TimeFormat::default(),
+        }
     }
 
     /// The protocol of the packet at `row`, dissecting it on demand.
@@ -67,9 +72,24 @@ impl PacketTable {
             return String::new();
         };
         match col {
-            0 => (pkt_idx + 1).to_string(),
-            1 => loader::format_index_timestamp(&index),
-            5 => index.original_len.to_string(),
+            NO_COL => (pkt_idx + 1).to_string(),
+            TIME_COL => match self.time_format {
+                format::TimeFormat::Absolute => loader::format_index_timestamp(&index),
+                format::TimeFormat::Relative => match session.indices.first() {
+                    Some(first) => loader::format_relative_timestamp(&index, first),
+                    None => String::new(),
+                },
+                // Since the previous displayed packet, as in the TUI.
+                format::TimeFormat::Delta => match row
+                    .checked_sub(1)
+                    .and_then(|prev| session.filtered.select(prev))
+                    .and_then(|prev| session.indices.get(prev))
+                {
+                    Some(prev) => loader::format_delta_timestamp(&index, prev),
+                    None => loader::format_delta_timestamp(&index, &index),
+                },
+            },
+            LEN_COL => index.original_len.to_string(),
             _ => {
                 let summary = session.get_or_dissect_summary(pkt_idx);
                 match col {
@@ -97,6 +117,11 @@ impl TableDelegate for PacketTable {
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
         let (key, name, width) = COLUMNS[col_ix];
+        let width = if col_ix == TIME_COL {
+            self.time_format.column_width()
+        } else {
+            width
+        };
         let column = Column::new(key, name).width(px(width));
         if matches!(col_ix, NO_COL | LEN_COL) {
             column.text_right()

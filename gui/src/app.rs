@@ -1,5 +1,5 @@
-//! The main window: toolbar, packet table, detail tree, hex dump, an
-//! optional Follow Stream / Stats panel, and a status bar.
+//! The main window: toolbar, packet table, detail tree, hex dump, the
+//! Follow Stream / Stats panel, and a status bar.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -16,45 +16,72 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::format;
+use crate::bottom::{BottomPanel, StreamView};
+use crate::format::{self, TimeFormat};
 use crate::packet_table::PacketTable;
-use crate::{Open, SharedSession};
+use crate::{
+    CloseBottom, CycleTimeFormat, FocusBytes, FocusDetails, FocusNextPane, FocusPackets,
+    FocusPrevPane, Open, SharedSession,
+};
 
 /// How often background work (indexing, the in-order pass, filter scans)
 /// is driven while there is any; nothing runs while the session is idle.
 const TICK_INTERVAL: Duration = Duration::from_millis(16);
 
-/// Contents of the bottom panel.
-enum BottomPanel {
-    /// A followed stream: title and lines, `true` for client → server.
-    Stream {
-        title: String,
-        lines: Vec<(String, bool)>,
-    },
-    /// Stats as pretty-printed JSON lines.
-    Stats(Vec<String>),
+/// Key context of the packet table (set by gpui-component).
+pub const TABLE_CONTEXT: &str = "DataTable";
+/// Key context of the detail tree.
+pub const TREE_CONTEXT: &str = "DetailTree";
+/// Key context of the hex dump.
+pub const HEX_CONTEXT: &str = "HexDump";
+
+/// The panes keyboard focus moves between, in Tab order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    Packets,
+    Details,
+    Bytes,
 }
 
-/// Which detail tree nodes are shown and selected, and where the hex dump
-/// is scrolled.
-struct TreeView {
+impl Pane {
+    const ORDER: [Pane; 3] = [Pane::Packets, Pane::Details, Pane::Bytes];
+
+    fn step(self, forward: bool) -> Self {
+        let i = Self::ORDER.iter().position(|p| *p == self).unwrap_or(0);
+        let n = Self::ORDER.len();
+        Self::ORDER[if forward {
+            (i + 1) % n
+        } else {
+            (i + n - 1) % n
+        }]
+    }
+}
+
+/// Which detail tree node is selected, what is visible, and where the tree
+/// and the hex dump are scrolled.
+pub struct TreeView {
     /// Index into the selected packet's tree nodes.
-    selected: Option<usize>,
+    pub selected: Option<usize>,
     /// Tree nodes shown (not inside a collapsed node), by index.
-    visible: Vec<usize>,
-    hex_scroll: UniformListScrollHandle,
+    pub visible: Vec<usize>,
+    /// Byte under the hex dump's keyboard cursor.
+    pub hex_cursor: Option<usize>,
+    pub tree_scroll: UniformListScrollHandle,
+    pub hex_scroll: UniformListScrollHandle,
 }
 
 impl TreeView {
     /// Show the newly selected packet of `session` from its top.
-    fn reset(&mut self, session: &Session) {
+    pub fn reset(&mut self, session: &Session) {
         self.selected = None;
+        self.hex_cursor = None;
+        self.tree_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.hex_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.refresh(session);
     }
 
-    /// Recompute the visible nodes after expanding or collapsing one.
-    fn refresh(&mut self, session: &Session) {
+    /// Recompute the visible nodes after expanding or collapsing some.
+    pub fn refresh(&mut self, session: &Session) {
         self.visible = session
             .selected
             .as_ref()
@@ -65,13 +92,16 @@ impl TreeView {
 
 /// The application window's root view.
 pub struct DsctApp {
-    session: SharedSession,
+    pub(crate) session: SharedSession,
     table: Entity<TableState<PacketTable>>,
     filter: Entity<InputState>,
+    pub(crate) tree_focus: FocusHandle,
+    pub(crate) hex_focus: FocusHandle,
     /// Displayed row of the selected packet.
     selected_row: Option<usize>,
-    tree: TreeView,
-    bottom: Option<BottomPanel>,
+    pub(crate) tree: TreeView,
+    pub(crate) bottom: BottomPanel,
+    time_format: TimeFormat,
     /// Last error or notice, shown in the status bar.
     message: Option<(String, bool)>,
     /// The filter could not be applied: shown under the filter input.
@@ -120,13 +150,18 @@ impl DsctApp {
             session,
             table,
             filter,
+            tree_focus: cx.focus_handle(),
+            hex_focus: cx.focus_handle(),
             selected_row: None,
             tree: TreeView {
                 selected: None,
                 visible: Vec::new(),
+                hex_cursor: None,
+                tree_scroll: UniformListScrollHandle::new(),
                 hex_scroll: UniformListScrollHandle::new(),
             },
-            bottom: None,
+            bottom: BottomPanel::default(),
+            time_format: TimeFormat::default(),
             message: None,
             filter_error: None,
             busy: false,
@@ -164,8 +199,9 @@ impl DsctApp {
                 *self.session.borrow_mut() = Some(session);
                 self.selected_row = None;
                 self.tree.selected = None;
+                self.tree.hex_cursor = None;
                 self.tree.visible.clear();
-                self.bottom = None;
+                self.bottom = BottomPanel::default();
                 self.message = None;
                 self.filter_error = None;
                 self.table.update(cx, |table, cx| {
@@ -212,6 +248,8 @@ impl DsctApp {
         let mut changed = false;
         let mut reload = false;
         let mut rows_changed = false;
+        // The bottom panel opened and shrank the table.
+        let mut panel_opened = false;
 
         let ordered = session.ordered_tick();
         changed |= ordered.changed;
@@ -249,7 +287,7 @@ impl DsctApp {
             Tick::Idle => {}
             Tick::Running => changed = true,
             Tick::Done(stream) => {
-                self.bottom = Some(BottomPanel::Stream {
+                self.bottom.show_stream(StreamView {
                     title: stream.title,
                     lines: stream
                         .lines
@@ -258,16 +296,16 @@ impl DsctApp {
                         .collect(),
                 });
                 changed = true;
+                panel_opened = true;
             }
         }
         match session.stats_tick() {
             Tick::Idle => {}
             Tick::Running => changed = true,
             Tick::Done(output) => {
-                let text = serde_json::to_string_pretty(&output)
-                    .unwrap_or_else(|e| format!("cannot format stats: {e}"));
-                self.bottom = Some(BottomPanel::Stats(text.lines().map(String::from).collect()));
+                self.bottom.show_stats(output);
                 changed = true;
+                panel_opened = true;
             }
         }
 
@@ -297,6 +335,11 @@ impl DsctApp {
                     _ => {}
                 }
             });
+        }
+        if panel_opened && let Some(row) = self.selected_row {
+            // Keep the selected packet in view above the panel.
+            self.table
+                .update(cx, |table, cx| table.scroll_to_row(row, cx));
         }
         if changed || rows_changed || reload {
             cx.notify();
@@ -378,39 +421,59 @@ impl DsctApp {
         cx.notify();
     }
 
-    /// Select tree node `idx`, highlighting its bytes in the hex dump.
-    fn select_node(&mut self, idx: usize, cx: &mut Context<Self>) {
-        self.tree.selected = Some(idx);
-        if let Some(range) = self.selected_byte_range() {
-            self.tree.hex_scroll.scroll_to_item(
-                format::first_highlighted_line(&range),
-                ScrollStrategy::Center,
-            );
-        }
+    fn cycle_time_format(&mut self, cx: &mut Context<Self>) {
+        self.time_format = self.time_format.next();
+        let time_format = self.time_format;
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().time_format = time_format;
+            table.refresh(cx);
+        });
         cx.notify();
     }
 
-    /// Expand or collapse tree node `idx`.
-    fn toggle_node(&mut self, idx: usize, cx: &mut Context<Self>) {
-        let mut guard = self.session.borrow_mut();
-        if let Some(session) = guard.as_mut() {
-            if let Some(node) = session
-                .selected
-                .as_mut()
-                .and_then(|sel| sel.tree_nodes.get_mut(idx))
-            {
-                node.expanded = !node.expanded;
-            }
-            self.tree.refresh(session);
+    // -- Focus ----------------------------------------------------------------
+
+    fn table_focus(&self, cx: &App) -> FocusHandle {
+        self.table.read(cx).focus_handle(cx)
+    }
+
+    /// The pane holding keyboard focus, if any.
+    fn focused_pane(&self, window: &Window, cx: &App) -> Option<Pane> {
+        if self.table_focus(cx).contains_focused(window, cx) {
+            Some(Pane::Packets)
+        } else if self.tree_focus.contains_focused(window, cx) {
+            Some(Pane::Details)
+        } else if self.hex_focus.contains_focused(window, cx) {
+            Some(Pane::Bytes)
+        } else {
+            None
         }
+    }
+
+    pub(crate) fn focus_pane(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        let handle = match pane {
+            Pane::Packets => self.table_focus(cx),
+            Pane::Details => self.tree_focus.clone(),
+            Pane::Bytes => self.hex_focus.clone(),
+        };
+        window.focus(&handle, cx);
         cx.notify();
     }
 
-    fn selected_byte_range(&self) -> Option<std::ops::Range<usize>> {
-        let idx = self.tree.selected?;
-        let guard = self.session.borrow();
-        let node = guard.as_ref()?.selected.as_ref()?.tree_nodes.get(idx)?;
-        Some(node.byte_range.clone())
+    fn step_pane(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let pane = self
+            .focused_pane(window, cx)
+            .map_or(Pane::Packets, |p| p.step(forward));
+        self.focus_pane(pane, window, cx);
+    }
+
+    /// Border of a pane: the focus ring color while it holds focus.
+    pub(crate) fn pane_border(&self, pane: Pane, window: &Window, cx: &App) -> Hsla {
+        if self.focused_pane(window, cx) == Some(pane) {
+            cx.theme().blue
+        } else {
+            transparent_black()
+        }
     }
 
     // -- Rendering ------------------------------------------------------------
@@ -423,7 +486,12 @@ impl DsctApp {
         // The text in the input is not the filter in effect until Enter.
         let edited = has_session && *self.filter.read(cx).value() != *applied;
         let theme = cx.theme();
-        let (danger, muted, border) = (theme.danger, theme.muted_foreground, theme.border);
+        let (error, error_border, muted, border) = (
+            theme.red,
+            theme.danger,
+            theme.muted_foreground,
+            theme.border,
+        );
         let filter = h_flex()
             .flex_1()
             .gap_2()
@@ -432,7 +500,7 @@ impl DsctApp {
                     .flex_1()
                     .rounded(px(6.))
                     .when(self.filter_error.is_some(), |d| {
-                        d.border_1().border_color(danger)
+                        d.border_1().border_color(error_border)
                     })
                     .child(Input::new(&self.filter).small()),
             )
@@ -450,9 +518,20 @@ impl DsctApp {
             )
             .child(filter)
             .child(
+                Button::new("time-format")
+                    .label(format!("Time: {}", self.time_format.label()))
+                    .small()
+                    .ghost()
+                    .tooltip(format!("Change the time format ({})", crate::shortcut("T")))
+                    .disabled(!has_session)
+                    .on_click(cx.listener(|this, _, _, cx| this.cycle_time_format(cx))),
+            )
+            .child(div().w(px(1.)).h(px(20.)).bg(border))
+            .child(
                 Button::new("follow")
                     .label("Follow Stream")
                     .small()
+                    .tooltip("Payload of the selected packet's TCP/UDP/SCTP stream")
                     .disabled(!has_packet)
                     .on_click(cx.listener(|this, _, _, cx| this.follow_stream(cx))),
             )
@@ -460,6 +539,7 @@ impl DsctApp {
                 Button::new("stats")
                     .label("Stats")
                     .small()
+                    .tooltip("Statistics of the displayed packets")
                     .disabled(!has_session)
                     .on_click(cx.listener(|this, _, _, cx| this.stats(cx))),
             );
@@ -472,199 +552,42 @@ impl DsctApp {
                     .px_2()
                     .pb_2()
                     .text_sm()
-                    .text_color(danger)
+                    .text_color(error)
                     .child(format!("Filter error: {msg}"))
             }))
     }
 
-    fn render_tree(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let count = self.tree.visible.len();
-        v_flex().size_full().child(
-            uniform_list(
-                "detail-tree",
-                count,
-                cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                    let guard = this.session.borrow();
-                    let nodes = guard
-                        .as_ref()
-                        .and_then(|s| s.selected.as_ref())
-                        .map(|sel| &sel.tree_nodes[..])
-                        .unwrap_or(&[]);
-                    let theme = cx.theme();
-                    let mut rows = Vec::with_capacity(range.len());
-                    for row in range {
-                        let Some(&idx) = this.tree.visible.get(row) else {
-                            continue;
-                        };
-                        let Some(node) = nodes.get(idx) else {
-                            continue;
-                        };
-                        let chevron = match (node.children_count > 0, node.expanded) {
-                            (false, _) => " ",
-                            (true, true) => "▼",
-                            (true, false) => "▶",
-                        };
-                        let selected = this.tree.selected == Some(idx);
-                        rows.push(
-                            h_flex()
-                                .id(("node", idx))
-                                .w_full()
-                                .px_2()
-                                .pl(px(8. + node.depth as f32 * 14.))
-                                .gap_1()
-                                .when(selected, |d| d.bg(theme.selection))
-                                .when(node.is_layer, |d| d.font_weight(FontWeight::SEMIBOLD))
-                                .child(
-                                    div()
-                                        .id(("toggle", idx))
-                                        .w(px(14.))
-                                        .text_color(theme.muted_foreground)
-                                        .child(chevron)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            // Toggling is not also a click on the row.
-                                            cx.stop_propagation();
-                                            this.toggle_node(idx, cx)
-                                        })),
-                                )
-                                .child(div().whitespace_nowrap().child(node.label.clone()))
-                                .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
-                                    if event.click_count() == 2 {
-                                        this.toggle_node(idx, cx);
-                                    }
-                                    this.select_node(idx, cx);
-                                })),
-                        );
-                    }
-                    rows
-                }),
+    /// Shown instead of the panes until a capture is open.
+    fn render_empty(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .child(
+                div()
+                    .text_xl()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Open a capture file"),
             )
-            .size_full(),
-        )
-    }
-
-    fn render_hex(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let lines = self
-            .session
-            .borrow()
-            .as_ref()
-            .and_then(|s| s.selected_raw_bytes())
-            .map_or(0, |data| format::hex_line_count(data.len()));
-        let mono = cx.theme().mono_font_family.clone();
-        v_flex().size_full().font_family(mono).child(
-            uniform_list(
-                "hex-dump",
-                lines,
-                cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                    let highlight = this.selected_byte_range();
-                    let guard = this.session.borrow();
-                    let data = guard
-                        .as_ref()
-                        .and_then(|s| s.selected_raw_bytes())
-                        .unwrap_or(&[]);
-                    let theme = cx.theme();
-                    range
-                        .map(|line| {
-                            let line = format::hex_line(data, line, highlight.as_ref());
-                            h_flex()
-                                .px_2()
-                                .gap_3()
-                                .child(div().text_color(theme.muted_foreground).child(line.offset))
-                                .child(h_flex().gap_1().children(line.cells.iter().map(|c| {
-                                    div()
-                                        .when(c.highlighted, |d| d.bg(theme.selection))
-                                        .child(c.hex.clone())
-                                })))
-                                .child(h_flex().children(line.cells.iter().map(|c| {
-                                    div()
-                                        .when(c.highlighted, |d| d.bg(theme.selection))
-                                        .child(c.ascii.to_string())
-                                })))
-                        })
-                        .collect::<Vec<_>>()
-                }),
+            .child(
+                div()
+                    .text_color(theme.muted_foreground)
+                    .child("pcap or pcapng — or drop a file anywhere in this window"),
             )
-            .track_scroll(&self.tree.hex_scroll)
-            .size_full(),
-        )
-    }
-
-    fn render_bottom(&mut self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        let bottom = self.bottom.as_ref()?;
-        let title = match bottom {
-            BottomPanel::Stream { title, .. } => title.clone(),
-            BottomPanel::Stats(_) => "Stats".to_string(),
-        };
-        let count = match bottom {
-            BottomPanel::Stream { lines, .. } => lines.len(),
-            BottomPanel::Stats(lines) => lines.len(),
-        };
-        let mono = cx.theme().mono_font_family.clone();
-        Some(
-            v_flex()
-                .size_full()
-                .child(
-                    h_flex()
-                        .px_2()
-                        .py_1()
-                        .gap_2()
-                        .border_b_1()
-                        .border_color(cx.theme().border)
-                        .child(
-                            div()
-                                .flex_1()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(title),
-                        )
-                        .child(
-                            Button::new("close-bottom")
-                                .label("Close")
-                                .xsmall()
-                                .ghost()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.bottom = None;
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .child(
-                    uniform_list(
-                        "bottom-lines",
-                        count,
-                        cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                            let theme = cx.theme();
-                            let Some(bottom) = this.bottom.as_ref() else {
-                                return Vec::new();
-                            };
-                            range
-                                .filter_map(|i| match bottom {
-                                    BottomPanel::Stream { lines, .. } => {
-                                        let (text, client) = lines.get(i)?;
-                                        Some(
-                                            div()
-                                                .px_2()
-                                                .whitespace_nowrap()
-                                                .text_color(if *client {
-                                                    theme.red
-                                                } else {
-                                                    theme.blue
-                                                })
-                                                .child(text.clone()),
-                                        )
-                                    }
-                                    BottomPanel::Stats(lines) => Some(
-                                        div()
-                                            .px_2()
-                                            .whitespace_nowrap()
-                                            .child(lines.get(i)?.clone()),
-                                    ),
-                                })
-                                .collect::<Vec<_>>()
-                        }),
-                    )
-                    .font_family(mono)
-                    .size_full(),
-                ),
-        )
+            .child(
+                Button::new("open-empty")
+                    .label("Open…")
+                    .primary()
+                    .on_click(cx.listener(|this, _, _, cx| this.prompt_open(cx))),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .child(crate::shortcut("O")),
+            )
     }
 
     fn render_status(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -695,8 +618,6 @@ impl DsctApp {
             if session.ordered_needs_tick() {
                 parts.push("Dissecting in capture order…".to_string());
             }
-        } else {
-            parts.push("No capture open — use Open… or drop a file".to_string());
         }
         let theme = cx.theme();
         h_flex()
@@ -710,51 +631,94 @@ impl DsctApp {
             .children(parts)
             .children(self.message.as_ref().map(|(msg, error)| {
                 div()
-                    .when(*error, |d| d.text_color(theme.danger))
-                    .child(msg.clone())
+                    .when(*error, |d| d.text_color(theme.red))
+                    .child(if *error {
+                        format!("⚠ {msg}")
+                    } else {
+                        msg.clone()
+                    })
             }))
     }
 }
 
 impl Render for DsctApp {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_session = self.session.borrow().is_some();
         let toolbar = self.render_toolbar(cx);
-        let tree = self.render_tree(cx);
-        let hex = self.render_hex(cx);
-        let bottom = self.render_bottom(cx);
         let status = self.render_status(cx);
+
+        let body = if has_session {
+            let table_border = self.pane_border(Pane::Packets, window, cx);
+            let tree = self.render_tree(window, cx);
+            let hex = self.render_hex(window, cx);
+            let bottom = self.render_bottom(cx);
+            let mut main = v_resizable("main")
+                .child(
+                    resizable_panel().size(px(320.)).child(
+                        div()
+                            .size_full()
+                            .border_1()
+                            .border_color(table_border)
+                            .child(DataTable::new(&self.table)),
+                    ),
+                )
+                .child(
+                    resizable_panel().child(
+                        h_resizable("details")
+                            .child(resizable_panel().size(px(560.)).child(tree))
+                            .child(resizable_panel().child(hex)),
+                    ),
+                );
+            if let Some(bottom) = bottom {
+                main = main.child(resizable_panel().size(px(320.)).child(bottom));
+            }
+            div().size_full().child(main).into_any_element()
+        } else {
+            self.render_empty(cx).into_any_element()
+        };
+
         let theme = cx.theme();
-
-        let mut main = v_resizable("main")
-            .child(
-                resizable_panel()
-                    .size(px(320.))
-                    .child(DataTable::new(&self.table).stripe(true)),
-            )
-            .child(
-                resizable_panel().child(
-                    h_resizable("details")
-                        .child(resizable_panel().size(px(560.)).child(tree))
-                        .child(resizable_panel().child(hex)),
-                ),
-            );
-        if let Some(bottom) = bottom {
-            main = main.child(resizable_panel().size(px(200.)).child(bottom));
-        }
-
         v_flex()
             .id("dsct")
+            .key_context("DsctApp")
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
             .on_action(cx.listener(|this, _: &Open, _, cx| this.prompt_open(cx)))
+            .on_action(cx.listener(|this, _: &CycleTimeFormat, _, cx| {
+                if this.session.borrow().is_some() {
+                    this.cycle_time_format(cx);
+                }
+            }))
+            .on_action(
+                cx.listener(|this, _: &FocusNextPane, window, cx| this.step_pane(true, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &FocusPrevPane, window, cx| {
+                    this.step_pane(false, window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &FocusPackets, window, cx| {
+                this.focus_pane(Pane::Packets, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusDetails, window, cx| {
+                this.focus_pane(Pane::Details, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusBytes, window, cx| {
+                this.focus_pane(Pane::Bytes, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CloseBottom, _, cx| {
+                this.bottom.open = false;
+                cx.notify();
+            }))
+            .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().drop_target))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 if let Some(path) = paths.paths().first() {
                     this.open(path.clone(), cx);
                 }
             }))
             .child(toolbar)
-            .child(div().flex_1().min_h_0().child(main))
+            .child(div().flex_1().min_h_0().child(body))
             .child(status)
     }
 }

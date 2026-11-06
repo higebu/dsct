@@ -7,7 +7,8 @@ dissected in the background, so large files open at once.
 
 - Packet table (virtual scrolling) with rows tinted by protocol, filtered
   with dsct's filter syntax
-- Protocol detail tree; selecting a field highlights its bytes in the hex dump
+- Protocol detail tree and hex dump, linked both ways and operable from the
+  keyboard
 - Follow Stream (TCP/UDP/SCTP) and Stats for the displayed packets
 - Open a file with **Open…** (⌘O), by dropping it on the window, or as an
   argument: `dsct-gui capture.pcap`
@@ -57,19 +58,28 @@ feature), so Xcode's Metal toolchain is not needed to build.
 
 ### What to check
 
-1. Open a capture: the packet count in the status bar grows while it is
-   indexed, and the first packet is selected.
+1. Without a file, the window shows "Open a capture file" with an
+   **Open…** button. Open a capture (or drop one on the window): the packet
+   count in the status bar grows while it is indexed, and the first packet
+   is selected.
 2. Type a filter such as `tcp` or `dns`: "Enter to apply" appears until you
    press Enter, then the table and the `N / M packets` count update. An
    invalid filter outlines the input in red and shows the error under it.
 3. Rows are tinted by protocol (TCP, UDP, DNS, HTTP, … each in its own
-   color), and the selected row stands out in blue; ↑/↓ move the selection.
-4. Select a packet, expand a layer with ▶, and click a field: its bytes are
-   highlighted in the hex dump.
-5. **Follow Stream** on a TCP/UDP packet shows the payload in the bottom
-   panel (client in red, server in blue). **Stats** shows the stats of the
-   displayed packets as JSON.
-6. Once a capture is loaded and nothing runs, the app stays idle (no CPU
+   color), and the selected row stands out in blue. **Time** (⌘T) switches
+   between seconds since the first packet, since the previous packet, and
+   the date and time.
+4. Keyboard only: ↑/↓ in the table, then Tab to **Details** (blue outline):
+   ↑/↓ move, → expands, ← collapses or goes to the parent, Enter toggles.
+   Tab again to **Bytes**: ←/→ and ↑/↓ move a cursor, and the field under it
+   is selected and revealed in the tree. ⌘1/⌘2/⌘3 jump to each pane.
+5. Clicking a field highlights its bytes; clicking a byte selects its field.
+6. **Follow Stream** and **Stats** open tabs in the bottom panel. Stream
+   lines are marked → (client to server, red) and ← (server to client,
+   blue); Stats shows the protocols and top talkers as tables. The copy
+   button copies the tab as text (the stream with its markers, the stats as
+   JSON); × or Esc closes the panel.
+7. Once a capture is loaded and nothing runs, the app stays idle (no CPU
    use in Activity Monitor).
 
 ## Linux
