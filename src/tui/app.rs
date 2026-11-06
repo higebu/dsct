@@ -224,6 +224,91 @@ mod tests {
     use crate::session::state::StreamLine;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+    /// An App over a pcap file with `n` UDP packets, indexed and dissected
+    /// in order by background threads as `dsct tui` does.
+    fn make_background_app(n: usize) -> (App, tempfile::NamedTempFile) {
+        use std::io::Write;
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&loader::tests::build_pcap_for_test(n))
+            .unwrap();
+        tmp.flush().unwrap();
+        let capture = loader::open_and_mmap(tmp.path()).unwrap();
+        let total_bytes = capture.as_bytes().len();
+        let mut session = Session::new(
+            capture,
+            Vec::new(),
+            DissectorRegistry::default(),
+            tmp.path(),
+            vec![],
+        );
+        session.bg_indexer = Some(
+            crate::session::bg_indexer::BackgroundIndexer::spawn(tmp.path(), total_bytes).unwrap(),
+        );
+        session.ordered = Some(
+            crate::session::ordered_pass::OrderedPass::spawn(
+                loader::open_and_mmap(tmp.path()).unwrap(),
+                DissectorRegistry::default(),
+                None,
+            )
+            .unwrap(),
+        );
+        (App::from_session(session), tmp)
+    }
+
+    #[test]
+    fn background_indexing_selects_the_first_packet() {
+        let (mut app, _tmp) = make_background_app(4);
+        assert!(app.session.selected.is_none());
+        app.detail_tree.selected = 3;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while app.session.is_indexing() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "indexing did not finish"
+            );
+            app.index_tick();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(app.total_count(), 4);
+        assert_eq!(app.session.selected.as_ref().map(|s| s.pkt_idx), Some(0));
+        assert_eq!(app.detail_tree.selected, 0);
+
+        while app.ordered_needs_tick() {
+            assert!(std::time::Instant::now() < deadline, "pass did not finish");
+            app.ordered_tick();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(app.detail_tree.yank_message.is_none());
+    }
+
+    #[test]
+    fn failed_filter_scan_shows_the_error_and_all_packets() {
+        let mut app = make_test_app(3);
+        app.session.decode_as_args = vec!["not-a-decode-as".to_string()];
+        app.packet_list.selected = 2;
+        app.filter.buf.input = "udp".into();
+        app.apply_filter();
+        while app.filter_tick() {}
+        assert!(app.filter.error_message.is_some());
+        assert!(app.session.applied_filter.is_empty());
+        assert_eq!(app.displayed_count(), 3);
+        assert_eq!(app.packet_list.selected, 0);
+    }
+
+    #[test]
+    fn stats_and_stream_errors_are_shown() {
+        let mut app = make_test_app(1);
+        app.session.decode_as_args = vec!["not-a-decode-as".to_string()];
+        app.start_stats();
+        assert!(app.detail_tree.yank_message.take().is_some());
+        app.start_follow_stream();
+        assert!(app.detail_tree.yank_message.take().is_some());
+        assert!(!app.session.stats_running());
+        assert!(!app.session.stream_running());
+    }
+
     /// Create a test App using an mmap over a pcap built in memory.
     fn make_test_app(n: usize) -> App {
         use std::sync::atomic::{AtomicU32, Ordering};

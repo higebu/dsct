@@ -610,12 +610,146 @@ impl Session {
 #[cfg(test)]
 #[allow(unsafe_code)]
 mod tests {
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+
     use super::*;
 
     /// Serialize tests that mutate environment variables.
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A pcap file with `n` UDP packets.
+    fn write_pcap(n: usize) -> tempfile::NamedTempFile {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&loader::tests::build_pcap_for_test(n))
+            .unwrap();
+        tmp.flush().unwrap();
+        tmp
+    }
+
+    /// An indexed session over a pcap file with `n` UDP packets, without
+    /// background threads.  Keep the file alive while using the session.
+    pub(super) fn test_session(n: usize) -> (Session, tempfile::NamedTempFile) {
+        let tmp = write_pcap(n);
+        let capture = loader::open_and_mmap(tmp.path()).unwrap();
+        let indices = loader::build_index(capture.as_bytes()).unwrap();
+        let session = Session::new(
+            capture,
+            indices,
+            DissectorRegistry::default(),
+            tmp.path(),
+            vec![],
+        );
+        (session, tmp)
+    }
+
+    /// [`Session::open`] with the cache directory in a temp directory.
+    fn open(path: &Path, decode_as_args: Vec<String>) -> Result<Session> {
+        let _lock = env_lock();
+        let cache = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("XDG_CACHE_HOME", cache.path());
+        }
+        let session = Session::open(path, decode_as_args);
+        unsafe {
+            std::env::remove_var("XDG_CACHE_HOME");
+        }
+        session
+    }
+
+    /// Call [`Session::index_tick`] until indexing ends, returning how many
+    /// ticks asked to reload the selection.
+    fn finish_indexing(session: &mut Session) -> usize {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut reloads = 0;
+        while session.is_indexing() {
+            assert!(Instant::now() < deadline, "indexing did not finish");
+            if session.index_tick() {
+                reloads += 1;
+                session.load_packet(0);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        reloads
+    }
+
+    #[test]
+    fn open_indexes_and_dissects_in_the_background() {
+        let tmp = write_pcap(5);
+        let mut session = open(tmp.path(), vec![]).unwrap();
+        assert!(session.is_indexing());
+        assert_eq!(session.total_count(), 0);
+        assert!(session.ordered.is_some());
+
+        assert_eq!(finish_indexing(&mut session), 1);
+        assert_eq!(session.total_count(), 5);
+        assert_eq!(session.displayed_count(), 5);
+        assert_eq!(session.selected.as_ref().map(|s| s.pkt_idx), Some(0));
+        assert!(!session.index_tick());
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while session.ordered_needs_tick() {
+            assert!(Instant::now() < deadline, "pass did not finish");
+            assert_eq!(session.ordered_tick().error, None);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn open_rejects_invalid_decode_as() {
+        let tmp = write_pcap(1);
+        assert!(open(tmp.path(), vec!["not-a-decode-as".to_string()]).is_err());
+    }
+
+    #[test]
+    fn open_rejects_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(open(&dir.path().join("missing.pcap"), vec![]).is_err());
+    }
+
+    #[test]
+    fn sync_index_tick_indexes_the_mapped_capture() {
+        let tmp = write_pcap(7);
+        let capture = loader::open_and_mmap(tmp.path()).unwrap();
+        let total_bytes = capture.as_bytes().len();
+        let state = loader::start_indexing(capture.as_bytes()).unwrap();
+        let mut session = Session::new(
+            capture,
+            Vec::new(),
+            DissectorRegistry::default(),
+            tmp.path(),
+            vec![],
+        );
+        session.index_progress = Some(IndexProgress { state, total_bytes });
+
+        assert_eq!(finish_indexing(&mut session), 1);
+        assert_eq!(session.total_count(), 7);
+        assert_eq!(session.displayed_count(), 7);
+        assert!(!session.index_tick());
+    }
+
+    #[test]
+    fn ordered_tick_without_a_pass_changes_nothing() {
+        let tmp = write_pcap(2);
+        let capture = loader::open_and_mmap(tmp.path()).unwrap();
+        let indices = loader::build_index(capture.as_bytes()).unwrap();
+        let mut session = Session::new(
+            capture,
+            indices,
+            DissectorRegistry::default(),
+            tmp.path(),
+            vec![],
+        );
+        assert_eq!(session.ordered_tick(), OrderedTick::default());
+        assert!(!session.ordered_needs_tick());
+        assert!(!session.is_indexing());
+        assert!(!session.index_tick());
+        // Not a live capture.
+        assert!(!session.live_tick());
+        assert!(!session.check_eof());
     }
 
     #[test]

@@ -350,3 +350,101 @@ fn packet_matches(
     }
     expr.matches_with_number(&Packet::new(buf, data), number)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::super::tests::test_session as session;
+    use super::super::{Session, Tick};
+    use super::FilterOutcome;
+
+    /// Drive the filter scan started by `started` to its outcome.
+    fn finish(session: &mut Session, started: Option<FilterOutcome>) -> FilterOutcome {
+        if let Some(outcome) = started {
+            return outcome;
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            assert!(session.filter_running());
+            assert!(session.filter_fraction().is_some());
+            match session.filter_tick() {
+                Tick::Done(outcome) => return outcome,
+                Tick::Running => {}
+                Tick::Idle => panic!("scan stopped without an outcome"),
+            }
+            assert!(Instant::now() < deadline, "scan did not finish");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn parse_error_changes_nothing() {
+        let (mut session, _tmp) = session(3);
+        assert!(session.apply_filter("udp.port ==").is_err());
+        assert!(session.applied_filter.is_empty());
+        assert!(!session.filter_running());
+        assert_eq!(session.displayed_count(), 3);
+    }
+
+    #[test]
+    fn empty_filter_applies_at_once() {
+        let (mut session, _tmp) = session(3);
+        assert_eq!(session.apply_filter(""), Ok(Some(FilterOutcome::Applied)));
+        assert!(!session.filter_running());
+        assert_eq!(session.filter_fraction(), None);
+        assert_eq!(session.displayed_count(), 3);
+    }
+
+    #[test]
+    fn scan_replaces_the_filtered_list() {
+        let (mut session, _tmp) = session(4);
+        session.get_or_dissect_summary(0);
+        let started = session.apply_filter("tcp").unwrap();
+        assert_eq!(finish(&mut session, started), FilterOutcome::Applied);
+        assert_eq!(session.applied_filter, "tcp");
+        assert_eq!(session.displayed_count(), 0);
+        assert!(session.summary_cache.is_empty());
+        assert!(!session.filter_running());
+        assert_eq!(session.filter_tick(), Tick::Idle);
+    }
+
+    #[test]
+    fn packet_number_filter_skips_dissection() {
+        let (mut session, _tmp) = session(5);
+        let started = session
+            .apply_filter("packet_number BETWEEN 1 AND 2")
+            .unwrap();
+        assert_eq!(finish(&mut session, started), FilterOutcome::Applied);
+        assert_eq!(session.filtered.iter().collect::<Vec<_>>(), [0, 1]);
+    }
+
+    /// When the scan cannot build its registry, no filter stays applied and
+    /// every packet is displayed.
+    #[test]
+    fn scan_that_cannot_start_reports_failure() {
+        let (mut session, _tmp) = session(3);
+        session.decode_as_args = vec!["not-a-decode-as".to_string()];
+        let started = session.apply_filter("udp").unwrap();
+        let FilterOutcome::Failed(msg) = finish(&mut session, started) else {
+            panic!("scan did not fail");
+        };
+        assert!(!msg.is_empty());
+        assert!(session.applied_filter.is_empty());
+        assert_eq!(session.displayed_count(), 3);
+        assert!(!session.filter_running());
+    }
+
+    #[test]
+    fn cancel_keeps_the_previous_result() {
+        let (mut session, _tmp) = session(3);
+        if session.apply_filter("tcp").unwrap().is_none() {
+            assert!(session.filter_running());
+            session.cancel_filter();
+        }
+        assert!(!session.filter_running());
+        assert_eq!(session.filter_fraction(), None);
+        assert_eq!(session.filter_tick(), Tick::Idle);
+        assert_eq!(session.displayed_count(), 3);
+    }
+}

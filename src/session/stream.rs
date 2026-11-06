@@ -283,7 +283,44 @@ fn payload_to_ascii(data: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Tick;
+    use super::super::tests::test_session;
     use super::payload_to_ascii;
+
+    #[test]
+    fn follow_stream_collects_the_udp_flow() {
+        let (mut session, _tmp) = test_session(3);
+        assert!(matches!(session.stream_tick(), Tick::Idle));
+        session.load_packet(0);
+        session.start_follow_stream().unwrap();
+        assert!(session.stream_running());
+        let stream = loop {
+            match session.stream_tick() {
+                Tick::Running => {}
+                Tick::Done(stream) => break stream,
+                Tick::Idle => panic!("no stream collected"),
+            }
+        };
+        assert!(stream.title.starts_with("UDP Stream"), "{}", stream.title);
+        assert!(!session.stream_running());
+    }
+
+    #[test]
+    fn follow_stream_without_selection_does_nothing() {
+        let (mut session, _tmp) = test_session(0);
+        assert_eq!(session.start_follow_stream(), Ok(()));
+        assert!(!session.stream_running());
+    }
+
+    #[test]
+    fn cancel_stream_stops_the_collection() {
+        let (mut session, _tmp) = test_session(3);
+        session.load_packet(0);
+        session.start_follow_stream().unwrap();
+        session.cancel_stream();
+        assert!(!session.stream_running());
+        assert!(matches!(session.stream_tick(), Tick::Idle));
+    }
 
     #[test]
     fn payload_to_ascii_converts() {

@@ -82,3 +82,43 @@ impl Session {
         Tick::Running
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::Tick;
+    use super::super::tests::test_session;
+
+    #[test]
+    fn stats_cover_the_displayed_packets() {
+        let (mut session, _tmp) = test_session(4);
+        assert!(matches!(session.stats_tick(), Tick::Idle));
+        session.start_stats().unwrap();
+        assert!(session.stats_running());
+        let output = loop {
+            match session.stats_tick() {
+                Tick::Running => {}
+                Tick::Done(output) => break output,
+                Tick::Idle => panic!("no stats collected"),
+            }
+        };
+        assert_eq!(output.total_packets, 4);
+        assert!(!session.stats_running());
+    }
+
+    #[test]
+    fn start_stats_fails_with_invalid_decode_as() {
+        let (mut session, _tmp) = test_session(1);
+        session.decode_as_args = vec!["not-a-decode-as".to_string()];
+        assert!(session.start_stats().is_err());
+        assert!(!session.stats_running());
+    }
+
+    #[test]
+    fn cancel_stats_stops_the_collection() {
+        let (mut session, _tmp) = test_session(2);
+        session.start_stats().unwrap();
+        session.cancel_stats();
+        assert!(!session.stats_running());
+        assert!(matches!(session.stats_tick(), Tick::Idle));
+    }
+}
