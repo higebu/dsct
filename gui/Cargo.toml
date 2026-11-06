@@ -1,0 +1,21 @@
+[package]
+name = "dsct-gui"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Desktop GUI for dsct built on GPUI"
+publish = false
+
+# A workspace of its own: GPUI's dependencies stay out of dsct's Cargo.lock.
+[workspace]
+
+[dependencies]
+dsct = { path = "..", features = ["session"] }
+gpui-kit = "=0.9.0"
+serde_json = "1"
+
+# Compile GPUI's Metal shaders when the app starts instead of at build time,
+# so building needs only the Xcode Command Line Tools, not Xcode's Metal
+# toolchain. The version must match the one gpui-kit pins.
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui-pre-macos = { version = "=0.3.11", features = ["runtime_shaders"] }

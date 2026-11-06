@@ -18,6 +18,7 @@ Cargo.toml                 # Standalone crate manifest
 src/                       # Library + CLI implementation
 src/session/               # Frontend-agnostic capture session (`session` feature)
 src/tui/                   # Terminal UI on top of `session` (`tui` feature)
+gui/                       # Desktop GUI (GPUI); separate workspace, not published
 tests/                     # Integration / CLI tests
 benches/                   # Criterion benchmarks
 docs/                      # Supporting documentation
@@ -44,6 +45,16 @@ Useful development commands:
 cargo build
 cargo test <test_name>
 cargo bench
+```
+
+The desktop GUI in `gui/` is its own Cargo workspace with its own lockfile and
+CI workflow (`.github/workflows/gui.yml`). When changing `src/session/`, also
+check that it still builds:
+
+```bash
+cd gui
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
 ```
 
 If `taplo` is not installed:

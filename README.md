@@ -80,6 +80,9 @@ cargo install dsct --features tui
 brew install higebu/tap/dsct
 ```
 
+An experimental desktop GUI built with GPUI lives in [`gui/`](gui/README.md);
+macOS builds are attached to each run of the GUI workflow.
+
 ## AI coding agent plugins
 
 Install as a plugin via the marketplace to get the MCP server and the

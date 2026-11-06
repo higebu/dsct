@@ -15,6 +15,12 @@
       "description": "packet-dissector, packet-dissector-core, packet-dissector-pcap, and packet-dissector-test-alloc are published in lockstep from the same repo; bumping only one alone breaks the build because dsct depends on more than one directly",
       "matchPackageNames": ["/^packet-dissector(-core|-pcap|-test-alloc)?$/"],
       "groupName": "packet-dissector"
+    },
+    {
+      "description": "gpui-kit pins an exact GPUI snapshot (gpui-pre-*); update the GUI's GPUI crates together, keeping gpui-pre-macos at the version gpui-kit pins",
+      "matchFileNames": ["gui/Cargo.toml"],
+      "matchPackageNames": ["/^gpui-/"],
+      "groupName": "gpui"
     }
   ]
 }

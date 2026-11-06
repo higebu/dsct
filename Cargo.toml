@@ -8,6 +8,8 @@ repository = "https://github.com/higebu/dsct"
 description = "LLM-friendly packet dissector CLI"
 keywords = ["pcap", "pcapng", "packet", "dissector", "llm"]
 categories = ["command-line-utilities", "network-programming"]
+# The desktop GUI is a separate workspace that is not published.
+exclude = ["gui/"]
 
 [package.metadata.docs.rs]
 all-features = true
