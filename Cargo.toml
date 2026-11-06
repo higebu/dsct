@@ -104,15 +104,8 @@ default = [
   "ip-reassembly",
 ]
 sqlite = ["dep:rusqlite"]
-tui = [
-  "dep:ratatui",
-  "dep:crossterm",
-  "dep:memmap2",
-  "dep:nucleo-matcher",
-  "dep:tempfile",
-  "dep:rustix",
-  "dep:lru",
-]
+session = ["dep:memmap2", "dep:nucleo-matcher", "dep:tempfile", "dep:lru"]
+tui = ["session", "dep:ratatui", "dep:crossterm", "dep:rustix"]
 ethernet = ["packet-dissector/ethernet"]
 linux_sll = ["packet-dissector/linux_sll"]
 linux_sll2 = ["packet-dissector/linux_sll2"]
@@ -242,7 +235,7 @@ harness = false
 [[bench]]
 name = "tui_index"
 harness = false
-required-features = ["tui"]
+required-features = ["session"]
 
 [[bench]]
 name = "parallel_read"

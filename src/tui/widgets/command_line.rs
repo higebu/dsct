@@ -110,11 +110,11 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             return;
         }
         // Normal mode: show applied filter or tree search query in dim style.
-        if !app.filter.applied.is_empty() {
+        if !app.session.applied_filter.is_empty() {
             let line = Line::from(vec![
                 Span::styled("/", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    app.filter.applied.as_str(),
+                    app.session.applied_filter.as_str(),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]);
@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn command_line_shows_applied_filter_dim() {
         let mut app = make_test_app(1);
-        app.filter.applied = "udp".into();
+        app.session.applied_filter = "udp".into();
         let dump = render_to_string(60, 5, |f| {
             let area = Rect {
                 x: 0,

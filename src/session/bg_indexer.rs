@@ -23,7 +23,7 @@ pub(super) struct IndexBatch {
 
 /// Drives pcap indexing on a background thread, delivering results to the main
 /// thread via a channel.
-pub(super) struct BackgroundIndexer {
+pub struct BackgroundIndexer {
     receiver: mpsc::Receiver<IndexBatch>,
     cancel: Arc<AtomicBool>,
     /// Current byte offset (updated from received batches).

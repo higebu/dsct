@@ -6,7 +6,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 
-use crate::tui::app::{App, visible_nodes};
+use crate::session::tree::visible_nodes;
+use crate::tui::app::App;
 use crate::tui::state::{Pane, SelectionMode};
 
 /// Render the protocol detail tree into the given area.
@@ -21,12 +22,13 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let nodes = app
+        .session
         .selected
         .as_ref()
         .map(|sel| sel.tree_nodes.as_slice())
         .unwrap_or(&[]);
 
-    let visible: Vec<(usize, &crate::tui::state::TreeNode)> = visible_nodes(nodes).collect();
+    let visible: Vec<(usize, &crate::session::state::TreeNode)> = visible_nodes(nodes).collect();
 
     // Determine line-selection range (if active).
     let line_sel_range = app.detail_tree.selection.as_ref().and_then(|s| {

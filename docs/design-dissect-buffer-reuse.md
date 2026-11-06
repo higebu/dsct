@@ -244,7 +244,7 @@ pub enum OwnedFieldValue {
 - ❌ 既存 API との二重管理
 
 **用途が限定的:** TUI の `OwnedPacket` が既にこのアプローチを独自実装している
-(`src/tui/owned_packet.rs`)。汎用化する価値があるかは利用頻度次第。
+(`src/session/owned_packet.rs`)。汎用化する価値があるかは利用頻度次第。
 
 ### 案 C: mmap ベースのインデックスアクセス
 

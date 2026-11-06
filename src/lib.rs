@@ -44,6 +44,9 @@ pub mod parallel_read;
 pub mod schema;
 #[doc(hidden)]
 pub mod serialize;
+#[cfg(feature = "session")]
+#[doc(hidden)]
+pub mod session;
 #[doc(hidden)]
 pub mod sql_filter;
 #[cfg(feature = "sqlite")]

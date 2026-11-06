@@ -505,7 +505,7 @@ mod tests {
 
     /// Create empty capture data for tests that only need static completion.
     fn empty_ctx() -> (CaptureMap, Vec<PacketIndex>, DissectorRegistry) {
-        use crate::tui::loader::tests::build_pcap_for_test;
+        use crate::session::loader::tests::build_pcap_for_test;
         let pcap = build_pcap_for_test(0);
         let mut f = std::fs::File::create("/tmp/dsct_test_completion.pcap").unwrap();
         std::io::Write::write_all(&mut f, &pcap).unwrap();
@@ -779,8 +779,8 @@ mod tests {
 
     #[test]
     fn complete_value_with_packets() {
-        use crate::tui::loader;
-        use crate::tui::loader::tests::build_pcap_for_test;
+        use crate::session::loader;
+        use crate::session::loader::tests::build_pcap_for_test;
         let pcap = build_pcap_for_test(3);
         let tmp_path = format!("/tmp/dsct_test_cv_{}.pcap", std::process::id());
         let mut f = std::fs::File::create(&tmp_path).unwrap();
@@ -800,8 +800,8 @@ mod tests {
 
     #[test]
     fn complete_value_no_match_returns_empty() {
-        use crate::tui::loader;
-        use crate::tui::loader::tests::build_pcap_for_test;
+        use crate::session::loader;
+        use crate::session::loader::tests::build_pcap_for_test;
         let pcap = build_pcap_for_test(3);
         let tmp_path = format!("/tmp/dsct_test_cv_nomatch_{}.pcap", std::process::id());
         let mut f = std::fs::File::create(&tmp_path).unwrap();
@@ -838,8 +838,8 @@ mod tests {
 
     #[test]
     fn complete_value_prefix_filters() {
-        use crate::tui::loader;
-        use crate::tui::loader::tests::build_pcap_for_test;
+        use crate::session::loader;
+        use crate::session::loader::tests::build_pcap_for_test;
         let pcap = build_pcap_for_test(3);
         let tmp_path = format!("/tmp/dsct_test_cv_prefix_{}.pcap", std::process::id());
         let mut f = std::fs::File::create(&tmp_path).unwrap();
@@ -867,8 +867,8 @@ mod tests {
 
     #[test]
     fn complete_value_deduplicates() {
-        use crate::tui::loader;
-        use crate::tui::loader::tests::build_pcap_for_test;
+        use crate::session::loader;
+        use crate::session::loader::tests::build_pcap_for_test;
         // Multiple packets with the same src_port should yield one entry
         let pcap = build_pcap_for_test(5);
         let tmp_path = format!("/tmp/dsct_test_cv_dedup_{}.pcap", std::process::id());

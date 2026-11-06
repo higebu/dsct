@@ -88,8 +88,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
 
     // Overlay: stats progress bar.
-    if let Some(progress) = &app.stats_progress {
-        let total = app.filtered.count_ones();
+    if let Some(progress) = &app.session.stats_progress {
+        let total = app.session.filtered.count_ones();
         render_progress_overlay(f, "Stats", progress.cursor, total, progress.fraction(total));
     }
 
@@ -99,8 +99,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
 
     // Overlay: centered progress bar while stream is building.
-    if let Some(progress) = &app.stream_build_progress {
-        let total = app.indices.len();
+    if let Some(progress) = &app.session.stream_build_progress {
+        let total = app.session.indices.len();
         render_progress_overlay(
             f,
             "Following",
@@ -111,8 +111,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
 
     // Overlay: centered progress bar while filter is scanning (sequential or parallel).
-    if let Some(progress) = &app.filter_progress {
-        let total = app.indices.len();
+    if let Some(progress) = &app.session.filter_progress {
+        let total = app.session.indices.len();
         render_progress_overlay(
             f,
             "Filtering",
@@ -120,8 +120,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
             total,
             progress.fraction(total),
         );
-    } else if let Some(frac) = app.filter_fraction() {
-        let total = app.indices.len();
+    } else if let Some(frac) = app.session.filter_fraction() {
+        let total = app.session.indices.len();
         let scanned = (frac * total as f64) as usize;
         render_progress_overlay(f, "Filtering", scanned, total, frac);
     }
@@ -333,9 +333,10 @@ fn render_stats_overlay(f: &mut Frame, stats: &crate::stats::StatsOutput) {
 
 #[cfg(all(test, feature = "tui"))]
 mod tests {
-    use super::super::state::{FilterProgress, StreamLine, StreamViewState};
+    use super::super::state::StreamViewState;
     use super::super::test_util::{make_test_app, render_to_string};
     use super::*;
+    use crate::session::state::{FilterProgress, StreamLine};
 
     #[test]
     fn render_shows_panes() {
@@ -366,10 +367,10 @@ mod tests {
     #[test]
     fn render_filter_progress_overlay() {
         let mut app = make_test_app(3);
-        app.filter_progress = Some(FilterProgress {
+        app.session.filter_progress = Some(FilterProgress {
             expr: None,
             cursor: 0,
-            results: super::super::filter_bitmap::FilterBitmap::new(),
+            results: crate::session::filter_bitmap::FilterBitmap::new(),
             registry: packet_dissector::registry::DissectorRegistry::default(),
             in_order: None,
         });

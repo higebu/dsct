@@ -16,6 +16,8 @@
 ```text
 Cargo.toml                 # Standalone crate manifest
 src/                       # Library + CLI implementation
+src/session/               # Frontend-agnostic capture session (`session` feature)
+src/tui/                   # Terminal UI on top of `session` (`tui` feature)
 tests/                     # Integration / CLI tests
 benches/                   # Criterion benchmarks
 docs/                      # Supporting documentation
@@ -31,6 +33,7 @@ committing:
 cargo test --all-targets
 cargo fmt -- --check
 cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --features session -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 taplo fmt --check
 ```
@@ -112,11 +115,21 @@ Rules:
   API in `packet-dissector` rather than duplicating protocol logic in `dsct`.
 - Keep `dsct` focused on CLI, filtering, formatting, MCP, and TUI concerns.
 
+## Session and Frontends
+
+- `src/session/` holds everything an interactive frontend needs that does not
+  depend on how packets are shown: mmap access, indexing, on-demand and
+  in-order dissection, live ingestion, filter scans, Follow Stream, and stats.
+- `session` must not depend on `ratatui`, `crossterm`, or any other UI crate;
+  keep view state (selection, scroll, focus, input) in the frontend.
+- New frontend-independent logic goes into `Session`; frontends drive it with
+  its `*_tick` methods and react to what they report.
+
 ## Rust Coding Conventions
 
 - No `unsafe` — enforced by `#![deny(unsafe_code)]` in `lib.rs`.
-  `unsafe` is permitted only in `CaptureMap` (`src/tui/state.rs`) and
-  `BgIndexer::spawn` (`src/tui/bg_indexer.rs`) for `memmap2` mmap operations,
+  `unsafe` is permitted only in `CaptureMap` (`src/session/state.rs`) and
+  `BgIndexer::spawn` (`src/session/bg_indexer.rs`) for `memmap2` mmap operations,
   guarded by `#[allow(unsafe_code)]` with SAFETY comments.
 - No `.unwrap()` / `.expect()` in `src/`; use `?` and contextual errors.
   `const` context `unwrap()` / `panic!` is permitted as it is evaluated at

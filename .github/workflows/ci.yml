@@ -71,6 +71,8 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo clippy --all-targets --all-features -- -D warnings
+      # The session module must build without the TUI.
+      - run: cargo clippy --all-targets --features session -- -D warnings
 
   doc:
     runs-on: ubuntu-latest

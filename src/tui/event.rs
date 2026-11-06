@@ -53,7 +53,7 @@ pub fn run_event_loop(
 }
 
 fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
-    use super::state::LiveMode;
+    use crate::session::state::LiveMode;
 
     let mut last_render = std::time::Instant::now();
 
@@ -63,7 +63,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
 
         // Throttle rendering during indexing to ~60 fps so we spend more
         // time indexing and less time redrawing.
-        let indexing_active = app.index_progress.is_some() || app.bg_indexer.is_some();
+        let indexing_active = app.session.is_indexing();
         let should_render =
             !indexing_active || last_render.elapsed() >= std::time::Duration::from_millis(16);
         if should_render {
@@ -77,7 +77,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
             app.index_tick();
         }
 
-        let indexing_now = app.index_progress.is_some() || app.bg_indexer.is_some();
+        let indexing_now = app.session.is_indexing();
 
         // Indexing just finished — loop back to redraw immediately so the
         // user sees the final packet list instead of a stale "Indexing"
@@ -87,16 +87,12 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         }
 
         // If a filter scan is in progress (sequential or parallel), drive it.
-        if app.filter_progress.is_some() || app.parallel_scan.is_some() {
+        if app.session.filter_running() {
             if event::poll(std::time::Duration::from_millis(0))?
                 && let Event::Key(key) = event::read()?
                 && key.code == crossterm::event::KeyCode::Esc
             {
-                if let Some(scan) = &app.parallel_scan {
-                    scan.cancel();
-                }
-                app.parallel_scan = None;
-                app.filter_progress = None;
+                app.session.cancel_filter();
                 continue;
             }
             app.filter_tick();
@@ -104,12 +100,12 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         }
 
         // If a stats collection is in progress, drive it in chunks.
-        if app.stats_progress.is_some() {
+        if app.session.stats_running() {
             if event::poll(std::time::Duration::from_millis(0))?
                 && let Event::Key(key) = event::read()?
                 && key.code == crossterm::event::KeyCode::Esc
             {
-                app.stats_progress = None;
+                app.session.cancel_stats();
                 continue;
             }
             app.stats_tick();
@@ -117,12 +113,12 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         }
 
         // If a stream build is in progress, drive it in chunks.
-        if app.stream_build_progress.is_some() {
+        if app.session.stream_running() {
             if event::poll(std::time::Duration::from_millis(0))?
                 && let Event::Key(key) = event::read()?
                 && key.code == crossterm::event::KeyCode::Esc
             {
-                app.stream_build_progress = None;
+                app.session.cancel_stream();
                 continue;
             }
             app.stream_tick();
@@ -130,15 +126,15 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         }
 
         // Live capture: drive tick and use poll-based event reading.
-        if app.live_mode.is_some() {
-            if matches!(app.live_mode, Some(LiveMode::Live)) {
+        if app.session.live_mode.is_some() {
+            if matches!(app.session.live_mode, Some(LiveMode::Live)) {
                 app.live_tick();
-            } else if matches!(app.live_mode, Some(LiveMode::Paused)) {
+            } else if matches!(app.session.live_mode, Some(LiveMode::Paused)) {
                 // Still check for EOF while paused.
                 app.check_eof();
             }
 
-            let timeout = match app.live_mode {
+            let timeout = match app.session.live_mode {
                 Some(LiveMode::Live) => std::time::Duration::from_millis(200),
                 Some(LiveMode::Paused) => std::time::Duration::from_millis(500),
                 _ => std::time::Duration::from_secs(60),

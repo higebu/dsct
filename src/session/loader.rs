@@ -70,7 +70,7 @@ pub fn build_index(data: &[u8]) -> Result<Vec<PacketIndex>> {
     Ok(convert_records(records))
 }
 
-/// Convert pcap library records to the compact TUI index representation.
+/// Convert pcap library records to the compact index representation.
 pub(super) fn convert_records(
     records: Vec<packet_dissector_pcap::PacketRecord>,
 ) -> Vec<PacketIndex> {
