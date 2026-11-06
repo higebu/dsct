@@ -1,10 +1,10 @@
 //! Stats for the TUI: collects them in the [`Session`] and shows the
 //! result in the stats overlay.
 //!
-//! [`Session`]: super::session::Session
+//! [`Session`]: crate::session::Session
 
 use super::app::App;
-use super::session::Tick;
+use crate::session::Tick;
 
 impl App {
     /// Start collecting stats over the displayed packets.
@@ -31,8 +31,8 @@ impl App {
 
 #[cfg(all(test, feature = "tui"))]
 mod tests {
-    use super::super::state::StatsProgress;
     use super::super::test_util::make_test_app;
+    use crate::session::state::StatsProgress;
     use crate::stats::{StatsCollector, StatsFlags};
 
     #[test]

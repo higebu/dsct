@@ -1,13 +1,14 @@
 //! TUI application state and core accessors.
 
-use super::live::StdinCopier;
-use super::session::Session;
-use super::state::{
-    CaptureMap, CommandState, DEFAULT_PANE_WEIGHTS, DetailTreeState, FilterState, HexDumpState,
-    LiveMode, PacketIndex, PacketListState, Pane, PaneLayout, StreamViewState, TimeFormat,
-    TreeNode,
-};
 use packet_dissector::registry::DissectorRegistry;
+
+use super::state::{
+    CommandState, DEFAULT_PANE_WEIGHTS, DetailTreeState, FilterState, HexDumpState,
+    PacketListState, Pane, PaneLayout, StreamViewState, TimeFormat,
+};
+use crate::session::Session;
+use crate::session::live::StdinCopier;
+use crate::session::state::{CaptureMap, LiveMode, PacketIndex};
 
 /// Top-level application state: the [`Session`] and how the TUI shows it.
 pub struct App {
@@ -47,6 +48,7 @@ pub struct App {
 
 impl App {
     /// Create a new App from a capture map and index.
+    #[cfg(test)]
     pub fn new(
         capture: CaptureMap,
         indices: Vec<PacketIndex>,
@@ -54,7 +56,7 @@ impl App {
         file_path: &std::path::Path,
         decode_as_args: Vec<String>,
     ) -> Self {
-        Self::with_session(Session::new(
+        Self::from_session(Session::new(
             capture,
             indices,
             registry,
@@ -71,7 +73,7 @@ impl App {
         copier: StdinCopier,
         decode_as_args: Vec<String>,
     ) -> Self {
-        Self::with_session(Session::new_live(
+        Self::from_session(Session::new_live(
             capture,
             indices,
             registry,
@@ -81,7 +83,7 @@ impl App {
     }
 
     /// Create an App showing `session`, with the packet list focused.
-    fn with_session(session: Session) -> Self {
+    pub fn from_session(session: Session) -> Self {
         let loaded_history = super::state::load_history();
         let mut app = Self {
             session,
@@ -213,29 +215,13 @@ impl App {
     }
 }
 
-/// Iterator over visible (non-collapsed) tree nodes.
-pub fn visible_nodes(nodes: &[TreeNode]) -> impl Iterator<Item = (usize, &TreeNode)> {
-    let mut skip_depth: Option<usize> = None;
-    nodes.iter().enumerate().filter(move |(_, node)| {
-        if let Some(d) = skip_depth {
-            if node.depth > d {
-                return false;
-            }
-            skip_depth = None;
-        }
-        if !node.expanded && node.children_count > 0 {
-            skip_depth = Some(node.depth);
-        }
-        true
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::super::loader;
-    use super::super::session::SUMMARY_CACHE_CAPACITY;
-    use super::super::state::{DEFAULT_PANE_WEIGHTS, SelectionMode, StreamLine, StreamViewState};
+    use super::super::state::{DEFAULT_PANE_WEIGHTS, SelectionMode, StreamViewState};
     use super::*;
+    use crate::session::SUMMARY_CACHE_CAPACITY;
+    use crate::session::loader;
+    use crate::session::state::StreamLine;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     /// Create a test App using an mmap over a pcap built in memory.
@@ -244,7 +230,7 @@ mod tests {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let c = COUNTER.fetch_add(1, Ordering::Relaxed);
 
-        let pcap = super::super::loader::tests::build_pcap_for_test(n);
+        let pcap = crate::session::loader::tests::build_pcap_for_test(n);
         let path =
             std::env::temp_dir().join(format!("dsct_app_test_{}_{}_{c}", n, std::process::id()));
         std::fs::write(&path, &pcap).unwrap();
@@ -380,29 +366,6 @@ mod tests {
         // Second call — cache hit
         let _ = app.session.get_or_dissect_summary(0);
         assert_eq!(app.session.summary_cache.len(), 1);
-    }
-
-    #[test]
-    fn visible_nodes_hides_collapsed_children() {
-        let nodes = vec![
-            TreeNode {
-                label: "Layer".into(),
-                depth: 0,
-                expanded: false,
-                byte_range: 0..10,
-                children_count: 2,
-                is_layer: true,
-            },
-            TreeNode {
-                label: "Field1".into(),
-                depth: 1,
-                expanded: false,
-                byte_range: 0..4,
-                children_count: 0,
-                is_layer: false,
-            },
-        ];
-        assert_eq!(visible_nodes(&nodes).count(), 1);
     }
 
     #[test]
@@ -772,49 +735,6 @@ mod tests {
             })
             .collect();
         assert!(last_line.contains("/udp"));
-    }
-
-    // -- payload_to_ascii --
-
-    #[test]
-    fn payload_to_ascii_converts() {
-        assert_eq!(
-            super::super::session::payload_to_ascii(b"Hello\x00\x01"),
-            "Hello.."
-        );
-        assert_eq!(super::super::session::payload_to_ascii(b"AB\nCD"), "AB\nCD");
-        assert_eq!(super::super::session::payload_to_ascii(b"\t \r"), "\t \r");
-    }
-
-    // -- visible_nodes edge cases --
-
-    #[test]
-    fn visible_nodes_all_expanded() {
-        let nodes = vec![
-            TreeNode {
-                label: "Layer".into(),
-                depth: 0,
-                expanded: true,
-                byte_range: 0..10,
-                children_count: 1,
-                is_layer: true,
-            },
-            TreeNode {
-                label: "Field".into(),
-                depth: 1,
-                expanded: false,
-                byte_range: 0..4,
-                children_count: 0,
-                is_layer: false,
-            },
-        ];
-        assert_eq!(visible_nodes(&nodes).count(), 2);
-    }
-
-    #[test]
-    fn visible_nodes_empty() {
-        let nodes: Vec<TreeNode> = vec![];
-        assert_eq!(visible_nodes(&nodes).count(), 0);
     }
 
     // -- Tree navigation (h/l) --
@@ -1543,7 +1463,7 @@ mod tests {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, AtomicU64};
 
-        let pcap = super::super::loader::tests::build_pcap_for_test(3);
+        let pcap = crate::session::loader::tests::build_pcap_for_test(3);
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
         tmp.write_all(&pcap).unwrap();
         tmp.flush().unwrap();
@@ -1552,7 +1472,7 @@ mod tests {
         let capture = CaptureMap::new_live(file).unwrap();
         let indices = loader::build_index(capture.as_bytes()).unwrap();
 
-        let copier = super::super::live::StdinCopier {
+        let copier = crate::session::live::StdinCopier {
             bytes_written: Arc::new(AtomicU64::new(pcap.len() as u64)),
             eof: Arc::new(AtomicBool::new(false)),
             handle: None,
@@ -1573,7 +1493,7 @@ mod tests {
         let (app, _tmp) = make_live_test_app();
         assert_eq!(
             app.session.live_mode,
-            Some(super::super::state::LiveMode::Live)
+            Some(crate::session::state::LiveMode::Live)
         );
         assert_eq!(app.session.file_name, "<stdin>");
         assert_eq!(app.total_count(), 3);
@@ -1582,7 +1502,7 @@ mod tests {
 
     #[test]
     fn live_pause_and_resume() {
-        use super::super::state::LiveMode;
+        use crate::session::state::LiveMode;
 
         let (mut app, _tmp) = make_live_test_app();
         assert_eq!(app.session.live_mode, Some(LiveMode::Live));
@@ -1606,7 +1526,7 @@ mod tests {
 
     #[test]
     fn live_pause_resume_ignored_in_complete() {
-        use super::super::state::LiveMode;
+        use crate::session::state::LiveMode;
 
         let (mut app, _tmp) = make_live_test_app();
         app.session.live_mode = Some(LiveMode::Complete);
@@ -1638,7 +1558,7 @@ mod tests {
         assert_eq!(app.total_count(), 3);
 
         // Grow the file by rewriting with 6 packets.
-        let pcap_6 = super::super::loader::tests::build_pcap_for_test(6);
+        let pcap_6 = crate::session::loader::tests::build_pcap_for_test(6);
         tmp.as_file().set_len(0).unwrap();
         tmp.seek(std::io::SeekFrom::Start(0)).unwrap();
         tmp.write_all(&pcap_6).unwrap();
@@ -1659,14 +1579,14 @@ mod tests {
 
     #[test]
     fn live_tick_skipped_when_paused() {
-        use super::super::state::LiveMode;
+        use crate::session::state::LiveMode;
         use std::io::{Seek, Write};
 
         let (mut app, mut tmp) = make_live_test_app();
         app.session.live_mode = Some(LiveMode::Paused);
 
         // Grow the file.
-        let pcap_6 = super::super::loader::tests::build_pcap_for_test(6);
+        let pcap_6 = crate::session::loader::tests::build_pcap_for_test(6);
         tmp.as_file().set_len(0).unwrap();
         tmp.seek(std::io::SeekFrom::Start(0)).unwrap();
         tmp.write_all(&pcap_6).unwrap();
@@ -1686,7 +1606,7 @@ mod tests {
 
     #[test]
     fn check_eof_transitions_to_complete() {
-        use super::super::state::LiveMode;
+        use crate::session::state::LiveMode;
 
         let (mut app, _tmp) = make_live_test_app();
         assert_eq!(app.session.live_mode, Some(LiveMode::Live));
@@ -1709,7 +1629,7 @@ mod tests {
         app.packet_list.selected = app.displayed_count() - 1;
 
         // Grow the file.
-        let pcap_6 = super::super::loader::tests::build_pcap_for_test(6);
+        let pcap_6 = crate::session::loader::tests::build_pcap_for_test(6);
         tmp.as_file().set_len(0).unwrap();
         tmp.seek(std::io::SeekFrom::Start(0)).unwrap();
         tmp.write_all(&pcap_6).unwrap();
@@ -1736,7 +1656,7 @@ mod tests {
         // Stay at first packet (not at bottom).
         app.packet_list.selected = 0;
 
-        let pcap_6 = super::super::loader::tests::build_pcap_for_test(6);
+        let pcap_6 = crate::session::loader::tests::build_pcap_for_test(6);
         tmp.as_file().set_len(0).unwrap();
         tmp.seek(std::io::SeekFrom::Start(0)).unwrap();
         tmp.write_all(&pcap_6).unwrap();
@@ -1922,7 +1842,7 @@ mod tests {
         let capture = CaptureMap::new_live(file).unwrap();
         assert_eq!(capture.as_bytes().len(), 0);
 
-        let copier = super::super::live::StdinCopier {
+        let copier = crate::session::live::StdinCopier {
             bytes_written: Arc::new(AtomicU64::new(0)),
             eof: Arc::new(AtomicBool::new(false)),
             handle: None,
@@ -1940,7 +1860,7 @@ mod tests {
         assert_eq!(app.displayed_count(), 0);
 
         // 2. Simulate stdin copier writing pcap data to the temp file.
-        let pcap = super::super::loader::tests::build_pcap_for_test(3);
+        let pcap = crate::session::loader::tests::build_pcap_for_test(3);
         std::io::Write::write_all(&mut tmp.as_file(), &pcap).unwrap();
         tmp.as_file().flush().unwrap();
 
@@ -2013,7 +1933,7 @@ mod tests {
 
         // 1. Write pcap data BEFORE creating the CaptureMap.
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let pcap = super::super::loader::tests::build_pcap_for_test(5);
+        let pcap = crate::session::loader::tests::build_pcap_for_test(5);
         std::io::Write::write_all(&mut tmp.as_file(), &pcap).unwrap();
         tmp.as_file().flush().unwrap();
 
@@ -2022,7 +1942,7 @@ mod tests {
         // The mmap already contains all data.
         assert_eq!(capture.as_bytes().len(), pcap.len());
 
-        let copier = super::super::live::StdinCopier {
+        let copier = crate::session::live::StdinCopier {
             bytes_written: Arc::new(AtomicU64::new(pcap.len() as u64)),
             eof: Arc::new(AtomicBool::new(false)),
             handle: None,

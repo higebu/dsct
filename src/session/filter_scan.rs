@@ -5,9 +5,9 @@ use std::sync::Arc;
 use packet_dissector::registry::DissectorRegistry;
 use packet_dissector_core::packet::{DissectBuffer, Packet};
 
-use super::super::filter_bitmap::FilterBitmap;
-use super::super::parallel_scan::{ParallelFilterScan, ScanPoll};
-use super::super::state::{CaptureMap, FilterProgress, InOrderScan, PacketIndex};
+use super::filter_bitmap::FilterBitmap;
+use super::parallel_scan::{ParallelFilterScan, ScanPoll};
+use super::state::{CaptureMap, FilterProgress, InOrderScan, PacketIndex};
 use super::{Session, Tick};
 use crate::filter_expr::FilterExpr;
 

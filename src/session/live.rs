@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Reads stdin in a background thread and writes to a temporary file.
 ///
-/// The TUI polls [`bytes_written`](StdinCopier::bytes_written) to detect new
+/// The session polls [`bytes_written`](StdinCopier::bytes_written) to detect new
 /// data and [`eof`](StdinCopier::eof) to detect end-of-stream.
 pub struct StdinCopier {
     /// Total bytes written to the temp file so far.
@@ -21,7 +21,7 @@ impl StdinCopier {
     ///
     /// `source` is typically the original stdin pipe fd (saved before
     /// redirecting fd 0 to `/dev/tty`). The caller should pass a
-    /// `try_clone()`d file handle for `temp_file` so that the TUI thread
+    /// `try_clone()`d file handle for `temp_file` so that the session
     /// can independently mmap the same file.
     pub fn spawn(source: std::fs::File, temp_file: &std::fs::File) -> std::io::Result<Self> {
         let bytes_written = Arc::new(AtomicU64::new(0));
@@ -75,7 +75,7 @@ impl Drop for StdinCopier {
     }
 }
 
-#[cfg(all(test, feature = "tui"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;

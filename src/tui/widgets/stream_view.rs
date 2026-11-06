@@ -67,7 +67,7 @@ pub fn render(f: &mut Frame, sv: &StreamViewState, area: Rect) {
 #[cfg(all(test, feature = "tui"))]
 mod tests {
     use super::*;
-    use crate::tui::state::StreamLine;
+    use crate::session::state::StreamLine;
     use crate::tui::test_util::render_to_string;
 
     #[test]

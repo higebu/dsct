@@ -1,11 +1,11 @@
 //! Follow Stream for the TUI: starts the collection in the [`Session`]
 //! and shows the result in the Follow Stream overlay.
 //!
-//! [`Session`]: super::session::Session
+//! [`Session`]: crate::session::Session
 
 use super::app::App;
-use super::session::Tick;
 use super::state::StreamViewState;
+use crate::session::Tick;
 
 impl App {
     /// Start building a follow-stream view for the selected packet.

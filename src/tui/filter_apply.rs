@@ -1,10 +1,10 @@
 //! Filter application for the TUI: runs the scan in the [`Session`] and
 //! resets the views when the filtered list changes.
 //!
-//! [`Session`]: super::session::Session
+//! [`Session`]: crate::session::Session
 
 use super::app::App;
-use super::session::{FilterOutcome, Tick};
+use crate::session::{FilterOutcome, Tick};
 
 impl App {
     pub(super) fn apply_filter(&mut self) {
@@ -49,9 +49,9 @@ mod tests {
     use packet_dissector::registry::DissectorRegistry;
 
     use super::super::app::App;
-    use super::super::loader;
-    use super::super::state::CaptureMap;
     use super::super::test_util::make_test_app;
+    use crate::session::loader;
+    use crate::session::state::CaptureMap;
 
     #[test]
     fn apply_filter_empty_shows_all() {
@@ -198,7 +198,7 @@ mod tests {
     /// Build an App over `udp` UDP packets followed by `tcp` TCP packets,
     /// backed by a real temp file so the parallel scan can run.
     fn make_mixed_app_with_path(udp: usize, tcp: usize) -> (App, tempfile::NamedTempFile) {
-        let pcap = super::super::parallel_scan::tests::build_mixed_pcap_for_test(udp, tcp);
+        let pcap = crate::session::parallel_scan::tests::build_mixed_pcap_for_test(udp, tcp);
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
         tmp.write_all(&pcap).unwrap();
         tmp.flush().unwrap();
@@ -248,10 +248,10 @@ mod tests {
             let (mut app, _tmp) = make_mixed_app_with_path(30, 20);
             app.filter.buf.input = filter.into();
             app.session.applied_filter = filter.into();
-            app.session.filter_progress = Some(super::super::state::FilterProgress {
+            app.session.filter_progress = Some(crate::session::state::FilterProgress {
                 expr: crate::filter_expr::FilterExpr::parse(filter).unwrap(),
                 cursor: 0,
-                results: super::super::filter_bitmap::FilterBitmap::new(),
+                results: crate::session::filter_bitmap::FilterBitmap::new(),
                 registry: DissectorRegistry::default(),
                 in_order: None,
             });

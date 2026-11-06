@@ -333,9 +333,10 @@ fn render_stats_overlay(f: &mut Frame, stats: &crate::stats::StatsOutput) {
 
 #[cfg(all(test, feature = "tui"))]
 mod tests {
-    use super::super::state::{FilterProgress, StreamLine, StreamViewState};
+    use super::super::state::StreamViewState;
     use super::super::test_util::{make_test_app, render_to_string};
     use super::*;
+    use crate::session::state::{FilterProgress, StreamLine};
 
     #[test]
     fn render_shows_panes() {
@@ -369,7 +370,7 @@ mod tests {
         app.session.filter_progress = Some(FilterProgress {
             expr: None,
             cursor: 0,
-            results: super::super::filter_bitmap::FilterBitmap::new(),
+            results: crate::session::filter_bitmap::FilterBitmap::new(),
             registry: packet_dissector::registry::DissectorRegistry::default(),
             in_order: None,
         });

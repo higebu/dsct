@@ -307,9 +307,78 @@ fn format_ipv6(addr: &[u8; 16]) -> String {
     parts.join(":")
 }
 
+/// Iterator over visible (non-collapsed) tree nodes.
+pub fn visible_nodes(nodes: &[TreeNode]) -> impl Iterator<Item = (usize, &TreeNode)> {
+    let mut skip_depth: Option<usize> = None;
+    nodes.iter().enumerate().filter(move |(_, node)| {
+        if let Some(d) = skip_depth {
+            if node.depth > d {
+                return false;
+            }
+            skip_depth = None;
+        }
+        if !node.expanded && node.children_count > 0 {
+            skip_depth = Some(node.depth);
+        }
+        true
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visible_nodes_hides_collapsed_children() {
+        let nodes = vec![
+            TreeNode {
+                label: "Layer".into(),
+                depth: 0,
+                expanded: false,
+                byte_range: 0..10,
+                children_count: 2,
+                is_layer: true,
+            },
+            TreeNode {
+                label: "Field1".into(),
+                depth: 1,
+                expanded: false,
+                byte_range: 0..4,
+                children_count: 0,
+                is_layer: false,
+            },
+        ];
+        assert_eq!(visible_nodes(&nodes).count(), 1);
+    }
+
+    #[test]
+    fn visible_nodes_all_expanded() {
+        let nodes = vec![
+            TreeNode {
+                label: "Layer".into(),
+                depth: 0,
+                expanded: true,
+                byte_range: 0..10,
+                children_count: 1,
+                is_layer: true,
+            },
+            TreeNode {
+                label: "Field".into(),
+                depth: 1,
+                expanded: false,
+                byte_range: 0..4,
+                children_count: 0,
+                is_layer: false,
+            },
+        ];
+        assert_eq!(visible_nodes(&nodes).count(), 2);
+    }
+
+    #[test]
+    fn visible_nodes_empty() {
+        let nodes: Vec<TreeNode> = vec![];
+        assert_eq!(visible_nodes(&nodes).count(), 0);
+    }
     use packet_dissector_core::field::MacAddr;
 
     fn make_packet<'a>(buf: &'a DissectBuffer<'a>, data: &'a [u8]) -> Packet<'a, 'a> {

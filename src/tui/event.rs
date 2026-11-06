@@ -53,7 +53,7 @@ pub fn run_event_loop(
 }
 
 fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
-    use super::state::LiveMode;
+    use crate::session::state::LiveMode;
 
     let mut last_render = std::time::Instant::now();
 

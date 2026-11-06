@@ -2,7 +2,7 @@
 
 use packet_dissector_core::packet::{DissectBuffer, Packet};
 
-use super::super::state::StatsProgress;
+use super::state::StatsProgress;
 use super::{Session, Tick};
 use crate::stats::StatsOutput;
 

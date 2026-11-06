@@ -11,9 +11,20 @@
 //! `*_tick` methods, and reacts to what they report (for example by resetting
 //! its selection when a filter finishes).
 
+pub mod bg_indexer;
+pub mod completion;
+pub mod filter_bitmap;
 mod filter_scan;
+pub mod live;
+pub mod loader;
+pub mod ordered_pass;
+pub mod owned_packet;
+mod packet_codec;
+pub mod parallel_scan;
+pub mod state;
 mod stats_collect;
 mod stream;
+pub mod tree;
 
 use std::collections::HashSet;
 use std::num::NonZeroUsize;
@@ -22,21 +33,44 @@ use std::path::{Path, PathBuf};
 use lru::LruCache;
 use packet_dissector::registry::DissectorRegistry;
 
-use super::bg_indexer::BackgroundIndexer;
-use super::completion::CompletionEngine;
-use super::filter_bitmap::FilterBitmap;
-use super::live::StdinCopier;
-use super::loader;
-use super::ordered_pass::{self, OrderedPass, Status};
-use super::parallel_scan::ParallelFilterScan;
-use super::state::{
+use self::bg_indexer::BackgroundIndexer;
+use self::completion::CompletionEngine;
+use self::filter_bitmap::FilterBitmap;
+use self::live::StdinCopier;
+use self::ordered_pass::{OrderedPass, Status};
+use self::parallel_scan::ParallelFilterScan;
+use self::state::{
     CaptureMap, FilterProgress, IndexProgress, LiveMode, PacketIndex, RowSummary, SelectedPacket,
     StatsProgress, StreamBuildProgress,
 };
+use crate::decode_as;
+use crate::error::Result;
 
 pub use filter_scan::FilterOutcome;
-#[cfg(test)]
-pub(super) use stream::payload_to_ascii;
+pub use stream::FollowedStream;
+
+/// Return the XDG-compliant cache directory for dsct temporary files.
+///
+/// Resolution order:
+/// 1. `$XDG_CACHE_HOME/dsct`
+/// 2. `$HOME/.cache/dsct`
+/// 3. `None` (caller should fall back to the system temp directory)
+pub fn cache_dir() -> Option<PathBuf> {
+    if let Ok(cache) = std::env::var("XDG_CACHE_HOME") {
+        return Some(PathBuf::from(cache).join("dsct"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return Some(PathBuf::from(home).join(".cache/dsct"));
+    }
+    None
+}
+
+/// A registry configured by the `--decode-as` arguments.
+pub fn new_registry(decode_as_args: &[String]) -> Result<DissectorRegistry> {
+    let mut registry = DissectorRegistry::default();
+    decode_as::parse_and_apply(&mut registry, decode_as_args)?;
+    Ok(registry)
+}
 
 /// Maximum number of cached row summaries.
 #[allow(clippy::unwrap_used)]
@@ -138,6 +172,38 @@ impl Session {
             decode_as_args,
             None,
         )
+    }
+
+    /// Open the capture file at `file`.
+    ///
+    /// The session starts with an empty index: a background thread indexes
+    /// the file (drive it with [`index_tick`](Self::index_tick)) and another
+    /// dissects it in capture order (drive it with
+    /// [`ordered_tick`](Self::ordered_tick)), so a frontend can show the
+    /// first packets while a large file is still being read.
+    pub fn open(file: &Path, decode_as_args: Vec<String>) -> Result<Self> {
+        let registry = new_registry(&decode_as_args)?;
+
+        // Memory-map the file for display/dissection on the caller's thread.
+        let capture = loader::open_and_mmap(file)?;
+        let total_bytes = capture.as_bytes().len();
+
+        // Index in the background so the frontend stays responsive even for
+        // very large capture files.
+        let bg_indexer = BackgroundIndexer::spawn(file, total_bytes)?;
+
+        // Dissect the capture in order in the background, for packets whose
+        // dissection uses state kept across packets.
+        let ordered = OrderedPass::spawn(
+            loader::open_and_mmap(file)?,
+            new_registry(&decode_as_args)?,
+            cache_dir().as_deref(),
+        )?;
+
+        let mut session = Self::new(capture, Vec::new(), registry, file, decode_as_args);
+        session.bg_indexer = Some(bg_indexer);
+        session.ordered = Some(ordered);
+        Ok(session)
     }
 
     /// Create a session for a live capture copied from stdin by `copier`.
@@ -265,8 +331,8 @@ impl Session {
     /// A fresh registry configured like `registry`, for scans that dissect
     /// packets in capture order and must not see the state the on-demand
     /// display dissection left in `registry`.
-    pub fn scan_registry(&self) -> crate::error::Result<DissectorRegistry> {
-        super::new_registry(&self.decode_as_args)
+    pub fn scan_registry(&self) -> Result<DissectorRegistry> {
+        new_registry(&self.decode_as_args)
     }
 
     // -- In-order dissection pass ---------------------------------------------
@@ -538,5 +604,57 @@ impl Session {
 
         self.indexed_bytes = data.len();
         true
+    }
+}
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+mod tests {
+    use super::*;
+
+    /// Serialize tests that mutate environment variables.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn cache_dir_prefers_xdg_cache_home() {
+        let _lock = env_lock();
+        unsafe {
+            std::env::set_var("XDG_CACHE_HOME", "/tmp/xdg-test-cache");
+            std::env::set_var("HOME", "/home/dummy");
+        }
+        let dir = cache_dir();
+        assert_eq!(dir, Some(PathBuf::from("/tmp/xdg-test-cache/dsct")));
+        unsafe {
+            std::env::remove_var("XDG_CACHE_HOME");
+            std::env::remove_var("HOME");
+        }
+    }
+
+    #[test]
+    fn cache_dir_falls_back_to_home() {
+        let _lock = env_lock();
+        unsafe {
+            std::env::remove_var("XDG_CACHE_HOME");
+            std::env::set_var("HOME", "/home/dummy");
+        }
+        let dir = cache_dir();
+        assert_eq!(dir, Some(PathBuf::from("/home/dummy/.cache/dsct")));
+        unsafe {
+            std::env::remove_var("HOME");
+        }
+    }
+
+    #[test]
+    fn cache_dir_returns_none_without_env() {
+        let _lock = env_lock();
+        unsafe {
+            std::env::remove_var("XDG_CACHE_HOME");
+            std::env::remove_var("HOME");
+        }
+        let dir = cache_dir();
+        assert_eq!(dir, None);
     }
 }

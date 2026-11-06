@@ -2,14 +2,15 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::app::{App, visible_nodes};
+use super::app::App;
 use super::clipboard;
-use super::completion;
 use super::cursor::CursorBuffer;
 use super::state::{
-    CommandState, CompletionCandidate, DEFAULT_PANE_WEIGHTS, LiveMode, Pane, SelectionMode,
-    SelectionState,
+    CommandState, CompletionCandidate, DEFAULT_PANE_WEIGHTS, Pane, SelectionMode, SelectionState,
 };
+use crate::session::completion;
+use crate::session::state::LiveMode;
+use crate::session::tree::visible_nodes;
 
 impl App {
     /// Handle a key event, updating state accordingly.
@@ -1330,9 +1331,10 @@ impl App {
 
 #[cfg(all(test, feature = "tui"))]
 mod tests {
-    use super::super::state::{StreamLine, StreamViewState};
+    use super::super::state::StreamViewState;
     use super::super::test_util::make_test_app;
     use super::*;
+    use crate::session::state::StreamLine;
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };

@@ -2,7 +2,7 @@
 //!
 //! This module is compiled only during tests with the `tui` feature enabled.
 //! It provides a small fixture builder (`make_test_app`) that wraps an
-//! in-memory pcap built by [`crate::tui::loader::tests::build_pcap_for_test`],
+//! in-memory pcap built by [`crate::session::loader::tests::build_pcap_for_test`],
 //! plus a ratatui `TestBackend` helper for substring assertions on rendered
 //! widget output.
 
@@ -16,8 +16,8 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
 use super::app::App;
-use super::loader;
-use super::state::CaptureMap;
+use crate::session::loader;
+use crate::session::state::CaptureMap;
 
 /// Build a test [`App`] backed by an in-memory pcap with `n` UDP packets.
 ///

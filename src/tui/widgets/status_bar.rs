@@ -10,8 +10,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::session::state::LiveMode;
 use crate::tui::app::App;
-use crate::tui::state::{LiveMode, Pane, SelectionMode};
+use crate::tui::state::{Pane, SelectionMode};
 
 /// Powerline right-arrow separator.
 const SEP_RIGHT: &str = "\u{E0B0}"; //

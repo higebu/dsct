@@ -9,10 +9,11 @@ use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Row, Table, TableState};
 
+use crate::session::loader;
+use crate::session::state::PacketIndex;
 use crate::tui::app::App;
 use crate::tui::color::protocol_color;
-use crate::tui::loader;
-use crate::tui::state::{PacketIndex, Pane, TimeFormat};
+use crate::tui::state::{Pane, TimeFormat};
 
 /// Render the packet list table into the given area.
 pub fn render(f: &mut Frame, app: &mut App, area: Rect) {

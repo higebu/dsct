@@ -1,4 +1,4 @@
-//! Owned packet representation for long-term storage (TUI selected packet).
+//! Owned packet representation for long-term storage (the selected packet).
 //!
 //! [`OwnedPacket`] stores a fully owned copy of a dissected packet that can
 //! outlive the [`DissectBuffer`](packet_dissector_core::packet::DissectBuffer).

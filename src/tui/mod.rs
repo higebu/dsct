@@ -12,88 +12,33 @@
 //!   the order packets are viewed in.
 
 mod app;
-mod bg_indexer;
 mod clipboard;
 mod color;
-mod completion;
 mod cursor;
 mod event;
 mod filter_apply;
-mod filter_bitmap;
 mod keys;
-mod live;
-#[doc(hidden)]
-pub mod loader;
-mod ordered_pass;
-mod owned_packet;
-mod packet_codec;
-mod parallel_scan;
-mod session;
 mod state;
 mod stats_collect;
 mod stream;
 #[cfg(all(test, feature = "tui"))]
 mod test_util;
-mod tree;
 mod ui;
 mod widgets;
 
 use std::path::PathBuf;
 
-use packet_dissector::registry::DissectorRegistry;
-
-use crate::decode_as;
 use crate::error::{DsctError, Result};
-
-/// Return the XDG-compliant cache directory for dsct temporary files.
-///
-/// Resolution order:
-/// 1. `$XDG_CACHE_HOME/dsct`
-/// 2. `$HOME/.cache/dsct`
-/// 3. `None` (caller should fall back to the system temp directory)
-fn cache_dir() -> Option<PathBuf> {
-    if let Ok(cache) = std::env::var("XDG_CACHE_HOME") {
-        return Some(PathBuf::from(cache).join("dsct"));
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return Some(PathBuf::from(home).join(".cache/dsct"));
-    }
-    None
-}
-
-/// A registry configured by the `--decode-as` arguments.
-fn new_registry(decode_as_args: &[String]) -> Result<DissectorRegistry> {
-    let mut registry = DissectorRegistry::default();
-    decode_as::parse_and_apply(&mut registry, decode_as_args)?;
-    Ok(registry)
-}
+use crate::session::live::StdinCopier;
+use crate::session::ordered_pass::OrderedPass;
+use crate::session::state::CaptureMap;
+use crate::session::{Session, cache_dir, new_registry};
 
 /// Entry point for `dsct tui <file>`.
 pub fn run(file: PathBuf, decode_as_args: Vec<String>) -> Result<()> {
-    let registry = new_registry(&decode_as_args)?;
-
-    // Memory-map the file for display/dissection on the main thread.
-    let capture = loader::open_and_mmap(&file)?;
-    let total_bytes = capture.as_bytes().len();
-
-    // Spawn a background thread for indexing so the UI stays responsive
-    // even for very large capture files.
-    let bg_indexer = bg_indexer::BackgroundIndexer::spawn(&file, total_bytes)?;
-
     // Start the TUI immediately with an empty index; packets will appear
-    // incrementally as the background thread delivers results.
-    let indices = Vec::new();
-    // Dissect the capture in order in the background, for packets whose
-    // dissection uses state kept across packets.
-    let ordered = ordered_pass::OrderedPass::spawn(
-        loader::open_and_mmap(&file)?,
-        new_registry(&decode_as_args)?,
-        cache_dir().as_deref(),
-    )?;
-
-    let mut app = app::App::new(capture, indices, registry, &file, decode_as_args);
-    app.session.bg_indexer = Some(bg_indexer);
-    app.session.ordered = Some(ordered);
+    // incrementally as the background threads deliver results.
+    let app = app::App::from_session(Session::open(&file, decode_as_args)?);
 
     let mut terminal = event::init_terminal()?;
     let result = event::run_event_loop(&mut terminal, app);
@@ -121,7 +66,7 @@ pub fn run_live(decode_as_args: Vec<String>) -> Result<()> {
     let pipe_read = dup_stdin()?;
 
     // Spawn background thread to copy the pipe into the temp file.
-    let copier = live::StdinCopier::spawn(pipe_read, &file)?;
+    let copier = StdinCopier::spawn(pipe_read, &file)?;
 
     // Wait briefly for the first data to arrive before taking over the
     // terminal.  This allows upstream programs like `sudo` to complete
@@ -155,13 +100,13 @@ pub fn run_live(decode_as_args: Vec<String>) -> Result<()> {
     let mut terminal = event::init_terminal()?;
 
     let result = (|| {
-        let ordered = ordered_pass::OrderedPass::spawn(
-            state::CaptureMap::new_live(file.try_clone()?)?,
+        let ordered = OrderedPass::spawn(
+            CaptureMap::new_live(file.try_clone()?)?,
             new_registry(&decode_as_args)?,
             cache_dir().as_deref(),
         )?;
         // Create a live-mode mmap (initially empty or near-empty).
-        let capture = state::CaptureMap::new_live(file)?;
+        let capture = CaptureMap::new_live(file)?;
         let indices = Vec::new();
 
         let mut app = app::App::new_live(capture, indices, registry, copier, decode_as_args);
@@ -195,7 +140,7 @@ const FIRST_DATA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5
 
 /// Wait until the copier has received data, the pipe closes, or a timeout
 /// expires — whichever comes first.
-fn wait_for_first_data(copier: &live::StdinCopier) -> WaitResult {
+fn wait_for_first_data(copier: &StdinCopier) -> WaitResult {
     use std::sync::atomic::Ordering;
     use std::time::Instant;
 
@@ -248,23 +193,16 @@ fn redirect_stdin_to_tty() -> Result<()> {
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-    /// Serialize tests that mutate environment variables.
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
     /// Helper to create a StdinCopier with controllable atomics (no real thread).
-    fn fake_copier(bytes: u64, eof: bool) -> live::StdinCopier {
+    fn fake_copier(bytes: u64, eof: bool) -> StdinCopier {
         let bw = Arc::new(AtomicU64::new(bytes));
         let done = Arc::new(AtomicBool::new(eof));
-        live::StdinCopier {
+        StdinCopier {
             bytes_written: bw,
             eof: done,
             handle: None,
@@ -295,46 +233,6 @@ mod tests {
         bw.store(24, Ordering::Release);
 
         assert_eq!(handle.join().unwrap(), WaitResult::Data);
-    }
-
-    #[test]
-    fn cache_dir_prefers_xdg_cache_home() {
-        let _lock = env_lock();
-        unsafe {
-            std::env::set_var("XDG_CACHE_HOME", "/tmp/xdg-test-cache");
-            std::env::set_var("HOME", "/home/dummy");
-        }
-        let dir = cache_dir();
-        assert_eq!(dir, Some(PathBuf::from("/tmp/xdg-test-cache/dsct")));
-        unsafe {
-            std::env::remove_var("XDG_CACHE_HOME");
-            std::env::remove_var("HOME");
-        }
-    }
-
-    #[test]
-    fn cache_dir_falls_back_to_home() {
-        let _lock = env_lock();
-        unsafe {
-            std::env::remove_var("XDG_CACHE_HOME");
-            std::env::set_var("HOME", "/home/dummy");
-        }
-        let dir = cache_dir();
-        assert_eq!(dir, Some(PathBuf::from("/home/dummy/.cache/dsct")));
-        unsafe {
-            std::env::remove_var("HOME");
-        }
-    }
-
-    #[test]
-    fn cache_dir_returns_none_without_env() {
-        let _lock = env_lock();
-        unsafe {
-            std::env::remove_var("XDG_CACHE_HOME");
-            std::env::remove_var("HOME");
-        }
-        let dir = cache_dir();
-        assert_eq!(dir, None);
     }
 
     #[test]

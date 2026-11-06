@@ -2,9 +2,9 @@
 
 use packet_dissector_core::packet::DissectBuffer;
 
-use super::super::loader;
-use super::super::owned_packet::OwnedPacket;
-use super::super::state::{StreamBuildProgress, StreamKey, StreamLine};
+use super::loader;
+use super::owned_packet::OwnedPacket;
+use super::state::{StreamBuildProgress, StreamKey, StreamLine};
 use super::{Session, Tick};
 
 /// A collected stream, ready to display.
@@ -269,7 +269,7 @@ fn owned_u16(
 }
 
 /// Convert raw bytes to ASCII, replacing non-printable characters with `.`.
-pub(in crate::tui) fn payload_to_ascii(data: &[u8]) -> String {
+fn payload_to_ascii(data: &[u8]) -> String {
     data.iter()
         .map(|&b| {
             if b.is_ascii_graphic() || b == b' ' || b == b'\n' || b == b'\r' || b == b'\t' {
@@ -284,6 +284,13 @@ pub(in crate::tui) fn payload_to_ascii(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::payload_to_ascii;
+
+    #[test]
+    fn payload_to_ascii_converts() {
+        assert_eq!(payload_to_ascii(b"Hello\x00\x01"), "Hello..");
+        assert_eq!(payload_to_ascii(b"AB\nCD"), "AB\nCD");
+        assert_eq!(payload_to_ascii(b"\t \r"), "\t \r");
+    }
 
     #[test]
     fn payload_to_ascii_all_nonprintable() {

@@ -51,7 +51,7 @@ struct ChunkResult {
 }
 
 /// Result of polling a [`ParallelFilterScan`] via [`ParallelFilterScan::drain`].
-pub(super) enum ScanPoll {
+pub enum ScanPoll {
     /// Workers are still producing results.
     Running,
     /// Scan finished; contains the matching packets as a bitmap.
@@ -77,7 +77,7 @@ pub(super) enum ScanPoll {
 /// [`DissectorRegistry`], and evaluates the filter over its assigned chunks.
 /// Results arrive out of order via a channel and are reassembled in order
 /// when the scan is complete.
-pub(super) struct ParallelFilterScan {
+pub struct ParallelFilterScan {
     receiver: mpsc::Receiver<ChunkResult>,
     cancel: Arc<AtomicBool>,
     /// Total number of packets being scanned.
@@ -353,8 +353,8 @@ fn worker_thread(ctx: WorkerContext) {
     }
 }
 
-#[cfg(all(test, feature = "tui"))]
-pub(in crate::tui) mod tests {
+#[cfg(test)]
+pub(crate) mod tests {
     use super::*;
     use std::io::Write;
 
@@ -364,7 +364,7 @@ pub(in crate::tui) mod tests {
     use super::super::state::CaptureMap;
 
     /// Build a pcap with `udp_count` UDP packets then `tcp_count` TCP packets.
-    pub(in crate::tui) fn build_mixed_pcap_for_test(udp_count: usize, tcp_count: usize) -> Vec<u8> {
+    pub(crate) fn build_mixed_pcap_for_test(udp_count: usize, tcp_count: usize) -> Vec<u8> {
         let mut pcap_buf = Vec::new();
         // Global header: magic, version 2.4, Ethernet link type
         pcap_buf.extend_from_slice(&0xA1B2C3D4u32.to_le_bytes());

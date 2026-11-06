@@ -1,4 +1,4 @@
-//! Compact bitmap storage for TUI filter results.
+//! Compact bitmap storage for filter results.
 //!
 //! Replaces a `Vec<usize>` of matching packet indices with a packed bitmap
 //! (one bit per packet) plus a per-block cumulative popcount index.  For a
@@ -405,7 +405,7 @@ impl<'a> IntoIterator for &'a FilterBitmap {
     }
 }
 
-#[cfg(all(test, feature = "tui"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

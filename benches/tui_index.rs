@@ -8,7 +8,7 @@ use std::path::Path;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
-use dsct::tui::loader::build_index;
+use dsct::session::loader::build_index;
 
 /// Build a minimal pcap file with `n` Ethernet+IPv4+UDP packets (42 bytes each).
 fn write_test_pcap(path: &Path, n: usize) {

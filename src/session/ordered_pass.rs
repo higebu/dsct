@@ -3,7 +3,7 @@
 //! Some dissections depend on packets dissected earlier with the same
 //! registry: TCP stream IDs and reassembly, HTTP/2 HPACK, NetFlow v9 /
 //! IPFIX templates and IP fragment reassembly
-//! ([`DissectBuffer::used_cross_packet_state`]).  The TUI dissects the rows
+//! ([`DissectBuffer::used_cross_packet_state`]).  A frontend dissects the rows
 //! and the selected packet on demand, in whatever order the user views them,
 //! so for those packets the result would depend on the view order.
 //!
@@ -16,7 +16,7 @@
 //! bytes only, so a packet that did not use state in capture order uses none
 //! in any order).
 //!
-//! The kept results are encoded with [`super::packet_codec`] and appended to
+//! The kept results are encoded with `packet_codec` and appended to
 //! a temporary spill file, so memory use stays at 8 bytes per packet (the
 //! file offset) no matter how many packets use cross-packet state.
 //!
@@ -49,13 +49,13 @@ const STATELESS: u64 = 0;
 
 /// Where the display gets a packet's dissection result from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Status {
+pub enum Status {
     /// The pass has not reached the packet yet.
     Pending,
     /// The packet's dissection uses no cross-packet state: dissect it on
     /// demand.
     Stateless,
-    /// The pass kept the packet's in-order result: [`OrderedPass::load`] it.
+    /// The pass kept the packet's in-order result: load it with `OrderedPass::load`.
     Stateful,
     /// The pass stopped (I/O error) before reaching the packet: dissect it
     /// on demand.
@@ -77,7 +77,7 @@ struct Shared {
 }
 
 /// Handle to the in-order dissection pass of one capture.
-pub(super) struct OrderedPass {
+pub struct OrderedPass {
     shared: Arc<Mutex<Shared>>,
     /// `None` once the pass thread is gone.
     feeder: Option<SyncSender<Vec<PacketIndex>>>,
@@ -113,7 +113,7 @@ impl OrderedPass {
     /// Start the pass over `capture` (which may still grow, as in live
     /// capture), dissecting with `registry`.  The spill file is created in
     /// `spill_dir`, or the system temp directory if that fails or is `None`.
-    pub(super) fn spawn(
+    pub fn spawn(
         capture: CaptureMap,
         registry: DissectorRegistry,
         spill_dir: Option<&Path>,
@@ -166,7 +166,7 @@ impl OrderedPass {
     /// Send the packets of `indices` not sent yet, as far as the channel
     /// has room, without blocking.  Call again as the index grows and the
     /// pass makes progress.
-    pub(super) fn feed(&mut self, indices: &[PacketIndex]) {
+    pub fn feed(&mut self, indices: &[PacketIndex]) {
         while self.fed < indices.len() {
             let Some(tx) = &self.feeder else {
                 return;
@@ -185,18 +185,18 @@ impl OrderedPass {
     }
 
     /// Whether every packet of an index of `total` packets has been sent.
-    pub(super) fn fully_fed(&self, total: usize) -> bool {
+    pub fn fully_fed(&self, total: usize) -> bool {
         self.fed >= total || self.feeder.is_none()
     }
 
     /// Number of packets dissected so far.
     #[cfg(test)]
-    pub(super) fn processed(&self) -> usize {
+    pub fn processed(&self) -> usize {
         lock(&self.shared).offsets.len()
     }
 
     /// Where to get the result of packet `pkt_idx` from.
-    pub(super) fn status(&self, pkt_idx: usize) -> Status {
+    pub fn status(&self, pkt_idx: usize) -> Status {
         let shared = lock(&self.shared);
         match shared.offsets.get(pkt_idx) {
             Some(&STATELESS) => Status::Stateless,
@@ -250,7 +250,7 @@ impl OrderedPass {
     /// Take the error to report to the user, if any: the pass stopped
     /// early, or a kept result could not be read back.  The packets
     /// concerned are dissected on demand.
-    pub(super) fn take_error(&self) -> Option<String> {
+    pub fn take_error(&self) -> Option<String> {
         lock(&self.shared).error.take()
     }
 }
@@ -397,17 +397,15 @@ fn run(
     Ok(())
 }
 
-#[cfg(all(test, feature = "tui"))]
+#[cfg(test)]
 mod tests {
     use std::io::Write;
 
     use packet_dissector::registry::DissectorRegistry;
     use packet_dissector_core::packet::{DissectBuffer, Packet};
 
-    use super::super::app::App;
-    use super::super::loader;
     use super::super::state::CaptureMap;
-    use super::super::tree;
+    use super::super::{OrderedTick, Session, Tick, loader, tree};
     use super::{OrderedPass, Status};
 
     // -- Fixture -------------------------------------------------------------
@@ -560,38 +558,62 @@ mod tests {
         String::from_utf8(out).unwrap()
     }
 
-    /// An [`App`] for the capture at `path` with an in-order pass that has
+    /// A frontend showing a [`Session`] without a filter, so rows are
+    /// packet indices.
+    struct View {
+        session: Session,
+        row: usize,
+    }
+
+    impl View {
+        /// Select the packet at `row`.
+        fn select(&mut self, row: usize) {
+            self.row = row;
+            self.session.load_packet(row);
+        }
+
+        /// Drive the pass once, reloading the selection when it asks to.
+        fn tick(&mut self) -> OrderedTick {
+            let tick = self.session.ordered_tick();
+            if tick.reload_selected {
+                self.session.load_packet(self.row);
+            }
+            tick
+        }
+    }
+
+    /// A [`View`] of the capture at `path` with an in-order pass that has
     /// not been fed yet.
-    fn open_app(path: &std::path::Path) -> App {
+    fn open_view(path: &std::path::Path) -> View {
         let file = std::fs::File::open(path).unwrap();
         let capture = CaptureMap::new(&file).unwrap();
         let indices = loader::build_index(capture.as_bytes()).unwrap();
-        let mut app = App::new(capture, indices, DissectorRegistry::default(), path, vec![]);
+        let mut session =
+            Session::new(capture, indices, DissectorRegistry::default(), path, vec![]);
         let pass_capture = CaptureMap::new(&file).unwrap();
-        app.session.ordered =
+        session.ordered =
             Some(OrderedPass::spawn(pass_capture, DissectorRegistry::default(), None).unwrap());
-        app
+        View { session, row: 0 }
     }
 
     /// Drive the pass until it has dissected every packet.
-    fn finish_pass(app: &mut App) {
+    fn finish_pass(view: &mut View) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
-            app.ordered_tick();
-            let pass = app.session.ordered.as_ref().unwrap();
-            if pass.processed() == app.session.indices.len() {
+            view.tick();
+            let pass = view.session.ordered.as_ref().unwrap();
+            if pass.processed() == view.session.indices.len() {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "pass did not finish");
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        app.ordered_tick();
+        view.tick();
     }
 
-    fn shown(app: &mut App, pkt_idx: usize) -> Shown {
-        app.packet_list.selected = pkt_idx;
-        app.load_selected();
-        let sel = app.session.selected.as_ref().unwrap();
+    fn shown(view: &mut View, pkt_idx: usize) -> Shown {
+        view.select(pkt_idx);
+        let sel = view.session.selected.as_ref().unwrap();
         assert_eq!(sel.pkt_idx, pkt_idx);
         assert!(!sel.pending);
         let json = read_json(pkt_idx, &sel.packet.to_dissect_buf(), &sel.packet.data);
@@ -600,8 +622,8 @@ mod tests {
             .iter()
             .map(|n| (n.depth, n.label.clone()))
             .collect();
-        app.session.summary_cache.clear();
-        let s = app.session.get_or_dissect_summary(pkt_idx);
+        view.session.summary_cache.clear();
+        let s = view.session.get_or_dissect_summary(pkt_idx);
         Shown {
             tree,
             row: (
@@ -694,10 +716,10 @@ mod tests {
             vec![6, 6, 7, 7, 8, 8, 4, 4],
         ];
         for order in orders {
-            let mut app = open_app(tmp.path());
-            finish_pass(&mut app);
+            let mut view = open_view(tmp.path());
+            finish_pass(&mut view);
             for &i in &order {
-                let got = shown(&mut app, i);
+                let got = shown(&mut view, i);
                 assert_eq!(got, reference[i], "packet {i} in view order {order:?}");
             }
         }
@@ -706,24 +728,26 @@ mod tests {
     /// View packets before the pass reached them, which dissects them on
     /// demand with the display registry: flow B before flow A, and both HTTP
     /// segments.
-    fn pollute(app: &mut App) {
+    fn pollute(view: &mut View) {
         for i in [4, 1, 6, 2, 8, 7] {
-            app.packet_list.selected = i;
-            app.load_selected();
-            assert!(app.session.selected.as_ref().unwrap().pending);
-            let _ = app.session.get_or_dissect_summary(i);
+            view.select(i);
+            assert!(view.session.selected.as_ref().unwrap().pending);
+            let _ = view.session.get_or_dissect_summary(i);
         }
     }
 
-    fn follow(app: &mut App, pkt_idx: usize) -> (String, Vec<String>) {
-        app.stream_view = None;
-        app.packet_list.selected = pkt_idx;
-        app.load_selected();
-        app.start_follow_stream();
-        while app.stream_tick() {}
-        let view = app.stream_view.as_ref().expect("stream view");
-        let text = view.lines.iter().map(|l| l.text.clone()).collect();
-        (view.title.clone(), text)
+    fn follow(view: &mut View, pkt_idx: usize) -> (String, Vec<String>) {
+        view.select(pkt_idx);
+        view.session.start_follow_stream().unwrap();
+        let stream = loop {
+            match view.session.stream_tick() {
+                Tick::Running => {}
+                Tick::Done(stream) => break stream,
+                Tick::Idle => panic!("no stream collected"),
+            }
+        };
+        let text = stream.lines.iter().map(|l| l.text.clone()).collect();
+        (stream.title, text)
     }
 
     /// Follow Stream finds the packets of the stream ID shown in the detail
@@ -731,77 +755,81 @@ mod tests {
     #[test]
     fn follow_stream_uses_capture_order_stream_ids() {
         let tmp = write_pcap(&stateful_frames());
-        let mut app = open_app(tmp.path());
-        pollute(&mut app);
-        finish_pass(&mut app);
+        let mut view = open_view(tmp.path());
+        pollute(&mut view);
+        finish_pass(&mut view);
 
-        let (title, text) = follow(&mut app, 4);
+        let (title, text) = follow(&mut view, 4);
         assert!(title.starts_with("TCP Stream #1"), "{title}");
         assert_eq!(text, ["hello-b"]);
-        let (title, text) = follow(&mut app, 2);
+        let (title, text) = follow(&mut view, 2);
         assert!(title.starts_with("TCP Stream #0"), "{title}");
         assert_eq!(text, ["GET /index.html HTTP/1.1", "Ho", "st: example", ""]);
         // Following it again gives the same.
-        assert_eq!(follow(&mut app, 2).1, text);
+        assert_eq!(follow(&mut view, 2).1, text);
     }
 
-    fn stats_json(app: &mut App) -> serde_json::Value {
-        app.stats_output = None;
-        app.start_stats();
-        while app.stats_tick() {}
-        serde_json::to_value(app.stats_output.as_ref().expect("stats")).unwrap()
+    fn stats_json(view: &mut View) -> serde_json::Value {
+        view.session.start_stats().unwrap();
+        let output = loop {
+            match view.session.stats_tick() {
+                Tick::Running => {}
+                Tick::Done(output) => break output,
+                Tick::Idle => panic!("no stats collected"),
+            }
+        };
+        serde_json::to_value(&output).unwrap()
     }
 
     /// `:stats` gives the same result whatever was viewed before.
     #[test]
     fn stats_do_not_depend_on_view_order() {
         let tmp = write_pcap(&stateful_frames());
-        let mut fresh = open_app(tmp.path());
+        let mut fresh = open_view(tmp.path());
         let expected = stats_json(&mut fresh);
 
-        let mut app = open_app(tmp.path());
-        pollute(&mut app);
-        finish_pass(&mut app);
-        assert_eq!(stats_json(&mut app), expected);
+        let mut view = open_view(tmp.path());
+        pollute(&mut view);
+        finish_pass(&mut view);
+        assert_eq!(stats_json(&mut view), expected);
         // Running it twice does not change it either.
-        assert_eq!(stats_json(&mut app), expected);
+        assert_eq!(stats_json(&mut view), expected);
     }
 
     /// Before the pass reaches a packet whose dissection uses cross-packet
-    /// state, the TUI shows a placeholder instead of an order-dependent
+    /// state, the session shows a placeholder instead of an order-dependent
     /// result, and replaces it once the result is ready.  Other packets show
     /// at once.
     #[test]
     fn placeholder_until_the_pass_reaches_a_stateful_packet() {
         let tmp = write_pcap(&stateful_frames());
         let reference = sequential_reference(tmp.path());
-        let mut app = open_app(tmp.path());
+        let mut view = open_view(tmp.path());
 
         // Plain UDP: no cross-packet state.
-        assert_eq!(shown(&mut app, 9), reference[9]);
+        assert_eq!(shown(&mut view, 9), reference[9]);
 
-        app.packet_list.selected = 6;
-        app.load_selected();
-        let sel = app.session.selected.as_ref().unwrap();
+        view.select(6);
+        let sel = view.session.selected.as_ref().unwrap();
         assert!(sel.pending);
         assert_eq!(sel.tree_nodes.len(), 1);
         assert_eq!(sel.tree_nodes[0].label, loader::PENDING_TEXT);
         assert_eq!(
-            app.session.get_or_dissect_summary(7).info,
+            view.session.get_or_dissect_summary(7).info,
             loader::PENDING_TEXT
         );
-        assert!(app.ordered_needs_tick());
+        assert!(view.session.ordered_needs_tick());
 
-        finish_pass(&mut app);
-        assert!(!app.ordered_needs_tick());
-        let sel = app.session.selected.as_ref().unwrap();
+        finish_pass(&mut view);
+        assert!(!view.session.ordered_needs_tick());
+        let sel = view.session.selected.as_ref().unwrap();
         assert!(!sel.pending);
         let labels: Vec<&str> = sel.tree_nodes.iter().map(|n| n.label.as_str()).collect();
         assert_eq!(labels, self::labels(&reference[6]));
         // The placeholder row was dropped from the cache and is redone.
-        assert!(app.session.pending_rows.is_empty());
-        assert!(app.session.summary_cache.peek(&7).is_none());
-        let s = app.session.get_or_dissect_summary(7);
+        assert!(view.session.pending_rows.is_empty());
+        assert!(view.session.summary_cache.peek(&7).is_none());
+        let s = view.session.get_or_dissect_summary(7);
         assert_eq!(s.info, reference[7].row.3);
     }
 
@@ -810,9 +838,9 @@ mod tests {
     #[test]
     fn pass_keeps_only_stateful_results() {
         let tmp = write_pcap(&stateful_frames());
-        let mut app = open_app(tmp.path());
-        finish_pass(&mut app);
-        let pass = app.session.ordered.as_ref().unwrap();
+        let mut view = open_view(tmp.path());
+        finish_pass(&mut view);
+        let pass = view.session.ordered.as_ref().unwrap();
         let statuses: Vec<Status> = (0..10).map(|i| pass.status(i)).collect();
         use Status::{Stateful as F, Stateless as L};
         assert_eq!(statuses, [F, F, F, F, F, F, F, F, F, L]);
@@ -824,37 +852,38 @@ mod tests {
     #[test]
     fn stopped_pass_falls_back_to_on_demand_dissection() {
         let tmp = write_pcap(&stateful_frames());
-        let mut app = open_app(tmp.path());
-        app.packet_list.selected = 6;
-        app.load_selected();
-        assert!(app.session.selected.as_ref().unwrap().pending);
+        let mut view = open_view(tmp.path());
+        view.select(6);
+        assert!(view.session.selected.as_ref().unwrap().pending);
 
         // Dropping the sender ends the pass thread.
-        app.session.ordered.as_mut().unwrap().feeder = None;
+        view.session.ordered.as_mut().unwrap().feeder = None;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while app.session.ordered.as_ref().unwrap().status(6) != Status::Unavailable {
+        while view.session.ordered.as_ref().unwrap().status(6) != Status::Unavailable {
             assert!(std::time::Instant::now() < deadline, "pass did not stop");
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        assert!(app.ordered_tick());
-        let sel = app.session.selected.as_ref().unwrap();
+        let tick = view.tick();
+        assert!(tick.changed);
+        assert!(tick.reload_selected);
+        let sel = view.session.selected.as_ref().unwrap();
         assert!(!sel.pending);
         assert!(sel.tree_nodes.iter().any(|n| n.label == "TCP"));
-        assert!(!app.ordered_needs_tick());
+        assert!(!view.session.ordered_needs_tick());
     }
 
-    /// Errors of the pass are reported to the user once.
+    /// Errors of the pass are reported once.
     #[test]
     fn pass_errors_are_reported() {
         let tmp = write_pcap(&stateful_frames());
-        let mut app = open_app(tmp.path());
-        super::lock(&app.session.ordered.as_ref().unwrap().shared).error =
+        let mut view = open_view(tmp.path());
+        super::lock(&view.session.ordered.as_ref().unwrap().shared).error =
             Some("disk full".to_string());
-        assert!(app.ordered_tick());
-        let msg = app.detail_tree.yank_message.take().unwrap();
+        let tick = view.tick();
+        assert!(tick.changed);
+        let msg = tick.error.unwrap();
         assert!(msg.contains("disk full"), "{msg}");
-        app.ordered_tick();
-        assert!(app.detail_tree.yank_message.is_none());
+        assert!(view.tick().error.is_none());
     }
 
     /// A panic in the pass thread marks the pass stopped, with an error.
@@ -879,12 +908,10 @@ mod tests {
     #[test]
     fn follow_stream_waits_for_the_pass() {
         let tmp = write_pcap(&stateful_frames());
-        let mut app = open_app(tmp.path());
-        app.packet_list.selected = 2;
-        app.load_selected();
-        assert!(app.session.selected.as_ref().unwrap().pending);
-        app.start_follow_stream();
-        assert!(app.session.stream_build_progress.is_none());
-        assert!(app.detail_tree.yank_message.is_some());
+        let mut view = open_view(tmp.path());
+        view.select(2);
+        assert!(view.session.selected.as_ref().unwrap().pending);
+        assert!(view.session.start_follow_stream().is_err());
+        assert!(view.session.stream_build_progress.is_none());
     }
 }
