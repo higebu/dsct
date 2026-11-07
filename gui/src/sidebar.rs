@@ -1,60 +1,199 @@
-//! The sidebar: the open capture, its protocols, and its top talkers, each
-//! a quick filter.
+//! The fields sidebar: the values the displayed packets' fields take,
+//! counted over a sample, with pinned and frequent fields first and every
+//! field by stack position and protocol. Each value filters for or out,
+//! and each field can become a column or split the chart.
 
-use gpui_kit::component::button::Button;
+use std::collections::HashSet;
+
+use dsct::session::fields::{FieldRef, FieldStats, FieldSummary, Split};
+use gpui_kit::assets::IconName as AssetIcon;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{Icon, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use packet_dissector_core::dissector::ProtocolLayer;
 
 use crate::app::DsctApp;
+use crate::fields_view::{self, SampleSize};
+use crate::timeline::MonoFont as _;
 use crate::{format, theme};
 
-/// Protocols listed at most.
-const MAX_PROTOCOLS: usize = 14;
-
 /// The sidebar's width.
-const WIDTH: f32 = 232.;
+const WIDTH: f32 = 280.;
 
-/// A filter that matches the packets of `src` → `dst`.
-fn talker_filter(src: &str, dst: &str) -> String {
-    let ip = if src.contains(':') { "ipv6" } else { "ipv4" };
-    format!("{ip}.src = '{src}' AND {ip}.dst = '{dst}'")
+/// Which list an expanded field is in, so it expands in that list only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    Pinned,
+    Frequent,
+    ByLayer,
+}
+
+/// The sidebar's state.
+pub struct FieldsPanel {
+    /// Value counts of the current sample.
+    pub stats: Option<FieldStats>,
+    /// The counts no longer match the displayed packets or the sample size.
+    pub stale: bool,
+    pub sample: SampleSize,
+    /// Pinned field paths, in the order they were pinned.
+    pub pinned: Vec<String>,
+    pub expanded: Option<(Section, String)>,
+    /// Stack positions expanded or collapsed against their default.
+    pub toggled_layers: HashSet<Option<ProtocolLayer>>,
+    pub open_protocols: HashSet<&'static str>,
+    pub search: Entity<InputState>,
+}
+
+impl FieldsPanel {
+    pub fn new(search: Entity<InputState>) -> Self {
+        Self {
+            stats: None,
+            stale: true,
+            sample: SampleSize::default(),
+            pinned: Vec::new(),
+            expanded: None,
+            toggled_layers: HashSet::new(),
+            open_protocols: HashSet::new(),
+            search,
+        }
+    }
+
+    /// Forget the counts of the previous capture (pins stay).
+    pub fn reset(&mut self) {
+        self.stats = None;
+        self.stale = true;
+        self.expanded = None;
+    }
+
+    fn layer_open(&self, layer: Option<ProtocolLayer>) -> bool {
+        fields_view::layer_open_by_default(layer) != self.toggled_layers.contains(&layer)
+    }
+}
+
+/// A small heading over a list.
+fn section(title: &'static str, note: Option<String>) -> Div {
+    h_flex()
+        .px_3()
+        .pt_3()
+        .pb_1()
+        .gap_1p5()
+        .text_xs()
+        .child(
+            div()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::text_muted())
+                .child(title),
+        )
+        .children(note.map(|n| div().text_color(theme::text_muted()).child(n)))
+}
+
+fn hint(text: impl Into<SharedString>) -> Div {
+    div()
+        .px_3()
+        .py_1()
+        .text_xs()
+        .text_color(theme::text_muted())
+        .child(text.into())
 }
 
 impl DsctApp {
-    fn section(title: &'static str) -> impl IntoElement {
-        div()
-            .px_3()
-            .pt_4()
-            .pb_1p5()
-            .text_xs()
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(theme::text_muted())
-            .child(title)
+    /// Narrow the applied filter to `field`'s value, or exclude it.
+    pub(crate) fn refine(
+        &mut self,
+        field: &FieldRef,
+        exclude: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self
+            .session
+            .borrow()
+            .as_ref()
+            .map(|s| s.applied_filter.clone())
+            .unwrap_or_default();
+        let text = dsct::session::fields::refine_filter(&current, &field.clause(), exclude);
+        self.set_filter(&text, window, cx);
     }
 
-    pub(crate) fn render_sidebar(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let (file, total, has_filter) = match self.session.borrow().as_ref() {
-            Some(s) => (
-                s.file_name.clone(),
-                s.total_count(),
-                !s.applied_filter.is_empty(),
-            ),
-            None => (String::new(), 0, false),
-        };
-        let mono = cx.theme_mono_font();
+    pub(crate) fn toggle_pin(&mut self, path: &str, cx: &mut Context<Self>) {
+        let pinned = &mut self.fields.pinned;
+        match pinned.iter().position(|p| p == path) {
+            Some(i) => {
+                pinned.remove(i);
+            }
+            None => pinned.push(path.to_string()),
+        }
+        cx.notify();
+    }
 
-        let capture = h_flex()
-            .mx_1p5()
-            .px_2()
-            .py_1()
+    fn toggle_expanded(&mut self, section: Section, path: &str, cx: &mut Context<Self>) {
+        let key = (section, path.to_string());
+        self.fields.expanded = if self.fields.expanded.as_ref() == Some(&key) {
+            None
+        } else {
+            Some(key)
+        };
+        cx.notify();
+    }
+
+    fn set_sample(&mut self, sample: SampleSize, cx: &mut Context<Self>) {
+        if self.fields.sample == sample {
+            return;
+        }
+        self.fields.sample = sample;
+        if let Some(session) = self.session.borrow_mut().as_mut() {
+            session.cancel_field_stats();
+        }
+        self.fields.stale = true;
+        self.ensure_ticking(cx);
+        cx.notify();
+    }
+
+    /// The row of one field, and its top values when expanded.
+    fn field_row(
+        &self,
+        section: Section,
+        field: &FieldSummary,
+        sampled: u64,
+        columns: &[String],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mono = cx.theme_mono_font();
+        let path = field.path.clone();
+        let expanded = self.fields.expanded.as_ref() == Some(&(section, path.clone()));
+        let pinned = self.fields.pinned.contains(&path);
+        let is_column = columns.contains(&path);
+        let id = SharedString::from(format!("{section:?}-{path}"));
+        // Under a protocol in "By layer", fields sit one level deeper.
+        let indent = if section == Section::ByLayer { 34. } else { 6. };
+
+        let row = h_flex()
+            .id(id.clone())
+            .ml(px(indent))
+            .mr_1p5()
+            .h(px(26.))
+            .pl_2()
+            .pr_0p5()
             .gap_2()
             .rounded(px(5.))
-            .bg(theme::selection())
-            .text_color(theme::text_bright())
+            .when(expanded, |d| d.bg(theme::selection()))
+            .when(!expanded, |d| d.hover(|d| d.bg(theme::hover())))
+            .cursor_pointer()
             .child(
-                Icon::new(IconName::FileText)
-                    .small()
-                    .text_color(theme::text_muted()),
+                div()
+                    .w(px(30.))
+                    .flex_shrink_0()
+                    .font_family(mono.clone())
+                    .text_xs()
+                    .text_color(theme::value(match field.kind {
+                        dsct::session::fields::FieldKind::Number => format::ValueKind::Number,
+                        dsct::session::fields::FieldKind::Address => format::ValueKind::Address,
+                        dsct::session::fields::FieldKind::Text => format::ValueKind::Text,
+                    }))
+                    .child(fields_view::kind_badge(field.kind)),
             )
             .child(
                 div()
@@ -62,157 +201,506 @@ impl DsctApp {
                     .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .child(file),
+                    .text_ellipsis()
+                    .font_family(mono.clone())
+                    .text_xs()
+                    .text_color(theme::text())
+                    .child(path.clone()),
             )
+            .when(is_column, |d| {
+                d.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child("column"),
+                )
+            })
+            .child(
+                div()
+                    .font_family(mono.clone())
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(fields_view::grouped(field.packets)),
+            )
+            .child({
+                let path = path.clone();
+                Button::new(SharedString::from(format!("pin-{id}")))
+                    .icon(Icon::new(AssetIcon::Pin).text_color(if pinned {
+                        theme::accent()
+                    } else {
+                        theme::text_faint()
+                    }))
+                    .xsmall()
+                    .ghost()
+                    .tooltip(if pinned { "Unpin" } else { "Pin to the top" })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.toggle_pin(&path, cx);
+                    }))
+            })
+            .on_click({
+                let path = path.clone();
+                cx.listener(move |this, _, _, cx| this.toggle_expanded(section, &path, cx))
+            });
+
+        if !expanded {
+            return row.into_any_element();
+        }
+
+        let palette = [
+            theme::teal(),
+            theme::purple(),
+            theme::orange(),
+            theme::green(),
+            theme::blue(),
+        ];
+        let values = field
+            .top
+            .iter()
+            .take(fields_view::TOP_VALUES)
+            .enumerate()
+            .map(|(i, v)| {
+                let color = palette[i % palette.len()];
+                let share = fields_view::share(v.packets, sampled);
+                let reference = FieldRef {
+                    path: path.clone(),
+                    value: Some(v.value.clone()),
+                };
+                let exclude = reference.clone();
+                h_flex()
+                    .gap_0p5()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .child(
+                                h_flex()
+                                    .gap_1p5()
+                                    .text_xs()
+                                    .font_family(mono.clone())
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .text_color(theme::text_bright())
+                                            .child(fields_view::value_text(v)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_color(theme::text())
+                                            .child(fields_view::grouped(v.packets)),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(44.))
+                                            .text_right()
+                                            .text_color(theme::text_muted())
+                                            .child(fields_view::percent_text(v.packets, sampled)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .h(px(3.))
+                                    .w_full()
+                                    .rounded(px(2.))
+                                    .bg(theme::border())
+                                    .child(
+                                        div().h_full().rounded(px(2.)).bg(color).w(relative(share)),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        Button::new(("for", i))
+                            .icon(Icon::new(AssetIcon::ZoomIn))
+                            .xsmall()
+                            .ghost()
+                            .tooltip("Filter for this value")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.refine(&reference, false, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new(("out", i))
+                            .icon(Icon::new(AssetIcon::ZoomOut))
+                            .xsmall()
+                            .ghost()
+                            .tooltip("Filter out this value")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.refine(&exclude, true, window, cx)
+                            })),
+                    )
+            });
+
+        let column_path = path.clone();
+        let split_path = path.clone();
+        let detail = v_flex()
+            .mt_1()
+            .mb_2()
+            .ml(px(if section == Section::ByLayer {
+                42.
+            } else {
+                36.
+            }))
+            .mr_1p5()
+            .p_2p5()
+            .gap_2()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::border())
+            .bg(theme::elevated())
             .child(
                 div()
                     .text_xs()
-                    .font_family(mono.clone())
                     .text_color(theme::text_muted())
-                    .child(total.to_string()),
+                    .child(fields_view::values_title(field, sampled)),
+            )
+            .children(values)
+            .child(
+                h_flex()
+                    .gap_1p5()
+                    .child(
+                        Button::new("add-column")
+                            .label(if is_column {
+                                "Remove column"
+                            } else {
+                                "Add as column"
+                            })
+                            .xsmall()
+                            .outline()
+                            .flex_1()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_column(&column_path, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("split-chart")
+                            .label("Split chart by")
+                            .xsmall()
+                            .outline()
+                            .flex_1()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_split(Split::Field(split_path.clone()), cx)
+                            })),
+                    ),
             );
+        v_flex().child(row).child(detail).into_any_element()
+    }
 
-        let overview: AnyElement = match &self.overview.stats {
-            Some(stats) => {
-                let protocols = format::protocol_shares(&stats.protocols, stats.total_packets)
-                    .into_iter()
-                    .take(MAX_PROTOCOLS)
-                    .map(|(name, count, _)| {
-                        let color = format::protocol_swatch(&name)
-                            .map_or(theme::text_muted(), theme::swatch);
-                        let filter = name.to_lowercase();
-                        h_flex()
-                            .id(SharedString::from(format!("proto-{name}")))
-                            .mx_1p5()
-                            .px_2()
-                            .h(px(26.))
-                            .gap_2()
-                            .rounded(px(5.))
-                            .hover(|d| d.bg(theme::hover()))
-                            .cursor_pointer()
-                            .child(div().size(px(8.)).rounded(px(2.)).bg(color))
-                            .child(div().flex_1().child(name))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_family(mono.clone())
-                                    .text_color(theme::text_muted())
-                                    .child(count.to_string()),
-                            )
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.set_filter(&filter, window, cx)
-                            }))
-                    })
-                    .collect::<Vec<_>>();
-                let talkers = stats
-                    .top_talkers
-                    .iter()
-                    .flatten()
-                    .enumerate()
-                    .map(|(i, t)| {
-                        let filter = talker_filter(&t.src, &t.dst);
-                        v_flex()
-                            .id(("talker", i))
-                            .mx_1p5()
-                            .px_2()
-                            .py_1()
-                            .rounded(px(5.))
-                            .hover(|d| d.bg(theme::hover()))
-                            .cursor_pointer()
+    fn render_by_layer(
+        &self,
+        stats: &FieldStats,
+        query: &str,
+        columns: &[String],
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let mono = cx.theme_mono_font();
+        let searching = !query.is_empty();
+        let mut out = Vec::new();
+        for group in fields_view::by_layer(stats, query) {
+            let layer = group.layer;
+            let open = searching || self.fields.layer_open(layer);
+            let names = group
+                .protocols
+                .iter()
+                .map(|p| p.name)
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push(
+                h_flex()
+                    .id(SharedString::from(format!(
+                        "layer-{}",
+                        fields_view::layer_title(layer)
+                    )))
+                    .mx_1p5()
+                    .mt_0p5()
+                    .h(px(26.))
+                    .px_1()
+                    .gap_1p5()
+                    .rounded(px(5.))
+                    .hover(|d| d.bg(theme::hover()))
+                    .cursor_pointer()
+                    .text_xs()
+                    .child(
+                        Icon::new(if open {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        })
+                        .xsmall()
+                        .text_color(theme::text_muted()),
+                    )
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::text())
+                            .child(fields_view::layer_title(layer)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_color(theme::text_muted())
+                            .when(!open, |d| d.child(names)),
+                    )
+                    .child(
+                        div()
                             .font_family(mono.clone())
-                            .text_xs()
-                            .child(div().text_color(theme::text()).child(t.src.clone()))
-                            .child(
-                                div()
-                                    .text_color(theme::text_muted())
-                                    .child(format!("→ {} · {}", t.dst, t.packets)),
-                            )
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.set_filter(&filter, window, cx)
-                            }))
-                    })
-                    .collect::<Vec<_>>();
-                v_flex()
-                    .child(Self::section("PROTOCOLS"))
-                    .children(protocols)
-                    .child(Self::section("TOP TALKERS"))
-                    .children(talkers)
-                    .into_any_element()
+                            .text_color(theme::text_muted())
+                            .child(fields_view::grouped(group.packets)),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let toggled = &mut this.fields.toggled_layers;
+                        if !toggled.remove(&layer) {
+                            toggled.insert(layer);
+                        }
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            );
+            if !open {
+                continue;
             }
-            None if self.overview.job => div()
-                .px_3()
-                .pt_4()
-                .text_xs()
-                .text_color(theme::text_muted())
-                .child("Building overview…")
-                .into_any_element(),
-            None if has_filter => div()
-                .px_3()
-                .pt_4()
-                .text_xs()
-                .text_color(theme::text_muted())
-                .child("Clear the filter to build the overview of the whole capture.")
-                .into_any_element(),
-            None => v_flex()
-                .px_3()
-                .pt_4()
-                .gap_2()
-                .text_xs()
-                .text_color(theme::text_muted())
-                .child("Protocols and top talkers need every packet dissected.")
-                .child(
-                    Button::new("compute-overview")
-                        .label("Build overview")
-                        .small()
-                        .outline()
-                        .on_click(cx.listener(|this, _, _, cx| this.compute_overview(cx))),
+            for protocol in group.protocols {
+                let name = protocol.name;
+                let protocol_open = searching || self.fields.open_protocols.contains(name);
+                let color =
+                    format::protocol_swatch(name).map_or(theme::text_muted(), theme::swatch);
+                let group_id = SharedString::from(format!("proto-{name}"));
+                let reference = FieldRef {
+                    path: dsct::filter::normalize_protocol_name(name),
+                    value: None,
+                };
+                out.push(
+                    h_flex()
+                        .id(group_id.clone())
+                        .group(group_id.clone())
+                        .ml(px(20.))
+                        .mr_1p5()
+                        .h(px(26.))
+                        .px_1()
+                        .gap_2()
+                        .rounded(px(5.))
+                        .hover(|d| d.bg(theme::hover()))
+                        .cursor_pointer()
+                        .when(!protocol.fields.is_empty(), |d| {
+                            d.child(
+                                Icon::new(if protocol_open {
+                                    IconName::ChevronDown
+                                } else {
+                                    IconName::ChevronRight
+                                })
+                                .xsmall()
+                                .text_color(theme::text_muted()),
+                            )
+                        })
+                        .when(protocol.fields.is_empty(), |d| d.child(div().w(px(12.))))
+                        .child(div().size(px(8.)).rounded(px(2.)).bg(color))
+                        .child(
+                            div()
+                                .flex_1()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme::text())
+                                .child(name),
+                        )
+                        .child(
+                            div()
+                                .opacity(0.)
+                                .group_hover(group_id.clone(), |s| s.opacity(1.))
+                                .child(
+                                    Button::new(SharedString::from(format!("filter-{name}")))
+                                        .icon(Icon::new(AssetIcon::ZoomIn))
+                                        .xsmall()
+                                        .ghost()
+                                        .tooltip(format!("Filter for {name}"))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            cx.stop_propagation();
+                                            this.refine(&reference, false, window, cx)
+                                        })),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_family(mono.clone())
+                                .text_color(theme::text_muted())
+                                .child(fields_view::grouped(protocol.packets)),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let open = &mut this.fields.open_protocols;
+                            if !open.remove(name) {
+                                open.insert(name);
+                            }
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                );
+                if protocol_open {
+                    for field in protocol.fields {
+                        out.push(self.field_row(
+                            Section::ByLayer,
+                            field,
+                            stats.sampled,
+                            columns,
+                            cx,
+                        ));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    pub(crate) fn render_sidebar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let query = self.fields.search.read(cx).value().trim().to_string();
+        let columns = self.columns(cx);
+        let indexing = self
+            .session
+            .borrow()
+            .as_ref()
+            .is_some_and(|s| s.is_indexing() || s.filter_running());
+
+        let weak = cx.entity().downgrade();
+        let current = self.fields.sample;
+        let has_pins = !self.fields.pinned.is_empty();
+        let customize = Button::new("customize-fields")
+            .icon(Icon::new(AssetIcon::SlidersHorizontal))
+            .xsmall()
+            .ghost()
+            .tooltip("Customize the sidebar")
+            .dropdown_menu(move |mut menu, _, _| {
+                menu = menu.item(PopupMenuItem::label("COUNT VALUES OVER"));
+                for sample in SampleSize::ALL {
+                    let weak = weak.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(sample.label())
+                            .checked(sample == current)
+                            .on_click(move |_, _, cx| {
+                                let _ = weak.update(cx, |app, cx| app.set_sample(sample, cx));
+                            }),
+                    );
+                }
+                let weak = weak.clone();
+                menu.separator().item(
+                    PopupMenuItem::new("Reset pinned fields")
+                        .disabled(!has_pins)
+                        .on_click(move |_, _, cx| {
+                            let _ = weak.update(cx, |app, cx| {
+                                app.fields.pinned.clear();
+                                cx.notify();
+                            });
+                        }),
                 )
+            });
+
+        let header = h_flex()
+            .pl_3()
+            .pr_1p5()
+            .pt_2p5()
+            .pb_1p5()
+            .gap_1p5()
+            .text_xs()
+            .child(
+                div()
+                    .flex_1()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::text_muted())
+                    .child("FIELDS"),
+            )
+            .children(self.fields.stats.as_ref().map(|s| {
+                div()
+                    .text_color(theme::text_muted())
+                    .child(format!("{} fields", s.fields.len()))
+            }))
+            .child(customize);
+
+        let mut list: Vec<AnyElement> = Vec::new();
+        match self.fields.stats.as_ref() {
+            None => list.push(
+                hint(if indexing {
+                    "Fields are counted once the packets are read."
+                } else {
+                    "Counting field values…"
+                })
+                .pt_2()
                 .into_any_element(),
-        };
+            ),
+            Some(stats) => {
+                list.push(hint(fields_view::sample_note(stats)).into_any_element());
+
+                let pinned: Vec<&FieldSummary> = self
+                    .fields
+                    .pinned
+                    .iter()
+                    .filter(|p| fields_view::matches(p, &query))
+                    .filter_map(|p| stats.field(p))
+                    .collect();
+                list.push(
+                    section("PINNED", Some(self.fields.pinned.len().to_string()))
+                        .into_any_element(),
+                );
+                if self.fields.pinned.is_empty() {
+                    list.push(hint("Pin a field to keep it here.").into_any_element());
+                } else if pinned.is_empty() {
+                    list.push(hint("No pinned field in these packets.").into_any_element());
+                }
+                for field in pinned {
+                    list.push(self.field_row(Section::Pinned, field, stats.sampled, &columns, cx));
+                }
+
+                let frequent = fields_view::frequent(stats, &self.fields.pinned, &query);
+                if !frequent.is_empty() {
+                    list.push(section("FREQUENT", None).into_any_element());
+                    for field in frequent {
+                        list.push(self.field_row(
+                            Section::Frequent,
+                            field,
+                            stats.sampled,
+                            &columns,
+                            cx,
+                        ));
+                    }
+                }
+
+                list.push(section("BY LAYER", None).into_any_element());
+                let layers = self.render_by_layer(stats, &query, &columns, cx);
+                if layers.is_empty() {
+                    list.push(hint("No field matches.").into_any_element());
+                }
+                list.extend(layers);
+            }
+        }
 
         v_flex()
-            .id("sidebar")
             .w(px(WIDTH))
             .flex_shrink_0()
             .h_full()
-            .overflow_y_scroll()
-            .pb_3()
             .bg(theme::panel())
             .border_r_1()
             .border_color(theme::border())
             .text_sm()
-            .child(Self::section("CAPTURE"))
-            .child(capture)
-            .child(overview)
+            .child(header)
+            .child(
+                div()
+                    .px_2()
+                    .pb_1()
+                    .child(Input::new(&self.fields.search).small().cleanable(true)),
+            )
+            .child(
+                v_flex()
+                    .id("fields")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .pb_3()
+                    .children(list),
+            )
             .into_any_element()
-    }
-}
-
-/// The theme's monospace font, for counts and addresses.
-trait MonoFont {
-    fn theme_mono_font(&self) -> SharedString;
-}
-
-impl<T> MonoFont for Context<'_, T> {
-    fn theme_mono_font(&self) -> SharedString {
-        use gpui_kit::component::ActiveTheme as _;
-        self.theme().mono_font_family.clone()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::talker_filter;
-
-    #[test]
-    fn talker_filters_use_the_address_family() {
-        assert_eq!(
-            talker_filter("10.0.0.1", "8.8.8.8"),
-            "ipv4.src = '10.0.0.1' AND ipv4.dst = '8.8.8.8'"
-        );
-        assert_eq!(
-            talker_filter("fe80::1", "fe80::2"),
-            "ipv6.src = 'fe80::1' AND ipv6.dst = 'fe80::2'"
-        );
     }
 }

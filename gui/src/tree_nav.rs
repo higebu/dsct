@@ -108,6 +108,7 @@ mod tests {
             byte_range: range,
             children_count: children,
             is_layer: depth == 0,
+            filter: None,
         }
     }
 

@@ -3,6 +3,7 @@
 
 mod app;
 mod bottom;
+mod fields_view;
 mod format;
 mod packet_table;
 mod palette;
@@ -10,6 +11,7 @@ mod panes;
 mod sidebar;
 mod summary;
 mod theme;
+mod timeline;
 mod tree_nav;
 
 use std::cell::RefCell;

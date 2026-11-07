@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use dsct::session::tree::visible_nodes;
 use dsct::session::{FilterOutcome, Session, Tick};
-use dsct::stats::StatsOutput;
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -23,6 +22,8 @@ use crate::bottom::{BottomPanel, StreamView};
 use crate::format::{self, TimeFormat};
 use crate::packet_table::PacketTable;
 use crate::palette::{Command, PaletteState};
+use crate::sidebar::FieldsPanel;
+use crate::timeline::{BUCKETS, Timeline};
 use crate::{
     CloseBottom, CycleTimeFormat, FocusBytes, FocusDetails, FocusNextPane, FocusPackets,
     FocusPrevPane, FollowStream, Open, OpenPalette, SharedSession, ShowStats, ToggleDock,
@@ -32,11 +33,6 @@ use crate::{
 /// How often background work (indexing, the in-order pass, filter scans)
 /// is driven while there is any; nothing runs while the session is idle.
 const TICK_INTERVAL: Duration = Duration::from_millis(16);
-
-/// Captures up to this many packets get their overview (sidebar protocols
-/// and conversations) computed on open; larger ones on request, since it
-/// dissects every packet.
-const AUTO_OVERVIEW_LIMIT: usize = 200_000;
 
 /// Key context of the packet table (set by gpui-component).
 pub const TABLE_CONTEXT: &str = "DataTable";
@@ -107,16 +103,6 @@ impl TreeView {
     }
 }
 
-/// The sidebar's overview of the whole capture.
-#[derive(Default)]
-pub struct Overview {
-    pub stats: Option<StatsOutput>,
-    /// The running stats job computes the overview.
-    pub job: bool,
-    /// The running overview job's result also goes to the Stats tab.
-    pub show_when_done: bool,
-}
-
 /// The application window's root view.
 pub struct DsctApp {
     pub(crate) session: SharedSession,
@@ -130,7 +116,8 @@ pub struct DsctApp {
     selected_row: Option<usize>,
     pub(crate) tree: TreeView,
     pub(crate) bottom: BottomPanel,
-    pub(crate) overview: Overview,
+    pub(crate) fields: FieldsPanel,
+    pub(crate) timeline: Timeline,
     pub(crate) palette: Option<PaletteState>,
     sidebar_open: bool,
     time_format: TimeFormat,
@@ -153,6 +140,7 @@ impl DsctApp {
         let table = cx.new(|cx| TableState::new(PacketTable::new(session.clone()), window, cx));
         let filter =
             cx.new(|cx| InputState::new(window, cx).placeholder("tcp.dst_port == 443 or dns"));
+        let field_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search fields"));
         let subscriptions = vec![
             cx.subscribe_in(&table, window, |this, _, event: &TableEvent, _, cx| {
                 if let TableEvent::SelectRow(row) = event {
@@ -172,6 +160,11 @@ impl DsctApp {
                         cx.notify();
                     }
                     _ => {}
+                }
+            }),
+            cx.subscribe_in(&field_search, window, |_, _, event: &InputEvent, _, cx| {
+                if let InputEvent::Change = event {
+                    cx.notify();
                 }
             }),
         ];
@@ -195,7 +188,8 @@ impl DsctApp {
                 hex_scroll: UniformListScrollHandle::new(),
             },
             bottom: BottomPanel::default(),
-            overview: Overview::default(),
+            fields: FieldsPanel::new(field_search),
+            timeline: Timeline::default(),
             palette: None,
             sidebar_open: true,
             time_format: TimeFormat::default(),
@@ -256,7 +250,9 @@ impl DsctApp {
         self.tree.visible.clear();
         self.tree.summaries.clear();
         self.bottom = BottomPanel::default();
-        self.overview = Overview::default();
+        self.fields.reset();
+        self.timeline.histogram = None;
+        self.timeline.stale = true;
         self.message = None;
         self.filter_error = None;
         self.table.update(cx, |table, cx| {
@@ -268,7 +264,7 @@ impl DsctApp {
 
     /// Run [`Self::tick`] every [`TICK_INTERVAL`] until the session has no
     /// background work left. Call after anything that may start some.
-    fn ensure_ticking(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn ensure_ticking(&mut self, cx: &mut Context<Self>) {
         if self.ticking {
             return;
         }
@@ -286,19 +282,44 @@ impl DsctApp {
         .detach();
     }
 
-    /// Start computing the sidebar overview when it is due: once the capture
-    /// is indexed, with no filter or other stats running.
-    fn maybe_start_overview(session: &mut Session, overview: &mut Overview, force: bool) {
-        let due = overview.stats.is_none()
-            && !overview.job
-            && !session.is_indexing()
-            && session.applied_filter.is_empty()
-            && !session.filter_running()
-            && !session.stats_running()
-            && (force || session.total_count() <= AUTO_OVERVIEW_LIMIT);
-        if due && session.start_stats().is_ok() {
-            overview.job = true;
+    /// Recount the sidebar's field values and recompute the chart when they
+    /// no longer match the displayed packets, once those are known (the
+    /// capture indexed and no filter scan running).
+    ///
+    /// Returns the error of a job that could not start.
+    fn start_field_jobs(
+        fields: &mut FieldsPanel,
+        timeline: &mut Timeline,
+        session: &mut Session,
+    ) -> Option<String> {
+        if session.is_indexing() || session.filter_running() {
+            return None;
         }
+        let mut error = None;
+        if fields.stale && !session.field_stats_running() {
+            fields.stale = false;
+            error = session.start_field_stats(fields.sample.limit()).err();
+        }
+        if timeline.stale && !session.histogram_running() {
+            timeline.stale = false;
+            match session.start_histogram(timeline.split.clone(), BUCKETS) {
+                Ok(histogram) => timeline.histogram = Some(histogram),
+                Err(msg) => error = Some(msg),
+            }
+        }
+        error
+    }
+
+    /// The displayed packets changed: recount the sidebar and the chart.
+    fn invalidate_field_jobs(
+        fields: &mut FieldsPanel,
+        timeline: &mut Timeline,
+        session: &mut Session,
+    ) {
+        session.cancel_field_stats();
+        session.cancel_histogram();
+        fields.stale = true;
+        timeline.stale = true;
     }
 
     /// Drive the session's background work and refresh what changed.
@@ -369,21 +390,26 @@ impl DsctApp {
             Tick::Idle => {}
             Tick::Running => changed = true,
             Tick::Done(output) => {
-                if self.overview.job {
-                    self.overview.job = false;
-                    if std::mem::take(&mut self.overview.show_when_done) {
-                        self.bottom.show_stats(output.clone());
-                        panel_opened = true;
-                    }
-                    self.overview.stats = Some(output);
-                } else {
-                    self.bottom.show_stats(output);
-                    panel_opened = true;
-                }
+                self.bottom.show_stats(output);
+                panel_opened = true;
                 changed = true;
             }
         }
-        Self::maybe_start_overview(session, &mut self.overview, false);
+        if let Tick::Done(stats) = session.field_stats_tick() {
+            self.fields.stats = Some(stats);
+            changed = true;
+        }
+        if let Tick::Done(histogram) = session.histogram_tick() {
+            self.timeline.histogram = Some(histogram);
+            changed = true;
+        }
+        if self.fields.stale || self.timeline.stale {
+            if let Some(msg) = Self::start_field_jobs(&mut self.fields, &mut self.timeline, session)
+            {
+                self.message = Some((msg, true));
+            }
+            changed = true;
+        }
 
         if reload {
             session.load_packet(self.selected_row.unwrap_or(0));
@@ -393,7 +419,12 @@ impl DsctApp {
             || session.ordered_needs_tick()
             || session.filter_running()
             || session.stream_running()
-            || session.stats_running();
+            || session.stats_running()
+            || session.field_stats_running()
+            || session.histogram_running()
+            // Field jobs wait for indexing or a filter scan to end.
+            || self.fields.stale
+            || self.timeline.stale;
         changed |= busy != self.busy;
         self.busy = busy;
         self.ticking = busy;
@@ -447,7 +478,7 @@ impl DsctApp {
     }
 
     /// Select packet `number` (1-based) if it is displayed.
-    fn go_to_packet(&mut self, number: u64, cx: &mut Context<Self>) {
+    pub(crate) fn go_to_packet(&mut self, number: u64, cx: &mut Context<Self>) {
         let row = self.session.borrow().as_ref().and_then(|s| {
             let pkt_idx = usize::try_from(number).ok()?.checked_sub(1)?;
             s.filtered
@@ -471,16 +502,11 @@ impl DsctApp {
         let Some(session) = guard.as_mut() else {
             return;
         };
-        // The overview covers the whole capture; a filter would change what
-        // the running job counts.
-        if self.overview.job {
-            session.cancel_stats();
-            self.overview.job = false;
-        }
         self.filter_error = None;
         match session.apply_filter(text) {
             Err(msg) => self.filter_error = Some(msg),
             Ok(None) => {
+                Self::invalidate_field_jobs(&mut self.fields, &mut self.timeline, session);
                 drop(guard);
                 self.ensure_ticking(cx);
             }
@@ -488,6 +514,7 @@ impl DsctApp {
                 if let FilterOutcome::Failed(msg) = outcome {
                     self.filter_error = Some(msg);
                 }
+                Self::invalidate_field_jobs(&mut self.fields, &mut self.timeline, session);
                 self.selected_row = (session.displayed_count() > 0).then_some(0);
                 session.load_packet(0);
                 self.tree.reset(session);
@@ -517,22 +544,8 @@ impl DsctApp {
     }
 
     fn stats(&mut self, cx: &mut Context<Self>) {
-        if self.overview.job {
-            // Already counting every packet: show that result.
-            self.overview.show_when_done = true;
-            return;
-        }
         let started = self.session.borrow_mut().as_mut().map(Session::start_stats);
         self.start_job(started, cx);
-    }
-
-    /// Compute the overview of a capture too large to do it on open.
-    pub(crate) fn compute_overview(&mut self, cx: &mut Context<Self>) {
-        if let Some(session) = self.session.borrow_mut().as_mut() {
-            Self::maybe_start_overview(session, &mut self.overview, true);
-        }
-        self.ensure_ticking(cx);
-        cx.notify();
     }
 
     /// Report a job that failed to start, or drive the one that did.
@@ -553,6 +566,26 @@ impl DsctApp {
         let time_format = self.time_format;
         self.table.update(cx, |table, cx| {
             table.delegate_mut().time_format = time_format;
+            table.refresh(cx);
+        });
+        cx.notify();
+    }
+
+    /// The field columns of the packet table.
+    pub(crate) fn columns(&self, cx: &App) -> Vec<String> {
+        self.table.read(cx).delegate().extra.clone()
+    }
+
+    /// Show the field at `path` as a column, or stop showing it.
+    pub(crate) fn toggle_column(&mut self, path: &str, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            let extra = &mut table.delegate_mut().extra;
+            match extra.iter().position(|p| p == path) {
+                Some(i) => {
+                    extra.remove(i);
+                }
+                None => extra.push(path.to_string()),
+            }
             table.refresh(cx);
         });
         cx.notify();
@@ -879,11 +912,10 @@ impl DsctApp {
                 left.push("Following stream…".to_string());
                 working = true;
             } else if session.stats_running() {
-                left.push(if self.overview.job {
-                    "Building overview…".to_string()
-                } else {
-                    "Collecting stats…".to_string()
-                });
+                left.push("Collecting stats…".to_string());
+                working = true;
+            } else if session.field_stats_running() || session.histogram_running() {
+                left.push("Counting fields…".to_string());
                 working = true;
             } else {
                 left.push("Ready".to_string());
@@ -955,6 +987,7 @@ impl Render for DsctApp {
             } else {
                 transparent_black()
             };
+            let timeline = self.render_timeline(cx);
             let tree = self.render_tree(window, cx);
             let hex = self.render_hex(window, cx);
             let bottom = self.render_bottom(cx);
@@ -989,6 +1022,7 @@ impl Render for DsctApp {
                         .bg(theme::surface())
                         .child(tab_bar)
                         .child(filter_bar)
+                        .children(timeline)
                         .child(div().flex_1().min_h_0().child(panes)),
                 )
                 .into_any_element()

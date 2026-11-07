@@ -16,8 +16,9 @@ const SRC_COL: usize = 2;
 const DST_COL: usize = 3;
 const PROTO_COL: usize = 4;
 const LEN_COL: usize = 5;
+const INFO_COL: usize = 6;
 
-/// Column keys and titles, in display order.
+/// Column keys and titles, in display order; field columns go before Info.
 const COLUMNS: [(&str, &str, f32); 7] = [
     ("no", "No.", 72.),
     ("time", "Time", 250.),
@@ -35,6 +36,28 @@ pub struct PacketTable {
     pub time_format: format::TimeFormat,
     /// The selected row, marked with an accent line.
     pub selected: Option<usize>,
+    /// Field columns (filter paths) shown before Info.
+    pub extra: Vec<String>,
+}
+
+/// What a column of the table shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Col {
+    /// One of [`COLUMNS`].
+    Fixed(usize),
+    /// One of [`PacketTable::extra`].
+    Field(usize),
+}
+
+/// The column at `col_ix` with `extra` field columns before Info.
+fn col_at(col_ix: usize, extra: usize) -> Col {
+    if col_ix < INFO_COL {
+        Col::Fixed(col_ix)
+    } else if col_ix < INFO_COL + extra {
+        Col::Field(col_ix - INFO_COL)
+    } else {
+        Col::Fixed(INFO_COL)
+    }
 }
 
 impl PacketTable {
@@ -44,6 +67,7 @@ impl PacketTable {
             session,
             time_format: format::TimeFormat::default(),
             selected: None,
+            extra: Vec::new(),
         }
     }
 
@@ -59,9 +83,17 @@ impl PacketTable {
         session.get_or_dissect_summary(pkt_idx).protocol
     }
 
-    /// The text of cell (`row`, `col`), dissecting the row's packet on
-    /// demand (cached by the session).
-    fn cell(&self, row: usize, col: usize) -> String {
+    /// The text of cell (`row`, `col_ix`), dissecting the row's packet on
+    /// demand (cached by the session, except for field columns).
+    fn cell(&self, row: usize, col_ix: usize) -> String {
+        match col_at(col_ix, self.extra.len()) {
+            Col::Fixed(col) => self.fixed_cell(row, col),
+            Col::Field(i) => self.field_cell(row, &self.extra[i]),
+        }
+    }
+
+    /// The text of cell (`row`, `col`) of one of [`COLUMNS`].
+    fn fixed_cell(&self, row: usize, col: usize) -> String {
         let mut guard = self.session.borrow_mut();
         let Some(session) = guard.as_mut() else {
             return String::new();
@@ -104,9 +136,20 @@ impl PacketTable {
     }
 }
 
+impl PacketTable {
+    /// The value of the field at `path` in the packet at `row`.
+    fn field_cell(&self, row: usize, path: &str) -> String {
+        let guard = self.session.borrow();
+        guard
+            .as_ref()
+            .and_then(|s| s.field_value(s.filtered.select(row)?, path))
+            .unwrap_or_else(|| "—".to_string())
+    }
+}
+
 impl TableDelegate for PacketTable {
     fn columns_count(&self, _: &App) -> usize {
-        COLUMNS.len()
+        COLUMNS.len() + self.extra.len()
     }
 
     fn rows_count(&self, _: &App) -> usize {
@@ -117,6 +160,14 @@ impl TableDelegate for PacketTable {
     }
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
+        let col_ix = match col_at(col_ix, self.extra.len()) {
+            Col::Fixed(col) => col,
+            Col::Field(i) => {
+                let path = &self.extra[i];
+                return Column::new(SharedString::from(format!("field:{path}")), path.clone())
+                    .width(px(170.));
+            }
+        };
         let (key, name, width) = COLUMNS[col_ix];
         let width = if col_ix == TIME_COL {
             self.time_format.column_width()
@@ -158,6 +209,17 @@ impl TableDelegate for PacketTable {
     ) -> impl IntoElement {
         let mono = cx.theme().mono_font_family.clone();
         let cell = div().overflow_hidden().whitespace_nowrap();
+        let col_ix = match col_at(col_ix, self.extra.len()) {
+            Col::Fixed(col) => col,
+            Col::Field(i) => {
+                let text = self.field_cell(row_ix, &self.extra[i]);
+                return cell
+                    .font_family(mono)
+                    .text_ellipsis()
+                    .when(text == "—", |d| d.text_color(theme::text_faint()))
+                    .child(text);
+            }
+        };
         if col_ix == PROTO_COL {
             // A colored mark and name instead of tinting the whole row.
             let protocol = self.protocol(row_ix);
@@ -181,10 +243,24 @@ impl TableDelegate for PacketTable {
             matches!(col_ix, NO_COL | TIME_COL | LEN_COL) && !selected,
             |d| d.text_color(theme::text_muted()),
         )
-        .child(self.cell(row_ix, col_ix))
+        .child(self.fixed_cell(row_ix, col_ix))
     }
 
     fn cell_text(&self, row_ix: usize, col_ix: usize, _: &App) -> String {
         self.cell(row_ix, col_ix)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Col, col_at};
+
+    #[test]
+    fn field_columns_go_before_info() {
+        assert_eq!(col_at(5, 2), Col::Fixed(5));
+        assert_eq!(col_at(6, 2), Col::Field(0));
+        assert_eq!(col_at(7, 2), Col::Field(1));
+        assert_eq!(col_at(8, 2), Col::Fixed(6));
+        assert_eq!(col_at(6, 0), Col::Fixed(6));
     }
 }

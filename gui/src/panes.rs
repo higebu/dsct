@@ -4,7 +4,11 @@
 
 use std::ops::Range;
 
+use dsct::session::fields::{FieldRef, Split};
 use dsct::session::state::TreeNode;
+use gpui_kit::assets::IconName as AssetIcon;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -19,7 +23,105 @@ const TREE_ROW: f32 = 24.;
 /// Indentation per tree level; indent guides sit on this grid.
 const INDENT: f32 = 16.;
 
+/// What the actions on a detail tree value may do.
+#[derive(Clone)]
+struct ValueActions {
+    field: FieldRef,
+    /// The field can be a column, be pinned and split the chart (not a
+    /// protocol, nor a value name the sidebar does not count).
+    field_actions: bool,
+    is_column: bool,
+    pinned: bool,
+}
+
+/// `value` shortened for a menu label.
+fn quoted(value: &str) -> String {
+    const MAX: usize = 32;
+    if value.chars().count() > MAX {
+        let short: String = value.chars().take(MAX).collect();
+        format!("\"{short}…\"")
+    } else {
+        format!("\"{value}\"")
+    }
+}
+
+/// The menu of actions on a value (the ⋯ button and the right-click menu).
+fn value_menu(mut menu: PopupMenu, app: &WeakEntity<DsctApp>, actions: &ValueActions) -> PopupMenu {
+    let target = match &actions.field.value {
+        Some(v) => quoted(v),
+        None => actions.field.path.to_uppercase(),
+    };
+    for (exclude, label) in [(false, "Filter for"), (true, "Filter out")] {
+        let app = app.clone();
+        let field = actions.field.clone();
+        menu = menu.item(PopupMenuItem::new(format!("{label} {target}")).on_click(
+            move |_, window, cx| {
+                let _ = app.update(cx, |app, cx| app.refine(&field, exclude, window, cx));
+            },
+        ));
+    }
+    if actions.field_actions {
+        let path = actions.field.path.clone();
+        let column = {
+            let (app, path) = (app.clone(), path.clone());
+            PopupMenuItem::new(if actions.is_column {
+                format!("Remove the {path} column")
+            } else {
+                format!("Add {path} as a column")
+            })
+            .on_click(move |_, _, cx| {
+                let _ = app.update(cx, |app, cx| app.toggle_column(&path, cx));
+            })
+        };
+        let pin = {
+            let (app, path) = (app.clone(), path.clone());
+            PopupMenuItem::new(if actions.pinned {
+                format!("Unpin {path}")
+            } else {
+                format!("Pin {path} in the sidebar")
+            })
+            .on_click(move |_, _, cx| {
+                let _ = app.update(cx, |app, cx| app.toggle_pin(&path, cx));
+            })
+        };
+        let split = {
+            let app = app.clone();
+            PopupMenuItem::new(format!("Split the chart by {path}")).on_click(move |_, _, cx| {
+                let split = Split::Field(path.clone());
+                let _ = app.update(cx, |app, cx| app.set_split(split, cx));
+            })
+        };
+        menu = menu.separator().item(column).item(pin).item(split);
+    }
+    if let Some(value) = actions.field.value.clone() {
+        menu = menu
+            .separator()
+            .item(PopupMenuItem::new("Copy value").on_click(move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(value.clone()))
+            }));
+    }
+    menu
+}
+
 impl DsctApp {
+    /// What the actions on tree node `node` may do, if it has a value.
+    fn value_actions(&self, node: &TreeNode, columns: &[String]) -> Option<ValueActions> {
+        let field = node.filter.clone()?;
+        let field_actions = field.value.is_some()
+            && (!field.path.ends_with("_name")
+                || self
+                    .fields
+                    .stats
+                    .as_ref()
+                    .is_some_and(|s| s.field(&field.path).is_some()));
+        Some(ValueActions {
+            is_column: columns.contains(&field.path),
+            pinned: self.fields.pinned.contains(&field.path),
+            field,
+            field_actions,
+        })
+    }
+
     /// Select tree node `idx`: highlight its bytes and keep both panes
     /// scrolled to it.
     pub(crate) fn select_node(&mut self, idx: usize, cx: &mut Context<Self>) {
@@ -228,6 +330,8 @@ impl DsctApp {
                         // Layer number of each top-level node, for its summary.
                         let layer_of =
                             |idx: usize| nodes[..idx].iter().filter(|n| n.depth == 0).count();
+                        let columns = this.table.read(cx).delegate().extra.clone();
+                        let app = cx.entity().downgrade();
                         let mut rows = Vec::with_capacity(range.len());
                         for row in range {
                             let Some(&idx) = this.tree.visible.get(row) else {
@@ -298,43 +402,92 @@ impl DsctApp {
                                             )
                                     }))
                             };
-                            rows.push(
+                            let actions = this.value_actions(node, &columns);
+                            let buttons = actions.clone().filter(|_| selected).map(|actions| {
+                                let (plus, minus) = (actions.field.clone(), actions.field.clone());
+                                let menu_app = app.clone();
                                 h_flex()
-                                    .id(("node", idx))
-                                    .w_full()
-                                    .h(px(TREE_ROW))
-                                    .pl_1()
-                                    .pr_3()
-                                    .whitespace_nowrap()
-                                    .when(selected, |d| d.bg(theme::selection()))
-                                    .when(!selected, |d| d.hover(|d| d.bg(theme::hover())))
-                                    .children(guides)
+                                    .flex_shrink_0()
+                                    .gap_0p5()
                                     .child(
-                                        // A 24 × 24 px target for the chevron.
-                                        div()
-                                            .id(("toggle", idx))
-                                            .size(px(24.))
-                                            .flex_shrink_0()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .children(chevron)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                // Toggling is not also a click on the row.
+                                        Button::new(("tree-for", idx))
+                                            .icon(Icon::new(AssetIcon::ZoomIn))
+                                            .xsmall()
+                                            .ghost()
+                                            .tooltip("Filter for this value")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
                                                 cx.stop_propagation();
-                                                this.toggle_node(idx, cx)
+                                                this.refine(&plus, false, window, cx)
                                             })),
                                     )
-                                    .child(content)
-                                    .on_click(cx.listener(
-                                        move |this, event: &ClickEvent, _, cx| {
-                                            if event.click_count() == 2 {
-                                                this.toggle_node(idx, cx);
-                                            }
-                                            this.select_node(idx, cx);
-                                        },
-                                    )),
-                            );
+                                    .child(
+                                        Button::new(("tree-out", idx))
+                                            .icon(Icon::new(AssetIcon::ZoomOut))
+                                            .xsmall()
+                                            .ghost()
+                                            .tooltip("Filter out this value")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                cx.stop_propagation();
+                                                this.refine(&minus, true, window, cx)
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new(("tree-more", idx))
+                                            .icon(Icon::new(AssetIcon::Ellipsis))
+                                            .xsmall()
+                                            .ghost()
+                                            .tooltip("More actions")
+                                            .dropdown_menu(move |menu, _, _| {
+                                                value_menu(menu, &menu_app, &actions)
+                                            }),
+                                    )
+                            });
+                            let row_el = h_flex()
+                                .id(("node", idx))
+                                .w_full()
+                                .h(px(TREE_ROW))
+                                .pl_1()
+                                .pr_3()
+                                .whitespace_nowrap()
+                                .when(selected, |d| d.bg(theme::selection()))
+                                .when(!selected, |d| d.hover(|d| d.bg(theme::hover())))
+                                .children(guides)
+                                .child(
+                                    // A 24 × 24 px target for the chevron.
+                                    div()
+                                        .id(("toggle", idx))
+                                        .size(px(24.))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .children(chevron)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            // Toggling is not also a click on the row.
+                                            cx.stop_propagation();
+                                            this.toggle_node(idx, cx)
+                                        })),
+                                )
+                                .child(content)
+                                .child(div().flex_1())
+                                .children(buttons)
+                                .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                                    if event.click_count() == 2 {
+                                        this.toggle_node(idx, cx);
+                                    }
+                                    this.select_node(idx, cx);
+                                }));
+                            rows.push(match actions {
+                                Some(actions) => {
+                                    let app = app.clone();
+                                    row_el
+                                        .context_menu(move |menu, _, _| {
+                                            value_menu(menu, &app, &actions)
+                                        })
+                                        .into_any_element()
+                                }
+                                None => row_el.into_any_element(),
+                            });
                         }
                         rows
                     }),
