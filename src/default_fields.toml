@@ -97,6 +97,7 @@ fields = [
   "stream_id",
   "reassembly_in_progress",
   "segment_count",
+  "retransmission",
 ]
 
 [UDP]
