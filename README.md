@@ -161,15 +161,11 @@ Nested fields are addressed with dots (`dns.questions.name`); the leading
 segment matches the top-level field and any nested container of that name, so
 `bgp.nlri.route_type` reaches MP_REACH NLRI.
 
-`packet_number` and `timestamp` select packets by their record in the
-capture, without dissecting them. `timestamp` takes the form `dsct` prints
-(RFC 3339, `Z` or a `±hh:mm` offset, up to microseconds) or seconds since the
-Unix epoch:
+`timestamp` selects packets by capture time (RFC 3339 or seconds since the
+Unix epoch):
 
 ```bash
-dsct read capture.pcap -f "packet_number BETWEEN 1 AND 100"
-dsct read capture.pcap -f "timestamp BETWEEN '2024-01-15T10:30:00Z' AND '2024-01-15T10:31:00Z'"
-dsct read capture.pcap -f "dns AND timestamp >= 1705314600.5"
+dsct read capture.pcap -f "timestamp >= '2024-01-15T10:30:00Z'"
 ```
 
 Sample evenly across the capture:
