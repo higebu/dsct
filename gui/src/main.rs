@@ -10,6 +10,7 @@ mod palette;
 mod panes;
 mod sidebar;
 mod summary;
+mod tabs;
 mod theme;
 mod timeline;
 mod tree_nav;
@@ -50,6 +51,9 @@ actions!(
         Expand,
         Collapse,
         ToggleNode,
+        CloseTab,
+        NextTab,
+        PrevTab,
     ]
 );
 
@@ -101,6 +105,11 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(platform_key("cmd-j", "ctrl-j"), ToggleDock, None),
         KeyBinding::new(platform_key("cmd-b", "ctrl-b"), ToggleSidebar, None),
         KeyBinding::new(platform_key("cmd-t", "ctrl-t"), CycleTimeFormat, None),
+        KeyBinding::new(platform_key("cmd-w", "ctrl-w"), CloseTab, None),
+        KeyBinding::new("ctrl-tab", NextTab, None),
+        KeyBinding::new("ctrl-shift-tab", PrevTab, None),
+        KeyBinding::new(platform_key("cmd-shift-]", "ctrl-pagedown"), NextTab, None),
+        KeyBinding::new(platform_key("cmd-shift-[", "ctrl-pageup"), PrevTab, None),
         KeyBinding::new(platform_key("cmd-1", "ctrl-1"), FocusPackets, None),
         KeyBinding::new(platform_key("cmd-2", "ctrl-2"), FocusDetails, None),
         KeyBinding::new(platform_key("cmd-3", "ctrl-3"), FocusBytes, None),
@@ -134,11 +143,13 @@ fn bind_keys(cx: &mut App) {
 }
 
 fn main() {
-    // `dsct-gui [FILE]`; macOS passes `-psn_*` when launched from Finder.
-    let path = std::env::args_os()
+    // `dsct-gui [FILE]...`, each in a tab; macOS passes `-psn_*` when
+    // launched from Finder.
+    let paths: Vec<PathBuf> = std::env::args_os()
         .skip(1)
-        .find(|a| !a.to_string_lossy().starts_with("-psn_"))
-        .map(PathBuf::from);
+        .filter(|a| !a.to_string_lossy().starts_with("-psn_"))
+        .map(PathBuf::from)
+        .collect();
 
     // Register the icon catalog (filter, clock, chart, chevrons, …).
     gpui_kit::application()
@@ -159,6 +170,7 @@ fn main() {
                     name: "File".into(),
                     items: vec![
                         MenuItem::action("Open…", Open),
+                        MenuItem::action("Close Tab", CloseTab),
                         MenuItem::separator(),
                         MenuItem::action("Command Palette…", OpenPalette),
                     ],
@@ -170,6 +182,8 @@ fn main() {
                         MenuItem::action("Toggle Sidebar", ToggleSidebar),
                         MenuItem::action("Toggle Bottom Dock", ToggleDock),
                         MenuItem::action("Change Time Format", CycleTimeFormat),
+                        MenuItem::action("Next Tab", NextTab),
+                        MenuItem::action("Previous Tab", PrevTab),
                         MenuItem::separator(),
                         MenuItem::action("Follow Stream", FollowStream),
                         MenuItem::action("Stats", ShowStats),
@@ -185,7 +199,7 @@ fn main() {
                 ..TitleBar::window_options()
             };
             let opened = gpui_kit::open_window(options, cx, |window, cx| {
-                cx.new(|cx| DsctApp::new(path, window, cx))
+                cx.new(|cx| DsctApp::new(paths, window, cx))
             });
             if let Err(e) = opened {
                 eprintln!("dsct-gui: cannot open a window: {e}");

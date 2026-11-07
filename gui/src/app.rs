@@ -10,7 +10,7 @@ use dsct::session::{FilterOutcome, Session, Tick};
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::table::{DataTable, TableEvent, TableState};
+use gpui_kit::component::table::{DataTable, TableState};
 use gpui_kit::component::{
     Disableable as _, Icon, IconName, Sizable as _, TitleBar, h_flex, h_resizable, resizable_panel,
     v_flex, v_resizable,
@@ -23,11 +23,12 @@ use crate::format::{self, TimeFormat};
 use crate::packet_table::PacketTable;
 use crate::palette::{Command, PaletteState};
 use crate::sidebar::FieldsPanel;
+use crate::tabs::Slot;
 use crate::timeline::{BUCKETS, Timeline};
 use crate::{
-    CloseBottom, CycleTimeFormat, FocusBytes, FocusDetails, FocusNextPane, FocusPackets,
-    FocusPrevPane, FollowStream, Open, OpenPalette, SharedSession, ShowStats, ToggleDock,
-    ToggleSidebar, theme,
+    CloseBottom, CloseTab, CycleTimeFormat, FocusBytes, FocusDetails, FocusNextPane, FocusPackets,
+    FocusPrevPane, FollowStream, NextTab, Open, OpenPalette, PrevTab, SharedSession, ShowStats,
+    ToggleDock, ToggleSidebar, theme,
 };
 
 /// How often background work (indexing, the in-order pass, filter scans)
@@ -65,6 +66,7 @@ impl Pane {
 
 /// Which detail tree node is selected, what is visible, and where the tree
 /// and the hex dump are scrolled.
+#[derive(Default)]
 pub struct TreeView {
     /// Index into the selected packet's tree nodes.
     pub selected: Option<usize>,
@@ -113,18 +115,23 @@ pub struct DsctApp {
     pub(crate) tree_focus: FocusHandle,
     pub(crate) hex_focus: FocusHandle,
     /// Displayed row of the selected packet.
-    selected_row: Option<usize>,
+    pub(crate) selected_row: Option<usize>,
     pub(crate) tree: TreeView,
     pub(crate) bottom: BottomPanel,
     pub(crate) fields: FieldsPanel,
     pub(crate) timeline: Timeline,
     pub(crate) palette: Option<PaletteState>,
     sidebar_open: bool,
-    time_format: TimeFormat,
+    pub(crate) time_format: TimeFormat,
     /// Last error or notice, shown in the status bar.
-    message: Option<(String, bool)>,
+    pub(crate) message: Option<(String, bool)>,
     /// The filter could not be applied: shown under the filter input.
-    filter_error: Option<String>,
+    pub(crate) filter_error: Option<String>,
+    /// Open captures in tab order: [`Slot::Active`] is the one whose state
+    /// is in the fields above. Empty until a capture is opened.
+    pub(crate) tabs: Vec<Slot>,
+    /// Subscriptions to the active tab's table and filter input.
+    pub(crate) tab_subscriptions: Vec<Subscription>,
     /// Whether background work was running at the last tick, so the status
     /// bar is redrawn once more when it stops.
     busy: bool,
@@ -134,62 +141,33 @@ pub struct DsctApp {
 }
 
 impl DsctApp {
-    /// Create the view, opening `path` when given.
-    pub fn new(path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let session: SharedSession = Default::default();
-        let table = cx.new(|cx| TableState::new(PacketTable::new(session.clone()), window, cx));
-        let filter =
-            cx.new(|cx| InputState::new(window, cx).placeholder("tcp.dst_port == 443 or dns"));
+    /// Create the view, opening each of `paths` in a tab.
+    pub fn new(paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let tab = Self::new_tab_state(window, cx);
         let field_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search fields"));
-        let subscriptions = vec![
-            cx.subscribe_in(&table, window, |this, _, event: &TableEvent, _, cx| {
-                if let TableEvent::SelectRow(row) = event {
-                    this.select_row(*row, cx);
-                }
-            }),
-            cx.subscribe_in(&filter, window, |this, state, event: &InputEvent, _, cx| {
-                match event {
-                    InputEvent::PressEnter { .. } => {
-                        let text = state.read(cx).value().to_string();
-                        this.apply_filter(&text, cx);
-                    }
-                    // Editing the filter dismisses its error and updates
-                    // the "Enter to apply" hint.
-                    InputEvent::Change => {
-                        this.filter_error = None;
+        let subscriptions =
+            vec![
+                cx.subscribe_in(&field_search, window, |_, _, event: &InputEvent, _, cx| {
+                    if let InputEvent::Change = event {
                         cx.notify();
                     }
-                    _ => {}
-                }
-            }),
-            cx.subscribe_in(&field_search, window, |_, _, event: &InputEvent, _, cx| {
-                if let InputEvent::Change = event {
-                    cx.notify();
-                }
-            }),
-        ];
+                }),
+            ];
 
         let root_focus = cx.focus_handle();
         window.focus(&root_focus, cx);
         let mut app = Self {
-            session,
-            table,
-            filter,
+            session: tab.session,
+            table: tab.table,
+            filter: tab.filter,
             root_focus,
             tree_focus: cx.focus_handle(),
             hex_focus: cx.focus_handle(),
             selected_row: None,
-            tree: TreeView {
-                selected: None,
-                visible: Vec::new(),
-                summaries: Vec::new(),
-                hex_cursor: None,
-                tree_scroll: UniformListScrollHandle::new(),
-                hex_scroll: UniformListScrollHandle::new(),
-            },
-            bottom: BottomPanel::default(),
+            tree: tab.tree,
+            bottom: tab.bottom,
             fields: FieldsPanel::new(field_search),
-            timeline: Timeline::default(),
+            timeline: tab.timeline,
             palette: None,
             sidebar_open: true,
             time_format: TimeFormat::default(),
@@ -197,53 +175,31 @@ impl DsctApp {
             filter_error: None,
             busy: false,
             ticking: false,
+            tabs: Vec::new(),
+            tab_subscriptions: tab.subscriptions,
             _subscriptions: subscriptions,
         };
-        if let Some(path) = path {
-            app.open(path, cx);
-        }
+        app.open_paths(paths, window, cx);
         app
     }
 
-    /// Ask for a capture file and open it.
-    pub fn prompt_open(&mut self, cx: &mut Context<Self>) {
+    /// Ask for capture files and open each in a tab.
+    pub fn prompt_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
-            multiple: false,
+            multiple: true,
             prompt: Some("Open".into()),
         });
-        cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = paths.await
-                && let Some(path) = paths.into_iter().next()
-            {
-                let _ = this.update(cx, |app, cx| app.open(path, cx));
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = paths.await {
+                let _ = this.update_in(cx, |app, window, cx| app.open_paths(paths, window, cx));
             }
         })
         .detach();
     }
 
-    /// Replace the shown capture with the one at `path`.
-    pub fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        match Session::open(&path, Vec::new()) {
-            Ok(session) => {
-                *self.session.borrow_mut() = Some(session);
-                self.reset_views(cx);
-                self.ensure_ticking(cx);
-            }
-            Err(e) => self.message = Some((format!("Cannot open {}: {e}", path.display()), true)),
-        }
-        cx.notify();
-    }
-
-    /// Close the capture, back to the empty window.
-    fn close_capture(&mut self, cx: &mut Context<Self>) {
-        *self.session.borrow_mut() = None;
-        self.reset_views(cx);
-        cx.notify();
-    }
-
-    fn reset_views(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn reset_views(&mut self, cx: &mut Context<Self>) {
         self.selected_row = None;
         self.tree.selected = None;
         self.tree.hex_cursor = None;
@@ -429,8 +385,12 @@ impl DsctApp {
             || self.timeline.stale;
         changed |= busy != self.busy;
         self.busy = busy;
-        self.ticking = busy;
         drop(guard);
+
+        // Captures in other tabs keep indexing; their tab shows the count.
+        let parked = self.tick_parked();
+        changed |= parked;
+        self.ticking = busy || parked;
 
         if rows_changed || reload {
             self.sync_table_selection(cx);
@@ -443,11 +403,11 @@ impl DsctApp {
         if changed || rows_changed || reload {
             cx.notify();
         }
-        busy
+        self.ticking
     }
 
     /// Refresh the table's rows and show `selected_row` as selected.
-    fn sync_table_selection(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn sync_table_selection(&mut self, cx: &mut Context<Self>) {
         let selected = self.selected_row;
         self.table.update(cx, |table, cx| {
             table.delegate_mut().selected = selected;
@@ -461,7 +421,7 @@ impl DsctApp {
     }
 
     /// Show the packet at displayed `row`.
-    fn select_row(&mut self, row: usize, cx: &mut Context<Self>) {
+    pub(crate) fn select_row(&mut self, row: usize, cx: &mut Context<Self>) {
         if self.selected_row == Some(row) {
             return;
         }
@@ -606,7 +566,7 @@ impl DsctApp {
         cx: &mut Context<Self>,
     ) {
         match command {
-            Command::Open => self.prompt_open(cx),
+            Command::Open => self.prompt_open(window, cx),
             Command::FollowStream => self.follow_stream(cx),
             Command::Stats => self.stats(cx),
             Command::CycleTime => self.cycle_time_format(cx),
@@ -721,42 +681,6 @@ impl DsctApp {
                             "Toggle bottom dock",
                         )
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_dock(cx))),
-                    ),
-            )
-    }
-
-    fn render_tab_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let file = self
-            .session
-            .borrow()
-            .as_ref()
-            .map(|s| s.file_name.clone())
-            .unwrap_or_default();
-        h_flex()
-            .h(px(34.))
-            .flex_shrink_0()
-            .bg(theme::panel())
-            .border_b_1()
-            .border_color(theme::border())
-            .child(
-                h_flex()
-                    .h_full()
-                    .gap_2()
-                    .pl_3()
-                    .pr_1()
-                    .bg(theme::surface())
-                    .border_r_1()
-                    .border_color(theme::border())
-                    .text_color(theme::text_bright())
-                    .child(div().size(px(6.)).rounded_full().bg(theme::accent()))
-                    .child(file)
-                    .child(
-                        Button::new("close-capture")
-                            .icon(IconName::Close)
-                            .xsmall()
-                            .ghost()
-                            .tooltip("Close capture")
-                            .on_click(cx.listener(|this, _, _, cx| this.close_capture(cx))),
                     ),
             )
     }
@@ -885,7 +809,7 @@ impl DsctApp {
                 Button::new("open-empty")
                     .label("Open…")
                     .primary()
-                    .on_click(cx.listener(|this, _, _, cx| this.prompt_open(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.prompt_open(window, cx))),
             )
             .child(
                 div()
@@ -1040,7 +964,15 @@ impl Render for DsctApp {
             .size_full()
             .bg(theme::chrome())
             .text_color(theme::text())
-            .on_action(cx.listener(|this, _: &Open, _, cx| this.prompt_open(cx)))
+            .on_action(cx.listener(|this, _: &Open, window, cx| this.prompt_open(window, cx)))
+            .on_action(cx.listener(|this, _: &CloseTab, _, cx| {
+                if !this.tabs.is_empty() {
+                    let active = this.active_tab();
+                    this.close_tab(active, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &NextTab, _, cx| this.step_tab(true, cx)))
+            .on_action(cx.listener(|this, _: &PrevTab, _, cx| this.step_tab(false, cx)))
             .on_action(
                 cx.listener(|this, _: &OpenPalette, window, cx| this.open_palette(window, cx)),
             )
@@ -1078,10 +1010,8 @@ impl Render for DsctApp {
                 cx.notify();
             }))
             .drag_over::<ExternalPaths>(|style, _, _, _| style.bg(theme::drop_target()))
-            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                if let Some(path) = paths.paths().first() {
-                    this.open(path.clone(), cx);
-                }
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.open_paths(paths.paths().to_vec(), window, cx)
             }))
             .child(title_bar)
             .child(div().flex_1().min_h_0().child(body))
