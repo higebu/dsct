@@ -24,7 +24,7 @@ const COLUMNS: [(&str, &str, f32); 7] = [
     ("time", "Time", 250.),
     ("src", "Source", 150.),
     ("dst", "Destination", 150.),
-    ("proto", "Protocol", 104.),
+    ("proto", "Protocol", 150.),
     ("len", "Length", 72.),
     ("info", "Info", 600.),
 ];
@@ -71,16 +71,18 @@ impl PacketTable {
         }
     }
 
-    /// The protocol of the packet at `row`, dissecting it on demand.
-    fn protocol(&self, row: usize) -> &'static str {
+    /// The tunnels and the topmost protocol of the packet at `row`,
+    /// dissecting it on demand.
+    fn protocol(&self, row: usize) -> (Vec<&'static str>, &'static str) {
         let mut guard = self.session.borrow_mut();
         let Some(session) = guard.as_mut() else {
-            return "";
+            return (Vec::new(), "");
         };
         let Some(pkt_idx) = session.filtered.select(row) else {
-            return "";
+            return (Vec::new(), "");
         };
-        session.get_or_dissect_summary(pkt_idx).protocol
+        let summary = session.get_or_dissect_summary(pkt_idx);
+        (summary.tunnels.clone(), summary.protocol)
     }
 
     /// The text of cell (`row`, `col_ix`), dissecting the row's packet on
@@ -128,7 +130,7 @@ impl PacketTable {
                 match col {
                     SRC_COL => summary.source.clone(),
                     DST_COL => summary.destination.clone(),
-                    PROTO_COL => summary.protocol.to_string(),
+                    PROTO_COL => protocol_label(&summary.tunnels, summary.protocol),
                     _ => summary.info.clone(),
                 }
             }
@@ -221,8 +223,9 @@ impl TableDelegate for PacketTable {
             }
         };
         if col_ix == PROTO_COL {
-            // A colored mark and name instead of tinting the whole row.
-            let protocol = self.protocol(row_ix);
+            // A colored mark and name instead of tinting the whole row; the
+            // tunnels the packet is carried in come first, muted.
+            let (tunnels, protocol) = self.protocol(row_ix);
             let color =
                 format::protocol_swatch(protocol).map_or(theme::text_muted(), theme::swatch);
             return cell
@@ -232,7 +235,19 @@ impl TableDelegate for PacketTable {
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(color)
                 .child(div().size(px(7.)).rounded(px(2.)).bg(color))
-                .child(protocol);
+                .child(
+                    div()
+                        .flex()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .children((!tunnels.is_empty()).then(|| {
+                            div()
+                                .font_weight(FontWeight::NORMAL)
+                                .text_color(theme::text_muted())
+                                .child(format!("{}/", tunnels.join("/")))
+                        }))
+                        .child(protocol),
+                );
         }
         let selected = self.selected == Some(row_ix);
         cell.when(
@@ -251,9 +266,30 @@ impl TableDelegate for PacketTable {
     }
 }
 
+/// The Protocol column's text: the tunnels, then the topmost protocol
+/// (`"GTPv1-U/TCP"`).
+fn protocol_label(tunnels: &[&str], protocol: &str) -> String {
+    tunnels
+        .iter()
+        .copied()
+        .chain(std::iter::once(protocol))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Col, col_at};
+    use super::{Col, col_at, protocol_label};
+
+    #[test]
+    fn protocol_label_puts_tunnels_first() {
+        assert_eq!(protocol_label(&[], "TCP"), "TCP");
+        assert_eq!(protocol_label(&["GTPv1-U"], "SIP"), "GTPv1-U/SIP");
+        assert_eq!(
+            protocol_label(&["VXLAN", "GTPv1-U"], "TCP"),
+            "VXLAN/GTPv1-U/TCP"
+        );
+    }
 
     #[test]
     fn field_columns_go_before_info() {
