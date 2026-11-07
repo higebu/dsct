@@ -304,6 +304,9 @@ pub struct FieldSummary {
     pub kind: FieldKind,
     /// Sampled packets that have the field.
     pub packets: u64,
+    /// Whether dsct shows the field by default (it is listed in its
+    /// default field configuration), a hint that it matters for analysis.
+    pub key: bool,
     /// Distinct values counted.
     pub distinct: usize,
     /// Whether the field had more distinct values than were counted.
@@ -332,10 +335,44 @@ pub struct LayerSummary {
     pub packets: u64,
 }
 
+/// Which displayed packets field values are counted over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sample {
+    /// The first `n` displayed packets.
+    First(usize),
+    /// `n` displayed packets spread evenly from the first to the last.
+    Spread(usize),
+    /// Every displayed packet.
+    All,
+}
+
+impl Sample {
+    /// How many of `displayed` packets this sample takes.
+    pub fn count(self, displayed: usize) -> usize {
+        match self {
+            Sample::First(n) | Sample::Spread(n) => n.min(displayed),
+            Sample::All => displayed,
+        }
+    }
+
+    /// The displayed position (0-based) of the `k`-th sampled packet out of
+    /// `count` taken from `displayed`.
+    pub fn position(self, k: usize, count: usize, displayed: usize) -> usize {
+        match self {
+            Sample::Spread(_) if count < displayed => {
+                (k as u128 * displayed as u128 / count as u128) as usize
+            }
+            _ => k,
+        }
+    }
+}
+
 /// Value counts over a sample of the displayed packets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldStats {
-    /// Packets sampled: the first displayed packets, up to the limit.
+    /// Which packets were counted.
+    pub sample: Sample,
+    /// Packets sampled.
     pub sampled: u64,
     /// Packets displayed when the sample was taken.
     pub displayed: u64,
@@ -474,8 +511,26 @@ impl FieldStatsCollector {
         });
     }
 
-    pub(crate) fn finish(self, displayed: u64) -> FieldStats {
+    pub(crate) fn finish(self, sample: Sample, displayed: u64) -> FieldStats {
         let layer_of = &self.layer_of;
+        let config = crate::field_config::FieldConfig::default_config().ok();
+        let is_key = |protocol: &str, path: &str| {
+            let Some(config) = &config else {
+                return false;
+            };
+            if !config.lists_protocol(protocol) {
+                return false;
+            }
+            // The path after the protocol: `questions.name`.
+            let mut parts = path.split('.').skip(1);
+            let Some(top) = parts.next() else {
+                return false;
+            };
+            config.should_include(protocol, top)
+                && parts
+                    .next()
+                    .is_none_or(|child| config.should_include_nested(protocol, top, child))
+        };
         let protocols = self
             .protocols
             .into_iter()
@@ -512,6 +567,7 @@ impl FieldStatsCollector {
                 });
                 top.truncate(TOP_VALUES);
                 FieldSummary {
+                    key: is_key(acc.protocol, &path),
                     path,
                     protocol: acc.protocol,
                     kind: acc.kind,
@@ -523,6 +579,7 @@ impl FieldStatsCollector {
             })
             .collect();
         FieldStats {
+            sample,
             sampled: self.sampled,
             displayed,
             protocols,
@@ -920,7 +977,7 @@ mod tests {
             let buf = dissect(&registry, frame);
             collector.add(&Packet::new(&buf, frame));
         }
-        let stats = collector.finish(5);
+        let stats = collector.finish(Sample::All, 5);
         assert_eq!(stats.sampled, 3);
         assert_eq!(stats.displayed, 5);
 
@@ -951,6 +1008,29 @@ mod tests {
         assert_eq!(qname.packets, 2);
         assert_eq!(qname.top[0].value, "example.com");
         assert_eq!(stats.fields[0].protocol, "Ethernet");
+
+        // Listed in default_fields.toml or not.
+        let key = |path: &str| stats.field(path).map(|f| f.key);
+        assert_eq!(key("ipv4.src"), Some(true));
+        assert_eq!(key("ipv4.checksum"), Some(false));
+        assert_eq!(key("dns.questions.name"), Some(true));
+        assert_eq!(key("udp.length"), Some(false));
+    }
+
+    #[test]
+    fn samples_take_first_or_spread_positions() {
+        assert_eq!(Sample::First(3).count(10), 3);
+        assert_eq!(Sample::Spread(30).count(10), 10);
+        assert_eq!(Sample::All.count(10), 10);
+        let spread: Vec<usize> = (0..4)
+            .map(|k| Sample::Spread(4).position(k, 4, 10))
+            .collect();
+        assert_eq!(spread, [0, 2, 5, 7]);
+        let first: Vec<usize> = (0..4)
+            .map(|k| Sample::First(4).position(k, 4, 10))
+            .collect();
+        assert_eq!(first, [0, 1, 2, 3]);
+        assert_eq!(Sample::Spread(10).position(9, 10, 10), 9);
     }
 
     #[test]

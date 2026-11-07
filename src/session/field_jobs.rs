@@ -6,16 +6,19 @@ use packet_dissector::registry::DissectorRegistry;
 use packet_dissector_core::packet::{DissectBuffer, Packet};
 
 use super::fields::{
-    FieldStats, FieldStatsCollector, Histogram, Split, SplitCollector, protocol_layers,
+    FieldStats, FieldStatsCollector, Histogram, Sample, Split, SplitCollector, protocol_layers,
     timestamp_us,
 };
 use super::{Session, Tick, ordered_pass};
 
 /// An in-progress [`Session::start_field_stats`] job.
 pub struct FieldStatsJob {
+    sample: Sample,
+    /// Sampled packets counted so far.
     cursor: usize,
+    /// Packets to sample.
     end: usize,
-    displayed: u64,
+    displayed: usize,
     collector: FieldStatsCollector,
     registry: DissectorRegistry,
 }
@@ -32,17 +35,17 @@ impl Session {
     /// Packets dissected per tick by the field jobs.
     const FIELD_CHUNK_SIZE: usize = 2_000;
 
-    /// Start counting field values over the first `limit` displayed packets
-    /// (all of them when `None`).
+    /// Start counting field values over `sample` of the displayed packets.
     ///
     /// Returns `Err` with a message when the job cannot start.
-    pub fn start_field_stats(&mut self, limit: Option<usize>) -> Result<(), String> {
+    pub fn start_field_stats(&mut self, sample: Sample) -> Result<(), String> {
         let registry = self.scan_registry().map_err(|e| format!("Error: {e}"))?;
         let displayed = self.filtered.count_ones();
         self.field_stats_progress = Some(FieldStatsJob {
+            sample,
             cursor: 0,
-            end: limit.map_or(displayed, |l| l.min(displayed)),
-            displayed: displayed as u64,
+            end: sample.count(displayed),
+            displayed,
             collector: FieldStatsCollector::new(protocol_layers(&registry)),
             registry,
         });
@@ -66,7 +69,20 @@ impl Session {
         };
         let end = (job.cursor + Self::FIELD_CHUNK_SIZE).min(job.end);
         let mut dissect_buf = DissectBuffer::new();
-        for idx in self.filtered.iter_from(job.cursor).take(end - job.cursor) {
+        let packets: Vec<usize> = match job.sample {
+            Sample::Spread(_) if job.end < job.displayed => (job.cursor..end)
+                .filter_map(|k| {
+                    self.filtered
+                        .select(job.sample.position(k, job.end, job.displayed))
+                })
+                .collect(),
+            _ => self
+                .filtered
+                .iter_from(job.cursor)
+                .take(end - job.cursor)
+                .collect(),
+        };
+        for idx in packets {
             let index = &self.indices[idx];
             let Some(data) = self.capture.packet_data(index) else {
                 continue;
@@ -83,7 +99,7 @@ impl Session {
         if job.cursor >= job.end
             && let Some(job) = self.field_stats_progress.take()
         {
-            return Tick::Done(job.collector.finish(job.displayed));
+            return Tick::Done(job.collector.finish(job.sample, job.displayed as u64));
         }
         Tick::Running
     }
@@ -202,7 +218,7 @@ mod tests {
     fn field_stats_sample_the_first_displayed_packets() {
         let (mut session, _tmp) = test_session(5);
         assert!(matches!(session.field_stats_tick(), Tick::Idle));
-        session.start_field_stats(Some(3)).unwrap();
+        session.start_field_stats(Sample::First(3)).unwrap();
         assert!(session.field_stats_running());
         let stats = finish(|| session.field_stats_tick());
         assert!(!session.field_stats_running());
@@ -213,14 +229,26 @@ mod tests {
         let udp = stats.protocols.iter().find(|p| p.name == "UDP").unwrap();
         assert_eq!(udp.layer, Some(ProtocolLayer::Transport));
 
-        session.start_field_stats(None).unwrap();
+        session.start_field_stats(Sample::All).unwrap();
         assert_eq!(finish(|| session.field_stats_tick()).sampled, 5);
+    }
+
+    #[test]
+    fn field_stats_spread_over_the_displayed_packets() {
+        // Which positions are taken is covered by `Sample::position`'s test.
+        let (mut session, _tmp) = test_session(10);
+        session.start_field_stats(Sample::Spread(4)).unwrap();
+        let stats = finish(|| session.field_stats_tick());
+        assert_eq!(stats.sample, Sample::Spread(4));
+        assert_eq!((stats.sampled, stats.displayed), (4, 10));
+        session.start_field_stats(Sample::Spread(40)).unwrap();
+        assert_eq!(finish(|| session.field_stats_tick()).sampled, 10);
     }
 
     #[test]
     fn field_stats_can_be_cancelled() {
         let (mut session, _tmp) = test_session(2);
-        session.start_field_stats(None).unwrap();
+        session.start_field_stats(Sample::All).unwrap();
         session.cancel_field_stats();
         assert!(!session.field_stats_running());
         assert!(matches!(session.field_stats_tick(), Tick::Idle));
@@ -230,7 +258,7 @@ mod tests {
     fn field_jobs_fail_with_invalid_decode_as() {
         let (mut session, _tmp) = test_session(1);
         session.decode_as_args = vec!["not-a-decode-as".to_string()];
-        assert!(session.start_field_stats(None).is_err());
+        assert!(session.start_field_stats(Sample::All).is_err());
         assert!(session.start_histogram(Split::TopProtocol, 4).is_err());
         assert!(!session.field_stats_running());
         assert!(!session.histogram_running());

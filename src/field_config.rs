@@ -130,6 +130,12 @@ impl FieldConfig {
         self.protocols.extend(other.protocols);
     }
 
+    /// Whether the config lists the fields of `protocol` (otherwise all of
+    /// its fields are shown).
+    pub fn lists_protocol(&self, protocol: &str) -> bool {
+        self.protocols.contains_key(protocol)
+    }
+
     /// Returns `true` if the given top-level field name should be shown.
     ///
     /// If the protocol is not in the config, all fields are shown.
