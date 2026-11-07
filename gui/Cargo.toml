@@ -16,6 +16,7 @@ dsct = { path = "..", features = ["session"] }
 gpui-kit = "=0.9.0"
 packet-dissector-core = "0.6.2"
 serde_json = "1"
+tempfile = "3"
 
 [dev-dependencies]
 packet-dissector = { version = "0.6.2", default-features = false }

@@ -14,8 +14,10 @@ dissected in the background, so large files open at once.
 - Protocol detail tree and hex dump, linked both ways and operable from the
   keyboard
 - Follow Stream (TCP/UDP/SCTP) and Stats for the displayed packets
-- Open a file with **Open…** (⌘O), by dropping it on the window, or as an
-  argument: `dsct-gui capture.pcap`
+- Several captures in tabs: filter them all at once, show two side by side
+  linked by time, or merge two into one by time
+- Open files with **Open…** (⌘O), by dropping them on the window, or as
+  arguments: `dsct-gui client.pcap server.pcap`
 
 This directory is a Cargo workspace of its own, so GPUI's dependencies stay
 out of dsct's `Cargo.lock`. It is not published to crates.io.

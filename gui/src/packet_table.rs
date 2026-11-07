@@ -1,5 +1,7 @@
 //! The packet list: a virtual table over the session's filtered packets.
 
+use std::rc::Rc;
+
 use dsct::session::loader;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::table::{Column, TableDelegate, TableState};
@@ -38,6 +40,20 @@ pub struct PacketTable {
     pub selected: Option<usize>,
     /// Field columns (filter paths) shown before Info.
     pub extra: Vec<String>,
+    /// The row nearest in time to the packet selected beside this table
+    /// (split view), marked more faintly than the selection.
+    pub linked: Option<usize>,
+    /// For a merged capture: the capture each packet came from, shown in a
+    /// Capture column before Info.
+    pub sources: Option<Rc<Sources>>,
+}
+
+/// Where the packets of a merged capture came from.
+pub struct Sources {
+    /// Index into `names` per packet, in capture order.
+    pub of_packet: Vec<u8>,
+    /// The merged captures' names.
+    pub names: Vec<SharedString>,
 }
 
 /// What a column of the table shows.
@@ -47,16 +63,32 @@ enum Col {
     Fixed(usize),
     /// One of [`PacketTable::extra`].
     Field(usize),
+    /// The capture a merged packet came from.
+    Source,
 }
 
-/// The column at `col_ix` with `extra` field columns before Info.
-fn col_at(col_ix: usize, extra: usize) -> Col {
+/// The column at `col_ix` with `extra` field columns, then the Capture
+/// column when `source` is set, before Info.
+fn col_at(col_ix: usize, extra: usize, source: bool) -> Col {
+    let source_ix = INFO_COL + extra;
     if col_ix < INFO_COL {
         Col::Fixed(col_ix)
-    } else if col_ix < INFO_COL + extra {
+    } else if col_ix < source_ix {
         Col::Field(col_ix - INFO_COL)
+    } else if source && col_ix == source_ix {
+        Col::Source
     } else {
         Col::Fixed(INFO_COL)
+    }
+}
+
+/// Colors of the merged captures in the Capture column.
+fn source_color(source: u8) -> Hsla {
+    match source % 4 {
+        0 => theme::teal(),
+        1 => theme::orange(),
+        2 => theme::purple(),
+        _ => theme::green(),
     }
 }
 
@@ -68,6 +100,8 @@ impl PacketTable {
             time_format: format::TimeFormat::default(),
             selected: None,
             extra: Vec::new(),
+            linked: None,
+            sources: None,
         }
     }
 
@@ -88,9 +122,13 @@ impl PacketTable {
     /// The text of cell (`row`, `col_ix`), dissecting the row's packet on
     /// demand (cached by the session, except for field columns).
     fn cell(&self, row: usize, col_ix: usize) -> String {
-        match col_at(col_ix, self.extra.len()) {
+        match col_at(col_ix, self.extra.len(), self.sources.is_some()) {
             Col::Fixed(col) => self.fixed_cell(row, col),
             Col::Field(i) => self.field_cell(row, &self.extra[i]),
+            Col::Source => self
+                .source_of(row)
+                .map(|(n, _)| n.to_string())
+                .unwrap_or_default(),
         }
     }
 
@@ -139,6 +177,14 @@ impl PacketTable {
 }
 
 impl PacketTable {
+    /// The name and number of the capture the packet at `row` came from.
+    fn source_of(&self, row: usize) -> Option<(SharedString, u8)> {
+        let sources = self.sources.as_ref()?;
+        let pkt_idx = self.session.borrow().as_ref()?.filtered.select(row)?;
+        let source = *sources.of_packet.get(pkt_idx)?;
+        Some((sources.names.get(usize::from(source))?.clone(), source))
+    }
+
     /// The value of the field at `path` in the packet at `row`.
     fn field_cell(&self, row: usize, path: &str) -> String {
         let guard = self.session.borrow();
@@ -151,7 +197,7 @@ impl PacketTable {
 
 impl TableDelegate for PacketTable {
     fn columns_count(&self, _: &App) -> usize {
-        COLUMNS.len() + self.extra.len()
+        COLUMNS.len() + self.extra.len() + usize::from(self.sources.is_some())
     }
 
     fn rows_count(&self, _: &App) -> usize {
@@ -162,13 +208,14 @@ impl TableDelegate for PacketTable {
     }
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
-        let col_ix = match col_at(col_ix, self.extra.len()) {
+        let col_ix = match col_at(col_ix, self.extra.len(), self.sources.is_some()) {
             Col::Fixed(col) => col,
             Col::Field(i) => {
                 let path = &self.extra[i];
                 return Column::new(SharedString::from(format!("field:{path}")), path.clone())
                     .width(px(170.));
             }
+            Col::Source => return Column::new("capture", "Capture").width(px(150.)),
         };
         let (key, name, width) = COLUMNS[col_ix];
         let width = if col_ix == TIME_COL {
@@ -191,15 +238,21 @@ impl TableDelegate for PacketTable {
         _: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
         let selected = self.selected == Some(row_ix);
+        let linked = self.linked == Some(row_ix);
         div()
             .id(("row", row_ix))
             .border_l_2()
             .border_color(if selected {
                 theme::accent()
+            } else if linked {
+                theme::accent().opacity(0.5)
             } else {
                 transparent_black()
             })
             .when(selected, |row| row.text_color(theme::text_bright()))
+            .when(linked && !selected, |row| {
+                row.bg(theme::accent().opacity(0.10))
+            })
     }
 
     fn render_td(
@@ -211,7 +264,7 @@ impl TableDelegate for PacketTable {
     ) -> impl IntoElement {
         let mono = cx.theme().mono_font_family.clone();
         let cell = div().overflow_hidden().whitespace_nowrap();
-        let col_ix = match col_at(col_ix, self.extra.len()) {
+        let col_ix = match col_at(col_ix, self.extra.len(), self.sources.is_some()) {
             Col::Fixed(col) => col,
             Col::Field(i) => {
                 let text = self.field_cell(row_ix, &self.extra[i]);
@@ -220,6 +273,20 @@ impl TableDelegate for PacketTable {
                     .text_ellipsis()
                     .when(text == "—", |d| d.text_color(theme::text_faint()))
                     .child(text);
+            }
+            Col::Source => {
+                let Some((name, source)) = self.source_of(row_ix) else {
+                    return cell;
+                };
+                let color = source_color(source);
+                return cell
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .text_ellipsis()
+                    .text_color(color)
+                    .child(div().size(px(6.)).rounded_full().bg(color))
+                    .child(name);
             }
         };
         if col_ix == PROTO_COL {
@@ -293,10 +360,14 @@ mod tests {
 
     #[test]
     fn field_columns_go_before_info() {
-        assert_eq!(col_at(5, 2), Col::Fixed(5));
-        assert_eq!(col_at(6, 2), Col::Field(0));
-        assert_eq!(col_at(7, 2), Col::Field(1));
-        assert_eq!(col_at(8, 2), Col::Fixed(6));
-        assert_eq!(col_at(6, 0), Col::Fixed(6));
+        assert_eq!(col_at(5, 2, false), Col::Fixed(5));
+        assert_eq!(col_at(6, 2, false), Col::Field(0));
+        assert_eq!(col_at(7, 2, false), Col::Field(1));
+        assert_eq!(col_at(8, 2, false), Col::Fixed(6));
+        assert_eq!(col_at(6, 0, false), Col::Fixed(6));
+        // The Capture column of a merged capture goes after field columns.
+        assert_eq!(col_at(7, 1, true), Col::Source);
+        assert_eq!(col_at(8, 1, true), Col::Fixed(6));
+        assert_eq!(col_at(6, 0, true), Col::Source);
     }
 }

@@ -1566,6 +1566,7 @@ dependencies = [
  "packet-dissector",
  "packet-dissector-core",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

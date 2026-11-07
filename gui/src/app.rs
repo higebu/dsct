@@ -10,7 +10,7 @@ use dsct::session::{FilterOutcome, Session, Tick};
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::table::{DataTable, TableState};
+use gpui_kit::component::table::TableState;
 use gpui_kit::component::{
     Disableable as _, Icon, IconName, Sizable as _, TitleBar, h_flex, h_resizable, resizable_panel,
     v_flex, v_resizable,
@@ -134,6 +134,15 @@ pub struct DsctApp {
     pub(crate) tab_subscriptions: Vec<Subscription>,
     /// A filter applied in one tab is applied in every tab.
     pub(crate) filter_all: bool,
+    /// The tab shown beside the active one (split view).
+    pub(crate) split: Option<usize>,
+    /// In a split view, selecting a packet marks the nearest in time on the
+    /// other side.
+    pub(crate) linked: bool,
+    /// Which packet is marked on the other side, and how far in time.
+    pub(crate) link_note: Option<String>,
+    /// The temporary file of the active tab when it is a merged capture.
+    pub(crate) merged_file: Option<tempfile::TempPath>,
     /// Whether background work was running at the last tick, so the status
     /// bar is redrawn once more when it stops.
     busy: bool,
@@ -180,6 +189,10 @@ impl DsctApp {
             tabs: Vec::new(),
             tab_subscriptions: tab.subscriptions,
             filter_all: false,
+            split: None,
+            linked: true,
+            link_note: None,
+            merged_file: None,
             _subscriptions: subscriptions,
         };
         app.open_paths(paths, window, cx);
@@ -437,6 +450,7 @@ impl DsctApp {
             self.tree.reset(session);
         }
         drop(guard);
+        self.update_link(cx);
         // A placeholder waits for the in-order pass.
         self.ensure_ticking(cx);
         cx.notify();
@@ -527,13 +541,8 @@ impl DsctApp {
         if self.session.borrow().is_none() {
             return;
         }
-        self.time_format = self.time_format.next();
-        let time_format = self.time_format;
-        self.table.update(cx, |table, cx| {
-            table.delegate_mut().time_format = time_format;
-            table.refresh(cx);
-        });
-        cx.notify();
+        let next = self.time_format.next();
+        self.set_time_format(next, cx);
     }
 
     /// The field columns of the packet table.
@@ -923,16 +932,9 @@ impl Render for DsctApp {
             let tree = self.render_tree(window, cx);
             let hex = self.render_hex(window, cx);
             let bottom = self.render_bottom(cx);
+            let tables = self.render_tables(table_border, cx);
             let mut panes = v_resizable("main")
-                .child(
-                    resizable_panel().size(px(360.)).child(
-                        div()
-                            .size_full()
-                            .border_1()
-                            .border_color(table_border)
-                            .child(DataTable::new(&self.table).small()),
-                    ),
-                )
+                .child(resizable_panel().size(px(360.)).child(tables))
                 .child(
                     resizable_panel().child(
                         h_resizable("details")
