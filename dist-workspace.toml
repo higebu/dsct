@@ -29,6 +29,12 @@ tap = "higebu/homebrew-tap"
 # Publish jobs to run in CI
 publish-jobs = ["homebrew"]
 
+# GitHub no longer runs the macos-14 image that dist picks for Apple
+# Silicon ("The configuration 'macos-14-arm64-us-default' is not
+# supported"), which left the v0.3.1 Release workflow without that build.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
+
 # Commit SHAs for the actions dist writes into .github/workflows/release.yml.
 # That file is generated, and `dist plan` fails the Release workflow when its
 # contents drift, so the pins have to come from here rather than being edited
