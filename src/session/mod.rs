@@ -13,6 +13,8 @@
 
 pub mod bg_indexer;
 pub mod completion;
+mod field_jobs;
+pub mod fields;
 pub mod filter_bitmap;
 mod filter_scan;
 pub mod live;
@@ -46,6 +48,7 @@ use self::state::{
 use crate::decode_as;
 use crate::error::Result;
 
+pub use field_jobs::{FieldStatsJob, HistogramJob};
 pub use filter_scan::FilterOutcome;
 pub use stream::FollowedStream;
 
@@ -132,6 +135,10 @@ pub struct Session {
     pub stream_build_progress: Option<StreamBuildProgress>,
     /// In-progress stats collection (None = idle).
     pub stats_progress: Option<StatsProgress>,
+    /// In-progress field value count (None = idle).
+    pub field_stats_progress: Option<FieldStatsJob>,
+    /// In-progress histogram split (None = idle).
+    pub histogram_progress: Option<HistogramJob>,
     /// Live capture mode (None for static file mode).
     pub live_mode: Option<LiveMode>,
     /// Background stdin copier (None for static file mode).
@@ -253,6 +260,8 @@ impl Session {
             decode_as_args,
             stream_build_progress: None,
             stats_progress: None,
+            field_stats_progress: None,
+            histogram_progress: None,
             live_mode,
             stdin_copier,
             // Start at 0 so the first live_tick() ingests any data that was

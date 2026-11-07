@@ -4,7 +4,10 @@ use packet_dissector_core::field::{Field, FieldValue};
 use packet_dissector_core::packet::{DissectBuffer, Layer, Packet};
 
 use crate::field_format::format_field_to_string;
+use crate::field_iter::top_level_fields;
+use crate::filter::normalize_protocol_name;
 
+use super::fields::{FieldRef, filter_value};
 use super::state::TreeNode;
 
 #[cfg(test)]
@@ -17,64 +20,41 @@ use packet_dissector_test_alloc::test_desc;
 /// All layer nodes start expanded.
 pub fn build_tree(packet: &Packet<'_, '_>) -> Vec<TreeNode> {
     let buf = packet.buf();
-    let data = packet.data();
     let mut nodes = Vec::new();
+    let mut path = String::new();
     for layer in buf.layers() {
         let all_fields = buf.layer_fields(layer);
-        // Collect top-level field indices (skip children of containers).
-        let top_level = collect_top_level_indices(all_fields, layer.field_range.start);
-        let top_fields: Vec<&Field<'_>> = top_level.iter().map(|&i| &all_fields[i]).collect();
-        let display_fn_count = top_fields
-            .iter()
-            .filter(|f| {
-                f.descriptor
-                    .display_fn
-                    .is_some_and(|df| df(&f.value, all_fields).is_some())
-            })
-            .count();
-        let fields_count = top_fields.len() + display_fn_count;
+        let top_fields: Vec<&Field<'_>> =
+            top_level_fields(all_fields, layer.field_range.start).collect();
+        path.clear();
+        path.push_str(&normalize_protocol_name(layer.name));
         nodes.push(TreeNode {
             label: layer.protocol_name().to_string(),
             depth: 0,
             expanded: false,
             byte_range: layer.range.clone(),
-            children_count: fields_count,
+            children_count: top_fields.len() + display_fn_count(&top_fields, all_fields),
             is_layer: true,
+            filter: Some(FieldRef {
+                path: path.clone(),
+                value: None,
+            }),
         });
         for &field in &top_fields {
-            push_field(&mut nodes, field, 1, buf, data, layer);
-            push_display_fn_node(&mut nodes, field, all_fields, 1);
+            push_field(&mut nodes, field, all_fields, 1, packet, layer, &mut path);
         }
     }
     nodes
 }
 
-/// Collect indices of top-level fields (not children of containers).
-fn collect_top_level_indices(fields: &[Field<'_>], base: u32) -> Vec<usize> {
-    let mut result = Vec::new();
-    let mut i = 0;
-    while i < fields.len() {
-        result.push(i);
-        match &fields[i].value {
-            FieldValue::Array(range) | FieldValue::Object(range) => {
-                // Skip all children of this container.
-                let children_end = (range.end - base) as usize;
-                i = children_end;
-            }
-            _ => {
-                i += 1;
-            }
-        }
-    }
-    result
-}
-
 /// Emit a virtual `_name` node from a field's `display_fn`, if present.
+/// `path` is the field's own filter path.
 fn push_display_fn_node(
     nodes: &mut Vec<TreeNode>,
     field: &Field<'_>,
     siblings: &[Field<'_>],
     depth: usize,
+    path: &str,
 ) {
     if let Some(display_fn) = field.descriptor.display_fn
         && let Some(display_value) = display_fn(&field.value, siblings)
@@ -87,121 +67,132 @@ fn push_display_fn_node(
             byte_range: field.range.clone(),
             children_count: 0,
             is_layer: false,
+            filter: Some(FieldRef {
+                path: format!("{path}_name"),
+                value: Some(display_value.to_string()),
+            }),
         });
     }
 }
 
+/// Emit the node of `field` (one of `siblings`), its `_name` node, and the
+/// nodes of its children. `path` holds the filter path of the container.
 fn push_field(
     nodes: &mut Vec<TreeNode>,
     field: &Field<'_>,
+    siblings: &[Field<'_>],
     depth: usize,
-    buf: &DissectBuffer<'_>,
-    data: &[u8],
+    packet: &Packet<'_, '_>,
     layer: &Layer,
+    path: &mut String,
 ) {
-    let formatted = format_field(field, data, layer, buf);
-    let label = format!("{}: {}", field.display_name(), formatted);
-    let children_count = count_children(&field.value, buf);
+    let buf = packet.buf();
+    let len = path.len();
+    path.push('.');
+    path.push_str(field.name());
+
+    let formatted = format_field(field, packet.data(), layer, buf);
     nodes.push(TreeNode {
-        label,
+        label: format!("{}: {}", field.display_name(), formatted),
         depth,
         expanded: false,
         byte_range: field.range.clone(),
-        children_count,
+        children_count: count_children(&field.value, buf),
         is_layer: false,
+        filter: field_ref(packet, layer, field, path),
     });
+    push_display_fn_node(nodes, field, siblings, depth, path);
 
-    // Recurse into container types.
+    // Recurse into container types, visiting only each container's direct
+    // children: their own children follow them in the flat buffer.
     match &field.value {
         FieldValue::Object(range) => {
             let fields = buf.nested_fields(range);
-            for child in fields {
-                push_field(nodes, child, depth + 1, buf, data, layer);
-                push_display_fn_node(nodes, child, fields, depth + 1);
+            for child in top_level_fields(fields, range.start) {
+                push_field(nodes, child, fields, depth + 1, packet, layer, path);
             }
         }
         FieldValue::Array(range) => {
             let elements = buf.nested_fields(range);
-            let mut idx = 0;
-            let mut i = 0;
-            while i < elements.len() {
-                let elem = &elements[i];
+            for (idx, elem) in top_level_fields(elements, range.start).enumerate() {
                 match &elem.value {
                     FieldValue::Object(obj_range) => {
                         let obj_fields = buf.nested_fields(obj_range);
-                        let dfn_count = display_fn_count(obj_fields);
+                        let children: Vec<&Field<'_>> =
+                            top_level_fields(obj_fields, obj_range.start).collect();
                         nodes.push(TreeNode {
                             label: format!("[{idx}]"),
                             depth: depth + 1,
                             expanded: true,
                             byte_range: elem.range.clone(),
-                            children_count: obj_fields.len() + dfn_count,
+                            children_count: children.len()
+                                + display_fn_count(&children, obj_fields),
                             is_layer: false,
+                            filter: None,
                         });
-                        for child in obj_fields {
-                            push_field(nodes, child, depth + 2, buf, data, layer);
-                            push_display_fn_node(nodes, child, obj_fields, depth + 2);
+                        for child in children {
+                            push_field(nodes, child, obj_fields, depth + 2, packet, layer, path);
                         }
-                        // Skip past the container's children in the flat buffer
-                        i = obj_range.end as usize - range.start as usize;
                     }
                     _ => {
-                        let formatted = format_field(elem, data, layer, buf);
+                        let formatted = format_field(elem, packet.data(), layer, buf);
                         nodes.push(TreeNode {
-                            label: format!("[{idx}]: {}", formatted),
+                            label: format!("[{idx}]: {formatted}"),
                             depth: depth + 1,
                             expanded: false,
                             byte_range: elem.range.clone(),
-                            children_count: 0,
+                            children_count: count_children(&elem.value, buf),
                             is_layer: false,
+                            // A filter on the array's path matches any element.
+                            filter: field_ref(packet, layer, elem, path),
                         });
-                        i += 1;
                     }
                 }
-                idx += 1;
             }
         }
         _ => {}
     }
+    path.truncate(len);
 }
 
-/// Count the number of fields in an object that have a `display_fn` producing a value.
-fn display_fn_count(fields: &[Field<'_>]) -> usize {
+/// The filter reference of a scalar field at `path`, if a filter can
+/// compare its value.
+fn field_ref(
+    packet: &Packet<'_, '_>,
+    layer: &Layer,
+    field: &Field<'_>,
+    path: &str,
+) -> Option<FieldRef> {
+    let (value, _) = filter_value(packet, layer, field)?;
+    Some(FieldRef {
+        path: path.to_string(),
+        value: Some(value),
+    })
+}
+
+/// Count the fields among `fields` (direct children of one container, from
+/// the flat slice `siblings`) whose `display_fn` produces a value.
+fn display_fn_count(fields: &[&Field<'_>], siblings: &[Field<'_>]) -> usize {
     fields
         .iter()
         .filter(|f| {
             f.descriptor
                 .display_fn
-                .is_some_and(|df| df(&f.value, fields).is_some())
+                .is_some_and(|df| df(&f.value, siblings).is_some())
         })
         .count()
 }
 
+/// Number of child nodes of a field: an object's direct fields (and their
+/// `_name` nodes), or an array's elements.
 fn count_children(value: &FieldValue<'_>, buf: &DissectBuffer<'_>) -> usize {
     match value {
         FieldValue::Object(range) => {
             let fields = buf.nested_fields(range);
-            fields.len() + display_fn_count(fields)
+            let children: Vec<&Field<'_>> = top_level_fields(fields, range.start).collect();
+            children.len() + display_fn_count(&children, fields)
         }
-        FieldValue::Array(range) => {
-            // Count top-level array elements (each Object element is one item,
-            // not the flattened count of all nested fields).
-            let children = buf.nested_fields(range);
-            let mut count = 0;
-            let mut i = 0;
-            while i < children.len() {
-                count += 1;
-                match &children[i].value {
-                    FieldValue::Object(obj_range) => {
-                        i = (obj_range.end - range.start) as usize;
-                    }
-                    _ => {
-                        i += 1;
-                    }
-                }
-            }
-            count
-        }
+        FieldValue::Array(range) => top_level_fields(buf.nested_fields(range), range.start).count(),
         _ => 0,
     }
 }
@@ -338,6 +329,7 @@ mod tests {
                 byte_range: 0..10,
                 children_count: 2,
                 is_layer: true,
+                filter: None,
             },
             TreeNode {
                 label: "Field1".into(),
@@ -346,6 +338,7 @@ mod tests {
                 byte_range: 0..4,
                 children_count: 0,
                 is_layer: false,
+                filter: None,
             },
         ];
         assert_eq!(visible_nodes(&nodes).count(), 1);
@@ -361,6 +354,7 @@ mod tests {
                 byte_range: 0..10,
                 children_count: 1,
                 is_layer: true,
+                filter: None,
             },
             TreeNode {
                 label: "Field".into(),
@@ -369,6 +363,7 @@ mod tests {
                 byte_range: 0..4,
                 children_count: 0,
                 is_layer: false,
+                filter: None,
             },
         ];
         assert_eq!(visible_nodes(&nodes).count(), 2);
@@ -483,6 +478,90 @@ mod tests {
     #[test]
     fn format_value_array() {
         assert_eq!(format_value(&FieldValue::Array(0..0)), "[...]");
+    }
+
+    fn dns_edns_tree() -> Vec<TreeNode> {
+        let registry = packet_dissector::registry::DissectorRegistry::default();
+        let frame = crate::test_fixtures::dns_edns_query_frame();
+        let mut buf = DissectBuffer::new();
+        registry
+            .dissect_with_link_type(&frame, 1, &mut buf)
+            .unwrap();
+        build_tree(&Packet::new(&buf, &frame))
+    }
+
+    #[test]
+    fn nested_fields_appear_once_under_their_container() {
+        let nodes = dns_edns_tree();
+        let codes: Vec<&TreeNode> = nodes.iter().filter(|n| n.label == "Code: 11").collect();
+        assert_eq!(
+            codes.len(),
+            1,
+            "{:#?}",
+            nodes.iter().map(|n| &n.label).collect::<Vec<_>>()
+        );
+        let record = nodes
+            .iter()
+            .position(|n| n.label == "Additional Records: [...]")
+            .unwrap();
+        // The record's "[0]" lists its own fields only.
+        let element = &nodes[record + 1];
+        assert_eq!(element.label, "[0]");
+        let direct = nodes[record + 2..]
+            .iter()
+            .take_while(|n| n.depth > element.depth)
+            .filter(|n| n.depth == element.depth + 1)
+            .count();
+        assert_eq!(element.children_count, direct);
+    }
+
+    #[test]
+    fn tree_nodes_filter_for_their_own_packet() {
+        let registry = packet_dissector::registry::DissectorRegistry::default();
+        for frame in [
+            crate::test_fixtures::dns_edns_query_frame(),
+            crate::test_fixtures::bgp_update_frame(),
+            crate::test_fixtures::bgp_update_mp_reach_frame(),
+        ] {
+            let mut buf = DissectBuffer::new();
+            registry
+                .dissect_with_link_type(&frame, 1, &mut buf)
+                .unwrap();
+            let packet = Packet::new(&buf, &frame);
+            let nodes = build_tree(&packet);
+            assert!(
+                nodes
+                    .iter()
+                    .filter(|n| n.is_layer)
+                    .all(|n| n.filter.is_some())
+            );
+            for node in &nodes {
+                let Some(field) = &node.filter else { continue };
+                let clause = field.clause();
+                let expr = crate::filter_expr::FilterExpr::parse(&clause)
+                    .unwrap_or_else(|e| panic!("{clause}: {e}"))
+                    .unwrap();
+                assert!(expr.matches(&packet), "{} → {clause}", node.label);
+            }
+        }
+        let nodes = dns_edns_tree();
+        let filter = |label: &str| {
+            nodes
+                .iter()
+                .find(|n| n.label == label)
+                .and_then(|n| n.filter.as_ref())
+                .map(FieldRef::clause)
+        };
+        assert_eq!(
+            filter("Name: example.com").as_deref(),
+            Some("dns.questions.name = 'example.com'")
+        );
+        assert_eq!(
+            filter("Code Name: TCP-KEEPALIVE").as_deref(),
+            Some("dns.additionals.edns_options.code_name = 'TCP-KEEPALIVE'")
+        );
+        assert_eq!(filter("DNS").as_deref(), Some("dns"));
+        assert_eq!(filter("[0]"), None);
     }
 
     #[test]

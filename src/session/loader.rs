@@ -152,6 +152,7 @@ pub(super) fn pending_selected(data: &[u8], pkt_idx: usize) -> SelectedPacket {
             byte_range: 0..0,
             children_count: 0,
             is_layer: false,
+            filter: None,
         }],
         pending: true,
     }

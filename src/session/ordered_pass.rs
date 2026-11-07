@@ -30,13 +30,13 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use packet_dissector::registry::DissectorRegistry;
-use packet_dissector_core::packet::DissectBuffer;
+use packet_dissector_core::packet::{DissectBuffer, Packet};
 
 use crate::error::{DsctError, Result};
 
-use super::loader;
 use super::packet_codec::{self, Interner, StoredPacket, Tables};
 use super::state::{CaptureMap, PacketIndex, RowSummary, SelectedPacket};
+use super::{fields, loader};
 
 /// Number of packets sent to the pass per channel message.
 const FEED_BATCH: usize = 4096;
@@ -318,6 +318,26 @@ pub(super) fn selected_packet(
         Display::Dissected(buf, _) => loader::selected_from_buf(buf, data, pkt_idx),
         Display::Stored(stored) => loader::selected_from_owned(stored.packet, pkt_idx),
         Display::Pending => loader::pending_selected(data, pkt_idx),
+    })
+}
+
+/// The first value of the field at `path` in packet `pkt_idx`, as the packet
+/// list shows it; `None` while the packet waits for the in-order pass.
+pub(super) fn first_field_value(
+    registry: &DissectorRegistry,
+    pass: Option<&OrderedPass>,
+    pkt_idx: usize,
+    data: &[u8],
+    link_type: u32,
+    path: &str,
+) -> Option<String> {
+    resolve(registry, pass, pkt_idx, data, link_type, |d| match d {
+        Display::Dissected(buf, _) => fields::first_value(&Packet::new(buf, data), path),
+        Display::Stored(stored) => {
+            let buf = stored.packet.to_dissect_buf();
+            fields::first_value(&Packet::new(&buf, &stored.packet.data), path)
+        }
+        Display::Pending => None,
     })
 }
 

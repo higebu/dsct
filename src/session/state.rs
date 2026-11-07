@@ -176,6 +176,10 @@ pub struct TreeNode {
     pub children_count: usize,
     /// Whether this is a protocol layer header (vs a field).
     pub is_layer: bool,
+    /// The field and value a filter selects this node by (a protocol for a
+    /// layer header); `None` for containers and values a filter cannot
+    /// compare.
+    pub filter: Option<super::fields::FieldRef>,
 }
 
 /// Progress state for chunked initial file indexing.
