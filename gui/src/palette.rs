@@ -28,6 +28,7 @@ pub enum Command {
     Focus(Pane),
     GoTo(u64),
     Filter(String),
+    DecodeAs,
 }
 
 /// One palette row.
@@ -63,6 +64,12 @@ fn commands(has_session: bool) -> Vec<(Command, &'static str, &'static str, Opti
                 "Stats",
                 "Show statistics of the displayed packets",
                 Some(crate::shortcut_shift("S")),
+            ),
+            (
+                Command::DecodeAs,
+                "Decode",
+                "Decode a port as another protocol…",
+                None,
             ),
             (
                 Command::CycleTime,

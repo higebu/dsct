@@ -26,6 +26,7 @@ use gpui_kit::*;
 
 use crate::app::{DsctApp, TreeView};
 use crate::bottom::BottomPanel;
+use crate::decode_as;
 use crate::fields_view::grouped;
 use crate::format::TimeFormat;
 use crate::packet_table::{PacketTable, Sources};
@@ -219,7 +220,7 @@ impl DsctApp {
             .flatten()
             .filter(|f| !f.is_empty());
         for path in paths {
-            let session = match Session::open(&path, Vec::new()) {
+            let session = match Session::open(&path, decode_as::args(&self.decode_rules)) {
                 Ok(session) => session,
                 Err(e) => {
                     self.message = Some((format!("Cannot open {}: {e}", path.display()), true));
@@ -449,7 +450,7 @@ impl DsctApp {
                 return;
             }
         };
-        let mut session = match Session::open(&path, Vec::new()) {
+        let mut session = match Session::open(&path, decode_as::args(&self.decode_rules)) {
             Ok(session) => session,
             Err(e) => {
                 self.message = Some((format!("Cannot open the merged capture: {e}"), true));

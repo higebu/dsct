@@ -19,6 +19,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::bottom::{BottomPanel, StreamView};
+use crate::decode_as::{DecodeAsPanel, Rule};
 use crate::format::{self, TimeFormat};
 use crate::packet_table::PacketTable;
 use crate::palette::{Command, PaletteState};
@@ -143,6 +144,13 @@ pub struct DsctApp {
     pub(crate) link_note: Option<String>,
     /// The temporary file of the active tab when it is a merged capture.
     pub(crate) merged_file: Option<tempfile::TempPath>,
+    /// Decode As rules, applied in every tab.
+    pub(crate) decode_rules: Vec<Rule>,
+    /// The open Decode As panel.
+    pub(crate) decode_panel: Option<DecodeAsPanel>,
+    /// Protocols Decode As can choose (registry names), read when the
+    /// panel first opens.
+    pub(crate) protocols: Vec<String>,
     /// Whether background work was running at the last tick, so the status
     /// bar is redrawn once more when it stops.
     busy: bool,
@@ -193,6 +201,9 @@ impl DsctApp {
             linked: true,
             link_note: None,
             merged_file: None,
+            decode_rules: Vec::new(),
+            decode_panel: None,
+            protocols: Vec::new(),
             _subscriptions: subscriptions,
         };
         app.open_paths(paths, window, cx);
@@ -285,7 +296,7 @@ impl DsctApp {
     }
 
     /// The displayed packets changed: recount the sidebar and the chart.
-    fn invalidate_field_jobs(
+    pub(crate) fn invalidate_field_jobs(
         fields: &mut FieldsPanel,
         timeline: &mut Timeline,
         session: &mut Session,
@@ -586,6 +597,7 @@ impl DsctApp {
             Command::Focus(pane) => self.focus_pane(pane, window, cx),
             Command::GoTo(number) => self.go_to_packet(number, cx),
             Command::Filter(text) => self.set_filter(&text, window, cx),
+            Command::DecodeAs => self.open_decode_as(None, window, cx),
         }
     }
 
@@ -784,7 +796,8 @@ impl DsctApp {
                         crate::shortcut_shift("S")
                     ))
                     .on_click(cx.listener(|this, _, _, cx| this.stats(cx))),
-            );
+            )
+            .child(self.render_decode_as_button(cx));
         v_flex()
             .flex_shrink_0()
             .border_b_1()
@@ -918,6 +931,7 @@ impl Render for DsctApp {
         let title_bar = self.render_title_bar(cx);
         let status = self.render_status(cx);
         let palette = self.render_palette(cx);
+        let decode_as = self.render_decode_as(cx);
 
         let body = if has_session {
             let sidebar = self.sidebar_open.then(|| self.render_sidebar(cx));
@@ -1025,5 +1039,6 @@ impl Render for DsctApp {
             .child(div().flex_1().min_h_0().child(body))
             .child(status)
             .children(palette)
+            .children(decode_as)
     }
 }

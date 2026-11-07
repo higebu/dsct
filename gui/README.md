@@ -14,6 +14,8 @@ dissected in the background, so large files open at once.
 - Protocol detail tree and hex dump, linked both ways and operable from the
   keyboard
 - Follow Stream (TCP/UDP/SCTP) and Stats for the displayed packets
+- Decode As: dissect a TCP or UDP port as another protocol, from a port in
+  the detail tree or the filter bar
 - Several captures in tabs: filter them all at once, show two side by side
   linked by time, or merge two into one by time
 - Open files with **Open…** (⌘O), by dropping them on the window, or as

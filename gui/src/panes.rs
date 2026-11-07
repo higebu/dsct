@@ -14,6 +14,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{DsctApp, HEX_CONTEXT, Pane, TREE_CONTEXT};
+use crate::decode_as::{self, Transport};
 use crate::format::{self, HEX_BYTES_PER_LINE};
 use crate::tree_nav::{self, TreeMove};
 use crate::{Collapse, Expand, SelectNext, SelectPrev, ToggleNode, theme};
@@ -32,6 +33,8 @@ struct ValueActions {
     field_actions: bool,
     is_column: bool,
     pinned: bool,
+    /// The value is a TCP or UDP port, which can be decoded as a protocol.
+    port: Option<(Transport, u16)>,
 }
 
 /// `value` shortened for a menu label.
@@ -93,6 +96,18 @@ fn value_menu(mut menu: PopupMenu, app: &WeakEntity<DsctApp>, actions: &ValueAct
         };
         menu = menu.separator().item(column).item(pin).item(split);
     }
+    if let Some((transport, port)) = actions.port {
+        let app = app.clone();
+        menu = menu.separator().item(
+            PopupMenuItem::new(format!("Decode {} port {port} as…", transport.label())).on_click(
+                move |_, window, cx| {
+                    let _ = app.update(cx, |app, cx| {
+                        app.open_decode_as(Some((transport, port)), window, cx)
+                    });
+                },
+            ),
+        );
+    }
     if let Some(value) = actions.field.value.clone() {
         menu = menu
             .separator()
@@ -115,6 +130,10 @@ impl DsctApp {
                     .as_ref()
                     .is_some_and(|s| s.field(&field.path).is_some()));
         Some(ValueActions {
+            port: field
+                .value
+                .as_deref()
+                .and_then(|v| decode_as::port_field(&field.path, v)),
             is_column: columns.contains(&field.path),
             pinned: self.fields.pinned.contains(&field.path),
             field,

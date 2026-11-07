@@ -3,6 +3,7 @@
 
 mod app;
 mod bottom;
+mod decode_as;
 mod fields_view;
 mod format;
 mod packet_table;
@@ -24,6 +25,7 @@ use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 
 use crate::app::{DsctApp, HEX_CONTEXT, TABLE_CONTEXT, TREE_CONTEXT};
+use crate::decode_as::{CloseDecodeAs, DecodeAsDown, DecodeAsUp};
 use crate::palette::{ClosePalette, PaletteDown, PaletteUp};
 
 /// The open capture, shared by the window and the packet table.
@@ -139,6 +141,10 @@ fn bind_keys(cx: &mut App) {
     bindings.push(KeyBinding::new("up", PaletteUp, Some(palette_input)));
     bindings.push(KeyBinding::new("down", PaletteDown, Some(palette_input)));
     bindings.push(KeyBinding::new("escape", ClosePalette, Some(palette_input)));
+    let decode_input = "DecodeAs > Input";
+    bindings.push(KeyBinding::new("up", DecodeAsUp, Some(decode_input)));
+    bindings.push(KeyBinding::new("down", DecodeAsDown, Some(decode_input)));
+    bindings.push(KeyBinding::new("escape", CloseDecodeAs, Some(decode_input)));
     cx.bind_keys(bindings);
 }
 
