@@ -1,7 +1,7 @@
 {
   "name": "dsct",
   "description": "LLM-friendly packet dissector with MCP server for pcap/pcapng analysis",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": {
     "name": "higebu"
   },
