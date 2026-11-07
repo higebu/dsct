@@ -132,6 +132,8 @@ pub struct DsctApp {
     pub(crate) tabs: Vec<Slot>,
     /// Subscriptions to the active tab's table and filter input.
     pub(crate) tab_subscriptions: Vec<Subscription>,
+    /// A filter applied in one tab is applied in every tab.
+    pub(crate) filter_all: bool,
     /// Whether background work was running at the last tick, so the status
     /// bar is redrawn once more when it stops.
     busy: bool,
@@ -177,6 +179,7 @@ impl DsctApp {
             ticking: false,
             tabs: Vec::new(),
             tab_subscriptions: tab.subscriptions,
+            filter_all: false,
             _subscriptions: subscriptions,
         };
         app.open_paths(paths, window, cx);
@@ -493,7 +496,7 @@ impl DsctApp {
         let value = text.to_string();
         self.filter
             .update(cx, |state, cx| state.set_value(value, window, cx));
-        self.apply_filter(text, cx);
+        self.submit_filter(text, window, cx);
     }
 
     fn follow_stream(&mut self, cx: &mut Context<Self>) {
@@ -735,6 +738,9 @@ impl DsctApp {
                     count
                 },
             ))
+            .when(self.tabs.len() > 1, |bar| {
+                bar.child(self.render_filter_scope(cx))
+            })
             .child(div().w(px(1.)).h(px(18.)).bg(theme::border()))
             .child(
                 Button::new("time-format")

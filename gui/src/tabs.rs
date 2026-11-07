@@ -7,8 +7,8 @@
 
 use std::path::PathBuf;
 
-use dsct::session::Session;
 use dsct::session::fields::FieldStats;
+use dsct::session::{FilterOutcome, Session, Tick};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::table::{TableEvent, TableState};
@@ -85,21 +85,25 @@ impl DsctApp {
                     this.select_row(*row, cx);
                 }
             }),
-            cx.subscribe_in(&filter, window, |this, state, event: &InputEvent, _, cx| {
-                match event {
-                    InputEvent::PressEnter { .. } => {
-                        let text = state.read(cx).value().to_string();
-                        this.apply_filter(&text, cx);
+            cx.subscribe_in(
+                &filter,
+                window,
+                |this, state, event: &InputEvent, window, cx| {
+                    match event {
+                        InputEvent::PressEnter { .. } => {
+                            let text = state.read(cx).value().to_string();
+                            this.submit_filter(&text, window, cx);
+                        }
+                        // Editing the filter dismisses its error and updates
+                        // the "Enter to apply" hint.
+                        InputEvent::Change => {
+                            this.filter_error = None;
+                            cx.notify();
+                        }
+                        _ => {}
                     }
-                    // Editing the filter dismisses its error and updates
-                    // the "Enter to apply" hint.
-                    InputEvent::Change => {
-                        this.filter_error = None;
-                        cx.notify();
-                    }
-                    _ => {}
-                }
-            }),
+                },
+            ),
         ];
         TabState {
             session,
@@ -156,12 +160,12 @@ impl DsctApp {
 
     /// Bring the panes in line with the tab just made active.
     fn show_active_tab(&mut self, cx: &mut Context<Self>) {
-        // A capture opened in the background has rows but nothing selected.
+        // A capture opened, or filtered, in the background has nothing
+        // selected yet.
         if self.selected_row.is_none()
             && let Some(session) = self.session.borrow_mut().as_mut()
-            && session.displayed_count() > 0
         {
-            self.selected_row = Some(0);
+            self.selected_row = (session.displayed_count() > 0).then_some(0);
             session.load_packet(0);
             self.tree.reset(session);
         }
@@ -177,6 +181,17 @@ impl DsctApp {
     /// Open the captures at `paths`, each in a tab of its own; the last one
     /// is shown.
     pub fn open_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        // With one filter for all tabs, new tabs take it too.
+        let shared_filter = self
+            .filter_all
+            .then(|| {
+                self.session
+                    .borrow()
+                    .as_ref()
+                    .map(|s| s.applied_filter.clone())
+            })
+            .flatten()
+            .filter(|f| !f.is_empty());
         for path in paths {
             let session = match Session::open(&path, Vec::new()) {
                 Ok(session) => session,
@@ -195,6 +210,12 @@ impl DsctApp {
                 *tab.session.borrow_mut() = Some(session);
                 self.tabs.push(Slot::Parked(Box::new(tab)));
                 self.activate_tab(self.tabs.len() - 1, cx);
+            }
+            if let Some(filter) = &shared_filter {
+                let value = filter.clone();
+                self.filter
+                    .update(cx, |state, cx| state.set_value(value, window, cx));
+                self.apply_filter(filter, cx);
             }
         }
         self.ensure_ticking(cx);
@@ -247,28 +268,152 @@ impl DsctApp {
                 session.index_tick();
             }
             session.ordered_tick();
-            busy |= session.is_indexing() || session.ordered_needs_tick();
+            if let Tick::Done(outcome) = session.filter_tick() {
+                if let FilterOutcome::Failed(msg) = outcome {
+                    tab.filter_error = Some(msg);
+                }
+                tab.selected_row = None;
+            }
+            busy |=
+                session.is_indexing() || session.ordered_needs_tick() || session.filter_running();
         }
         busy
     }
 
-    /// Name and packet count of tab `index` (the count while indexing grows).
-    fn tab_label(&self, index: usize) -> (String, usize, bool) {
+    /// Apply `text` to the active tab, and to every other tab when one
+    /// filter is set for all tabs.
+    pub(crate) fn submit_filter(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_filter(text, cx);
+        if self.filter_all {
+            self.apply_filter_to_parked(text, window, cx);
+        }
+    }
+
+    /// Apply `text` to every tab but the active one; each scans in the
+    /// background, and is shown from its first match.
+    fn apply_filter_to_parked(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        for slot in &mut self.tabs {
+            let Slot::Parked(tab) = slot else {
+                continue;
+            };
+            let value = text.to_string();
+            tab.filter
+                .update(cx, |state, cx| state.set_value(value, window, cx));
+            let mut guard = tab.session.borrow_mut();
+            let Some(session) = guard.as_mut() else {
+                continue;
+            };
+            tab.filter_error = None;
+            match session.apply_filter(text) {
+                Err(msg) => tab.filter_error = Some(msg),
+                Ok(outcome) => {
+                    if let Some(FilterOutcome::Failed(msg)) = outcome {
+                        tab.filter_error = Some(msg);
+                    }
+                    session.cancel_field_stats();
+                    session.cancel_histogram();
+                    tab.field_stale = true;
+                    tab.timeline.stale = true;
+                    tab.selected_row = None;
+                }
+            }
+        }
+        self.ensure_ticking(cx);
+    }
+
+    /// Use the filter for this tab only, or for all tabs (applying the
+    /// active tab's filter to the others right away).
+    pub(crate) fn set_filter_all(
+        &mut self,
+        all: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.filter_all == all {
+            return;
+        }
+        self.filter_all = all;
+        if all {
+            let text = self
+                .session
+                .borrow()
+                .as_ref()
+                .map(|s| s.applied_filter.clone())
+                .unwrap_or_default();
+            self.apply_filter_to_parked(&text, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Name, packet count, whether it is still indexing, and (with one
+    /// filter for all tabs) the matches, of tab `index`.
+    fn tab_label(&self, index: usize) -> (String, usize, bool, Option<String>) {
         let session = match &self.tabs[index] {
             Slot::Active => &self.session,
             Slot::Parked(tab) => &tab.session,
         };
         session.borrow().as_ref().map_or_else(
-            || (String::new(), 0, false),
-            |s| (s.file_name.clone(), s.total_count(), s.is_indexing()),
+            || (String::new(), 0, false, None),
+            |s| {
+                let matches = (self.filter_all && !s.applied_filter.is_empty()).then(|| {
+                    if s.filter_running() {
+                        "…".to_string()
+                    } else {
+                        grouped(s.displayed_count() as u64)
+                    }
+                });
+                (
+                    s.file_name.clone(),
+                    s.total_count(),
+                    s.is_indexing(),
+                    matches,
+                )
+            },
         )
+    }
+
+    /// "This tab | All tabs": where the filter applies.
+    pub(crate) fn render_filter_scope(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let segment = |id: &'static str, label: &'static str, all: bool, on: bool| {
+            Button::new(id)
+                .label(label)
+                .small()
+                .when(on, |b| b.primary())
+                .when(!on, |b| b.ghost())
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.set_filter_all(all, window, cx)),
+                )
+        };
+        h_flex()
+            .gap_0p5()
+            .p_0p5()
+            .rounded(px(6.))
+            .border_1()
+            .border_color(theme::border())
+            .child(segment(
+                "filter-this-tab",
+                "This tab",
+                false,
+                !self.filter_all,
+            ))
+            .child(segment(
+                "filter-all-tabs",
+                "All tabs",
+                true,
+                self.filter_all,
+            ))
     }
 
     pub(crate) fn render_tab_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let mono = cx.theme_mono_font();
         let active = self.active_tab();
         let tabs = (0..self.tabs.len()).map(|i| {
-            let (name, count, indexing) = self.tab_label(i);
+            let (name, count, indexing, matches) = self.tab_label(i);
             let on = i == active;
             h_flex()
                 .id(("tab", i))
@@ -317,6 +462,25 @@ impl DsctApp {
                             grouped(count as u64)
                         }),
                 )
+                .children(matches.map(|m| {
+                    let none = m == "0";
+                    div()
+                        .px_1p5()
+                        .rounded(px(9.))
+                        .text_xs()
+                        .font_family(mono.clone())
+                        .bg(if none {
+                            theme::border()
+                        } else {
+                            theme::selection()
+                        })
+                        .text_color(if none {
+                            theme::text_muted()
+                        } else {
+                            theme::text_bright()
+                        })
+                        .child(m)
+                }))
                 .child(
                     Button::new(("close-tab", i))
                         .icon(IconName::Close)
