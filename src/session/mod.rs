@@ -28,12 +28,13 @@ mod stats_collect;
 mod stream;
 pub mod tree;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use lru::LruCache;
 use packet_dissector::registry::DissectorRegistry;
+use packet_dissector_core::dissector::ProtocolLayer;
 
 use self::bg_indexer::BackgroundIndexer;
 use self::completion::CompletionEngine;
@@ -155,6 +156,8 @@ pub struct Session {
     pub ordered: Option<OrderedPass>,
     /// Packet list rows cached as placeholders waiting for `ordered`.
     pub pending_rows: HashSet<usize>,
+    /// Stack position of each protocol `registry` can dissect.
+    layer_of: HashMap<&'static str, ProtocolLayer>,
 }
 
 impl Session {
@@ -242,6 +245,7 @@ impl Session {
         stdin_copier: Option<StdinCopier>,
     ) -> Self {
         let completion_engine = CompletionEngine::from_registry(&registry);
+        let layer_of = fields::protocol_layers(&registry);
         let filtered = FilterBitmap::all_set(indices.len());
         let live_mode = stdin_copier.as_ref().map(|_| LiveMode::Live);
         Self {
@@ -271,6 +275,7 @@ impl Session {
             bg_indexer: None,
             ordered: None,
             pending_rows: HashSet::new(),
+            layer_of,
         }
     }
 
@@ -302,6 +307,7 @@ impl Session {
         {
             let (summary, pending) = ordered_pass::row_summary(
                 &self.registry,
+                &self.layer_of,
                 self.ordered.as_ref(),
                 pkt_idx,
                 data,
@@ -316,6 +322,7 @@ impl Session {
             source: String::new(),
             destination: String::new(),
             protocol: "",
+            tunnels: Vec::new(),
             info: String::new(),
         };
         self.summary_cache.get(&pkt_idx).unwrap_or(&DEFAULT)

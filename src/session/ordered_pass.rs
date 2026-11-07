@@ -23,6 +23,7 @@
 //! The main thread feeds the pass with the packet index as it grows (initial
 //! indexing, live capture) through a bounded channel ([`OrderedPass::feed`]).
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -30,6 +31,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use packet_dissector::registry::DissectorRegistry;
+use packet_dissector_core::dissector::ProtocolLayer;
 use packet_dissector_core::packet::{DissectBuffer, Packet};
 
 use crate::error::{DsctError, Result};
@@ -345,17 +347,20 @@ pub(super) fn first_field_value(
 /// waiting for the in-order pass.
 pub(super) fn row_summary(
     registry: &DissectorRegistry,
+    layer_of: &HashMap<&'static str, ProtocolLayer>,
     pass: Option<&OrderedPass>,
     pkt_idx: usize,
     data: &[u8],
     link_type: u32,
 ) -> (RowSummary, bool) {
     resolve(registry, pass, pkt_idx, data, link_type, |d| match d {
-        Display::Dissected(buf, ok) => (loader::row_summary_from_buf(buf, data, ok), false),
+        Display::Dissected(buf, ok) => {
+            (loader::row_summary_from_buf(buf, data, ok, layer_of), false)
+        }
         Display::Stored(stored) => {
             let buf = stored.packet.to_dissect_buf();
             (
-                loader::row_summary_from_buf(&buf, &stored.packet.data, stored.ok),
+                loader::row_summary_from_buf(&buf, &stored.packet.data, stored.ok, layer_of),
                 false,
             )
         }

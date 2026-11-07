@@ -7,10 +7,12 @@
 //! using zero-copy mmap slices.  The selected packet is fully dissected via
 //! [`dissect_selected`].
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 
 use packet_dissector::registry::DissectorRegistry;
+use packet_dissector_core::dissector::ProtocolLayer;
 use packet_dissector_core::field::FieldValue;
 use packet_dissector_core::packet::{DissectBuffer, Layer, Packet};
 
@@ -165,6 +167,7 @@ pub(super) fn pending_row_summary() -> RowSummary {
         source: String::new(),
         destination: String::new(),
         protocol: "",
+        tunnels: Vec::new(),
         info: PENDING_TEXT.to_string(),
     }
 }
@@ -179,31 +182,44 @@ pub fn extract_row_summary(
     let ok = registry
         .dissect_with_link_type(data, link_type, &mut buf)
         .is_ok();
-    row_summary_from_buf(&buf, data, ok)
+    row_summary_from_buf(&buf, data, ok, &super::fields::protocol_layers(registry))
 }
 
 /// Build the packet list row of the dissection `buf` of `data`; `ok` tells
-/// whether the dissection returned `Ok`.
-pub(super) fn row_summary_from_buf(buf: &DissectBuffer<'_>, data: &[u8], ok: bool) -> RowSummary {
+/// whether the dissection returned `Ok`, and `layer_of` gives each
+/// protocol's stack position (see [`super::fields::protocol_layers`]).
+pub(super) fn row_summary_from_buf(
+    buf: &DissectBuffer<'_>,
+    data: &[u8],
+    ok: bool,
+    layer_of: &HashMap<&'static str, ProtocolLayer>,
+) -> RowSummary {
     if !ok {
         return RowSummary {
             source: String::new(),
             destination: String::new(),
             protocol: "???",
+            tunnels: Vec::new(),
             info: "dissection error".to_string(),
         };
     }
-    let protocol = buf
-        .layers()
+    let layers = buf.layers();
+    let protocol = layers
         .last()
         .map(|l| l.display_name.unwrap_or(l.name))
         .unwrap_or("");
+    let tunnels = layers[..layers.len().saturating_sub(1)]
+        .iter()
+        .filter(|l| layer_of.get(l.name) == Some(&ProtocolLayer::Tunnel))
+        .map(|l| l.name)
+        .collect();
     let (source, destination) = extract_addresses(buf);
     let info = extract_info(buf, data);
     RowSummary {
         source,
         destination,
         protocol,
+        tunnels,
         info,
     }
 }
@@ -757,6 +773,46 @@ pub(crate) mod tests {
         assert_eq!(summary.destination, "10.0.0.2");
         assert_eq!(summary.protocol, "UDP");
         assert_eq!(summary.info, "4096 \u{2192} 4097");
+    }
+
+    /// Ethernet / IPv4 / UDP:2152 / GTP-U (G-PDU) / IPv4 / UDP frame.
+    fn gtpu_frame() -> Vec<u8> {
+        let inner_udp = [0x10, 0x00, 0x10, 0x01, 0x00, 0x08, 0x00, 0x00];
+        let ipv4 = |proto: u8, payload: &[u8]| {
+            let mut ip = vec![0x45, 0x00];
+            ip.extend_from_slice(&(20 + payload.len() as u16).to_be_bytes());
+            ip.extend_from_slice(&[0, 0, 0, 0, 64, proto, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2]);
+            ip.extend_from_slice(payload);
+            ip
+        };
+        let inner = ipv4(17, &inner_udp);
+        // GTP-U: version 1, PT=1, message type 255 (G-PDU), length, TEID.
+        let mut gtp = vec![0x30, 0xff];
+        gtp.extend_from_slice(&(inner.len() as u16).to_be_bytes());
+        gtp.extend_from_slice(&1u32.to_be_bytes());
+        gtp.extend_from_slice(&inner);
+        let mut udp = vec![0x08, 0x68, 0x08, 0x68];
+        udp.extend_from_slice(&(8 + gtp.len() as u16).to_be_bytes());
+        udp.extend_from_slice(&[0, 0]);
+        udp.extend_from_slice(&gtp);
+        let mut frame = vec![0xff; 6];
+        frame.extend_from_slice(&[0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x08, 0x00]);
+        frame.extend_from_slice(&ipv4(17, &udp));
+        frame
+    }
+
+    #[test]
+    fn row_summary_lists_the_tunnels_a_packet_is_carried_in() {
+        let registry = DissectorRegistry::default();
+        let frame = gtpu_frame();
+        let summary = extract_row_summary(&frame, 1, &registry);
+        assert_eq!(summary.protocol, "UDP");
+        assert_eq!(summary.tunnels, ["GTPv1-U"]);
+
+        let pcap = build_pcap_bytes(1);
+        let indices = build_index(&pcap).unwrap();
+        let data = &pcap[indices[0].data_offset as usize..][..indices[0].captured_len as usize];
+        assert!(extract_row_summary(data, 1, &registry).tunnels.is_empty());
     }
 
     #[test]

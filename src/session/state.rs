@@ -145,6 +145,10 @@ pub struct RowSummary {
     pub destination: String,
     /// Topmost protocol short name.
     pub protocol: &'static str,
+    /// Tunnelling protocols the packet is carried in, outermost first
+    /// (`["GTPv1-U"]`): layers below the topmost one whose dissector
+    /// declares [`ProtocolLayer::Tunnel`](packet_dissector_core::dissector::ProtocolLayer::Tunnel).
+    pub tunnels: Vec<&'static str>,
     /// Protocol-specific info string.
     pub info: String,
 }
