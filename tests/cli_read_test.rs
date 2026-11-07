@@ -405,6 +405,85 @@ fn build_mixed_pcap() -> Vec<u8> {
     pcap
 }
 
+/// Ethernet + IPv4 + TCP (PSH, ACK) frame from 10.0.0.1:40000 to
+/// 10.0.0.2:5060 carrying `payload` at sequence number `seq`.
+fn tcp_data_frame(seq: u32, payload: &[u8]) -> Vec<u8> {
+    let mut tcp = Vec::new();
+    tcp.extend_from_slice(&40000u16.to_be_bytes());
+    tcp.extend_from_slice(&5060u16.to_be_bytes());
+    tcp.extend_from_slice(&seq.to_be_bytes());
+    tcp.extend_from_slice(&0u32.to_be_bytes()); // acknowledgment number
+    tcp.push(0x50); // data offset = 5 (20 bytes)
+    tcp.push(0x18); // flags: PSH, ACK
+    tcp.extend_from_slice(&0x2000u16.to_be_bytes()); // window
+    tcp.extend_from_slice(&0u16.to_be_bytes()); // checksum (unchecked)
+    tcp.extend_from_slice(&0u16.to_be_bytes()); // urgent pointer
+    tcp.extend_from_slice(payload);
+    eth_ipv4_frame([10, 0, 0, 1], [10, 0, 0, 2], 6, &tcp)
+}
+
+/// A pcap file holding `frames`, one second apart.
+fn write_frames_pcap(frames: &[Vec<u8>]) -> NamedTempFile {
+    let mut pcap = Vec::new();
+    pcap.extend_from_slice(&0xA1B2C3D4u32.to_le_bytes());
+    pcap.extend_from_slice(&2u16.to_le_bytes()); // version major
+    pcap.extend_from_slice(&4u16.to_le_bytes()); // version minor
+    pcap.extend_from_slice(&0i32.to_le_bytes()); // thiszone
+    pcap.extend_from_slice(&0u32.to_le_bytes()); // sigfigs
+    pcap.extend_from_slice(&65535u32.to_le_bytes()); // snaplen
+    pcap.extend_from_slice(&1u32.to_le_bytes()); // Ethernet link type
+    for (i, frame) in frames.iter().enumerate() {
+        pcap.extend_from_slice(&(i as u32).to_le_bytes());
+        pcap.extend_from_slice(&0u32.to_le_bytes());
+        pcap.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        pcap.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        pcap.extend_from_slice(frame);
+    }
+    let mut tmp = NamedTempFile::with_suffix(".pcap").unwrap();
+    tmp.write_all(&pcap).unwrap();
+    tmp
+}
+
+/// The same TCP segment captured twice (at two points of a path, say):
+/// the copy is shown as a TCP retransmission, not dissected again as the
+/// start of a SIP message, and nothing is reported on stderr.
+#[test]
+fn read_marks_a_duplicate_tcp_segment_as_retransmission() {
+    // Split inside a header line, so the second segment alone is not a
+    // valid SIP start line.
+    let sip: &[u8] = b"OPTIONS sip:bob@example.com SIP/2.0\r\n\
+Via: SIP/2.0/TCP 10.0.0.1:40000\r\n\
+Content-Length: 0\r\n\r\n";
+    let (head, tail) = sip.split_at(45);
+    let seq_tail = 1000 + head.len() as u32;
+    let tmp = write_frames_pcap(&[
+        tcp_data_frame(1000, head),
+        tcp_data_frame(seq_tail, tail),
+        tcp_data_frame(seq_tail, tail),
+    ]);
+
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args(["read", "--no-limit", tmp.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+
+    let packets: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(packets.len(), 3);
+    let stack = |i: usize| packets[i]["stack"].as_str().unwrap().to_string();
+    let tcp = |i: usize| packets[i]["layers"][2]["fields"].clone();
+    assert_eq!(stack(1), "Ethernet:IPv4:TCP:SIP");
+    assert_eq!(stack(2), "Ethernet:IPv4:TCP");
+    assert_eq!(tcp(2)["retransmission"], 1);
+    assert!(tcp(1).get("retransmission").is_none());
+}
+
 fn write_mixed_pcap() -> NamedTempFile {
     let pcap = build_mixed_pcap();
     let mut tmp = NamedTempFile::with_suffix(".pcap").unwrap();
