@@ -352,6 +352,44 @@ impl Session {
         new_registry(&self.decode_as_args)
     }
 
+    /// Dissect packets with `decode_as_args` (`--decode-as` rules) from now
+    /// on: rebuild the dissectors, restart the in-order pass, drop cached
+    /// rows and the selection, stop the jobs that read packets, and apply
+    /// the current filter again.
+    ///
+    /// The frontend reloads what it shows, selecting a packet again with
+    /// [`load_packet`](Self::load_packet). On error (invalid rules, or the
+    /// capture cannot be read again) the session is left as it was.
+    pub fn set_decode_as(&mut self, decode_as_args: Vec<String>) -> Result<()> {
+        let registry = new_registry(&decode_as_args)?;
+        let ordered = match (&self.ordered, &self.capture_path) {
+            (Some(_), Some(path)) => Some(OrderedPass::spawn(
+                loader::open_and_mmap(path)?,
+                new_registry(&decode_as_args)?,
+                cache_dir().as_deref(),
+            )?),
+            _ => None,
+        };
+        self.completion_engine = CompletionEngine::from_registry(&registry);
+        self.layer_of = fields::protocol_layers(&registry);
+        self.registry = registry;
+        self.ordered = ordered;
+        self.decode_as_args = decode_as_args;
+        self.summary_cache.clear();
+        self.pending_rows.clear();
+        self.selected = None;
+        self.stream_build_progress = None;
+        self.stats_progress = None;
+        self.field_stats_progress = None;
+        self.histogram_progress = None;
+        self.cancel_filter();
+        let filter = self.applied_filter.clone();
+        // The filter was valid when applied, so only a failed scan (reported
+        // by `filter_tick`) can follow.
+        let _ = self.apply_filter(&filter);
+        Ok(())
+    }
+
     // -- In-order dissection pass ---------------------------------------------
 
     /// Drive the in-order dissection pass: feed it newly indexed packets and
@@ -719,6 +757,49 @@ mod tests {
     fn open_rejects_invalid_decode_as() {
         let tmp = write_pcap(1);
         assert!(open(tmp.path(), vec!["not-a-decode-as".to_string()]).is_err());
+    }
+
+    #[test]
+    fn set_decode_as_rebuilds_the_dissectors_and_reapplies_the_filter() {
+        let (mut session, _tmp) = test_session(3);
+        assert!(session.registry.get_by_udp_port(4097).is_none());
+        session.apply_filter("udp").unwrap();
+        while session.filter_running() {
+            let _ = session.filter_tick();
+        }
+        let _ = session.get_or_dissect_summary(0);
+        session.load_packet(0);
+
+        let rule = "udp.port=4097:dns".to_string();
+        session.set_decode_as(vec![rule.clone()]).unwrap();
+        assert_eq!(session.decode_as_args, std::slice::from_ref(&rule));
+        assert!(session.registry.get_by_udp_port(4097).is_some());
+        assert!(session.summary_cache.is_empty());
+        assert!(session.selected.is_none());
+        assert_eq!(session.applied_filter, "udp");
+        while session.filter_running() {
+            let _ = session.filter_tick();
+        }
+        assert_eq!(session.displayed_count(), 3);
+
+        // Invalid rules leave the session as it was.
+        assert!(session.set_decode_as(vec!["bad".to_string()]).is_err());
+        assert_eq!(session.decode_as_args, [rule]);
+    }
+
+    #[test]
+    fn set_decode_as_restarts_the_ordered_pass() {
+        let tmp = write_pcap(5);
+        let mut session = open(tmp.path(), vec![]).unwrap();
+        finish_indexing(&mut session);
+        while session.ordered_needs_tick() {
+            let _ = session.ordered_tick();
+        }
+        session
+            .set_decode_as(vec!["udp.port=4097:dns".to_string()])
+            .unwrap();
+        assert!(session.ordered.is_some());
+        assert!(session.ordered_needs_tick());
     }
 
     #[test]
