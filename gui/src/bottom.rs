@@ -9,7 +9,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::DsctApp;
-use crate::format;
+use crate::{format, theme};
 
 /// Number of top talkers listed.
 const TOP_TALKERS: usize = 10;
@@ -76,9 +76,15 @@ impl DsctApp {
         if !self.bottom.open || !self.bottom.has(self.bottom.tab) {
             return None;
         }
-        let theme = cx.theme();
-        let (border, muted, red, blue) =
-            (theme.border, theme.muted_foreground, theme.red, theme.blue);
+        // Client to server in orange, server to client in blue: told apart
+        // by lightness and by the → / ← markers, not by hue alone.
+        let (border, muted, out, back, accent) = (
+            theme::border(),
+            theme::text_muted(),
+            theme::orange(),
+            theme::blue(),
+            theme::accent(),
+        );
 
         let tabs = [(BottomTab::Stream, "Stream"), (BottomTab::Stats, "Stats")]
             .into_iter()
@@ -90,7 +96,7 @@ impl DsctApp {
                     .px_3()
                     .py_1()
                     .border_b_2()
-                    .border_color(if active { blue } else { transparent_black() })
+                    .border_color(if active { accent } else { transparent_black() })
                     .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
                     .when(!active, |d| d.text_color(muted))
                     .child(label)
@@ -105,11 +111,11 @@ impl DsctApp {
             h_flex()
                 .gap_3()
                 .text_sm()
-                .child(div().text_color(red).child(format!(
+                .child(div().text_color(out).child(format!(
                     "{} client to server",
                     format::direction_marker(true)
                 )))
-                .child(div().text_color(blue).child(format!(
+                .child(div().text_color(back).child(format!(
                     "{} server to client",
                     format::direction_marker(false)
                 )))
@@ -182,8 +188,8 @@ impl DsctApp {
                 uniform_list(
                     "stream-lines",
                     count,
-                    cx.processor(|this, range: Range<usize>, _, cx| {
-                        let (red, blue) = (cx.theme().red, cx.theme().blue);
+                    cx.processor(|this, range: Range<usize>, _, _| {
+                        let (red, blue) = (theme::orange(), theme::blue());
                         let Some(stream) = this.bottom.stream.as_ref() else {
                             return Vec::new();
                         };
@@ -258,6 +264,7 @@ impl DsctApp {
         let protocols = format::protocol_shares(&stats.protocols, stats.total_packets)
             .into_iter()
             .map(|(name, count, share)| {
+                let bar = format::protocol_swatch(&name).map_or(bar, theme::swatch);
                 row()
                     .child(div().w(px(140.)).flex_shrink_0().child(name))
                     .child(num(80., count.to_string()))

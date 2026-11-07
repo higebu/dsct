@@ -1563,6 +1563,8 @@ dependencies = [
  "dsct",
  "gpui-kit",
  "gpui-pre-macos",
+ "packet-dissector",
+ "packet-dissector-core",
  "serde_json",
 ]
 

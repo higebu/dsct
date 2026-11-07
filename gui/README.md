@@ -5,8 +5,11 @@ through [GPUI Kit](https://github.com/longbridge/gpui-kit). It shows a capture
 with the same engine as `dsct tui` (`dsct::session`): packets are indexed and
 dissected in the background, so large files open at once.
 
-- Packet table (virtual scrolling) with rows tinted by protocol, filtered
-  with dsct's filter syntax
+- A dark, editor-style window: title bar with a command palette (⌘K), a
+  sidebar with the capture's protocols and top talkers as quick filters,
+  and a status bar
+- Packet table (virtual scrolling) with a colored mark per protocol,
+  filtered with dsct's filter syntax
 - Protocol detail tree and hex dump, linked both ways and operable from the
   keyboard
 - Follow Stream (TCP/UDP/SCTP) and Stats for the displayed packets
@@ -59,28 +62,33 @@ feature), so Xcode's Metal toolchain is not needed to build.
 ### What to check
 
 1. Without a file, the window shows "Open a capture file" with an
-   **Open…** button. Open a capture (or drop one on the window): the packet
-   count in the status bar grows while it is indexed, and the first packet
-   is selected.
-2. Type a filter such as `tcp` or `dns`: "Enter to apply" appears until you
-   press Enter, then the table and the `N / M packets` count update. An
-   invalid filter outlines the input in red and shows the error under it.
-3. Rows are tinted by protocol (TCP, UDP, DNS, HTTP, … each in its own
-   color), and the selected row stands out in blue. **Time** (⌘T) switches
-   between seconds since the first packet, since the previous packet, and
-   the date and time.
-4. Keyboard only: ↑/↓ in the table, then Tab to **Details** (blue outline):
+   **Open…** button. Open a capture (or drop one on the window): the status
+   bar shows indexing progress, then the first packet is selected and the
+   sidebar fills with the protocols and top talkers.
+2. ⌘K opens the command palette: type to narrow the actions (↑/↓, Enter,
+   Esc), a packet number to jump to it, or any text to apply it as a
+   filter.
+3. Click a protocol or a talker in the sidebar: it becomes the filter. Type
+   a filter yourself: "Enter to apply" shows until you press Enter, and an
+   invalid one outlines the input in red with the error under it.
+4. Each row's protocol has its own color (TCP, UDP, DNS, HTTP, …), and the
+   selected row is marked in blue. **Time** (⌘T) switches between seconds
+   since the first packet, since the previous one, and the date and time.
+5. Keyboard only: ↑/↓ in the table, then Tab to **Details** (blue outline):
    ↑/↓ move, → expands, ← collapses or goes to the parent, Enter toggles.
-   Tab again to **Bytes**: ←/→ and ↑/↓ move a cursor, and the field under it
-   is selected and revealed in the tree. ⌘1/⌘2/⌘3 jump to each pane.
-5. Clicking a field highlights its bytes; clicking a byte selects its field.
-6. **Follow Stream** and **Stats** open tabs in the bottom panel. Stream
-   lines are marked → (client to server, red) and ← (server to client,
-   blue); Stats shows the protocols and top talkers as tables. The copy
-   button copies the tab as text (the stream with its markers, the stats as
-   JSON); × or Esc closes the panel.
+   Layers show a one-line summary (`10.0.0.1 → 93.184.216.34`) and values
+   are colored by type. Tab again to **Bytes**: arrows move a cursor, and
+   the field under it is selected in the tree. ⌘1/⌘2/⌘3 jump to each pane.
+6. **Follow Stream** (⇧⌘F) and **Stats** (⇧⌘S) open tabs in the bottom dock
+   (⌘J). Stream lines are marked → (client to server, orange) and ←
+   (server to client, blue); Stats shows tables. The copy button copies the
+   tab as text; × or Esc closes it.
 7. Once a capture is loaded and nothing runs, the app stays idle (no CPU
    use in Activity Monitor).
+
+The sidebar overview dissects every packet, so it is built on open only for
+captures of up to 200,000 packets; for larger ones, click **Build
+overview**.
 
 ## Linux
 

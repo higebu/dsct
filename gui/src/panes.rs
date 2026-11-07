@@ -4,23 +4,20 @@
 
 use std::ops::Range;
 
-use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
+use dsct::session::state::TreeNode;
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{DsctApp, HEX_CONTEXT, Pane, TREE_CONTEXT};
 use crate::format::{self, HEX_BYTES_PER_LINE};
 use crate::tree_nav::{self, TreeMove};
-use crate::{Collapse, Expand, SelectNext, SelectPrev, ToggleNode};
+use crate::{Collapse, Expand, SelectNext, SelectPrev, ToggleNode, theme};
 
-/// Opacity of the selection color (the theme's blue), shared by the packet
-/// table, the selected tree node, and the hex cursor.
-pub const SELECTION_ALPHA: f32 = 0.35;
-
-/// The selection color: the same in every pane.
-pub fn selection_color(cx: &App) -> Hsla {
-    cx.theme().blue.opacity(SELECTION_ALPHA)
-}
+/// Height of a detail tree row.
+const TREE_ROW: f32 = 24.;
+/// Indentation per tree level; indent guides sit on this grid.
+const INDENT: f32 = 16.;
 
 impl DsctApp {
     /// Select tree node `idx`: highlight its bytes and keep both panes
@@ -75,10 +72,7 @@ impl DsctApp {
     }
 
     /// Compute a keyboard move from the selected node's state.
-    fn tree_key(
-        &self,
-        f: impl FnOnce(&[dsct::session::state::TreeNode], usize) -> TreeMove,
-    ) -> TreeMove {
+    fn tree_key(&self, f: impl FnOnce(&[TreeNode], usize) -> TreeMove) -> TreeMove {
         let guard = self.session.borrow();
         let Some(nodes) = guard
             .as_ref()
@@ -121,22 +115,58 @@ impl DsctApp {
         cx.notify();
     }
 
-    /// A small title over a pane, accented while the pane has focus.
-    fn pane_title(&self, title: &'static str, focused: bool, cx: &App) -> impl IntoElement {
-        let theme = cx.theme();
-        div()
-            .px_2()
-            .py_1()
-            .text_xs()
-            .font_weight(FontWeight::SEMIBOLD)
+    /// The bar over a pane: its title (bright while focused) and context.
+    fn pane_header(&self, title: &'static str, focused: bool, detail: Vec<String>) -> Div {
+        h_flex()
+            .h(px(30.))
+            .flex_shrink_0()
+            .px_3()
+            .gap_1p5()
             .border_b_1()
-            .border_color(theme.border)
-            .text_color(if focused {
-                theme.foreground
-            } else {
-                theme.muted_foreground
-            })
-            .child(title)
+            .border_color(theme::border())
+            .text_xs()
+            .text_color(theme::text_muted())
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(if focused {
+                        theme::text_bright()
+                    } else {
+                        theme::text_muted()
+                    })
+                    .child(title),
+            )
+            .children(detail.into_iter().map(|d| div().child(d)))
+    }
+
+    /// Path of names from the selected node's layer down to it, for the
+    /// Details header (`HTTP › Method`).
+    fn selection_path(&self) -> Vec<String> {
+        let guard = self.session.borrow();
+        let (Some(idx), Some(nodes)) = (
+            self.tree.selected,
+            guard
+                .as_ref()
+                .and_then(|s| s.selected.as_ref())
+                .map(|sel| &sel.tree_nodes[..]),
+        ) else {
+            return Vec::new();
+        };
+        let mut path = Vec::new();
+        let mut current = Some(idx);
+        while let Some(i) = current {
+            path.push(format::split_label(&nodes[i].label).0.to_string());
+            current = tree_nav::parent(nodes, i);
+        }
+        path.reverse();
+        let mut out = vec!["·".to_string()];
+        for (i, name) in path.into_iter().enumerate() {
+            if i > 0 {
+                out.push("›".to_string());
+            }
+            out.push(name);
+        }
+        out
     }
 
     pub(crate) fn render_tree(
@@ -145,13 +175,16 @@ impl DsctApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let count = self.tree.visible.len();
-        let border = self.pane_border(Pane::Details, window, cx);
-        let focused = self.tree_focus.contains_focused(window, cx);
-        let title = self.pane_title("Details", focused, cx);
+        let focused = self.pane_focused(Pane::Details, window, cx);
+        let header = self.pane_header("Details", focused, self.selection_path());
         v_flex()
             .size_full()
             .border_1()
-            .border_color(border)
+            .border_color(if focused {
+                theme::accent()
+            } else {
+                transparent_black()
+            })
             .track_focus(&self.tree_focus)
             .key_context(TREE_CONTEXT)
             .on_mouse_down(
@@ -179,20 +212,22 @@ impl DsctApp {
                     this.toggle_node(idx, cx);
                 }
             }))
-            .child(title)
+            .child(header)
             .child(
                 uniform_list(
                     "detail-tree",
                     count,
                     cx.processor(|this, range: Range<usize>, _, cx| {
-                        let selection = selection_color(cx);
+                        let mono = cx.theme().mono_font_family.clone();
                         let guard = this.session.borrow();
                         let nodes = guard
                             .as_ref()
                             .and_then(|s| s.selected.as_ref())
                             .map(|sel| &sel.tree_nodes[..])
                             .unwrap_or(&[]);
-                        let muted = cx.theme().muted_foreground;
+                        // Layer number of each top-level node, for its summary.
+                        let layer_of =
+                            |idx: usize| nodes[..idx].iter().filter(|n| n.depth == 0).count();
                         let mut rows = Vec::with_capacity(range.len());
                         for row in range {
                             let Some(&idx) = this.tree.visible.get(row) else {
@@ -201,39 +236,96 @@ impl DsctApp {
                             let Some(node) = nodes.get(idx) else {
                                 continue;
                             };
-                            let chevron = match (node.children_count > 0, node.expanded) {
-                                (false, _) => "",
-                                (true, true) => "▼",
-                                (true, false) => "▶",
-                            };
                             let selected = this.tree.selected == Some(idx);
+                            let chevron = (node.children_count > 0).then(|| {
+                                Icon::new(if node.expanded {
+                                    IconName::ChevronDown
+                                } else {
+                                    IconName::ChevronRight
+                                })
+                                .xsmall()
+                                .text_color(theme::text_muted())
+                            });
+                            let guides =
+                                (0..node.depth).map(|_| {
+                                    div().w(px(INDENT)).h_full().flex_shrink_0().child(
+                                        div().ml(px(11.)).w(px(1.)).h_full().bg(theme::border()),
+                                    )
+                                });
+                            let content = if node.depth == 0 {
+                                let name = node.label.clone();
+                                let color = format::protocol_swatch(&name)
+                                    .map_or(theme::text_bright(), theme::swatch);
+                                let summary =
+                                    this.tree.summaries.get(layer_of(idx)).cloned().flatten();
+                                h_flex()
+                                    .gap_2p5()
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(color)
+                                            .child(name),
+                                    )
+                                    .children(summary.map(|s| {
+                                        div()
+                                            .font_family(mono.clone())
+                                            .text_xs()
+                                            .text_color(theme::text_muted())
+                                            .child(s)
+                                    }))
+                            } else {
+                                let (name, value) = format::split_label(&node.label);
+                                h_flex()
+                                    .child(
+                                        div()
+                                            .text_color(theme::text_muted())
+                                            .child(name.to_string()),
+                                    )
+                                    .children(value.map(|v| {
+                                        h_flex()
+                                            .child(
+                                                div()
+                                                    .mx_1p5()
+                                                    .text_color(theme::text_faint())
+                                                    .child("="),
+                                            )
+                                            .child(
+                                                div()
+                                                    .font_family(mono.clone())
+                                                    .text_xs()
+                                                    .text_color(theme::value(format::value_kind(v)))
+                                                    .child(v.to_string()),
+                                            )
+                                    }))
+                            };
                             rows.push(
                                 h_flex()
                                     .id(("node", idx))
                                     .w_full()
-                                    .h(px(26.))
-                                    .pr_2()
-                                    .pl(px(4. + node.depth as f32 * 16.))
-                                    .when(selected, |d| d.bg(selection))
-                                    .when(node.is_layer, |d| d.font_weight(FontWeight::SEMIBOLD))
+                                    .h(px(TREE_ROW))
+                                    .pl_1()
+                                    .pr_3()
+                                    .whitespace_nowrap()
+                                    .when(selected, |d| d.bg(theme::selection()))
+                                    .when(!selected, |d| d.hover(|d| d.bg(theme::hover())))
+                                    .children(guides)
                                     .child(
-                                        // A 24 × 26 px target for the chevron.
+                                        // A 24 × 24 px target for the chevron.
                                         div()
                                             .id(("toggle", idx))
-                                            .w(px(24.))
-                                            .h_full()
+                                            .size(px(24.))
+                                            .flex_shrink_0()
                                             .flex()
                                             .items_center()
                                             .justify_center()
-                                            .text_color(muted)
-                                            .child(chevron)
+                                            .children(chevron)
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 // Toggling is not also a click on the row.
                                                 cx.stop_propagation();
                                                 this.toggle_node(idx, cx)
                                             })),
                                     )
-                                    .child(div().whitespace_nowrap().child(node.label.clone()))
+                                    .child(content)
                                     .on_click(cx.listener(
                                         move |this, event: &ClickEvent, _, cx| {
                                             if event.click_count() == 2 {
@@ -248,6 +340,7 @@ impl DsctApp {
                     }),
                 )
                 .track_scroll(&self.tree.tree_scroll)
+                .py_1()
                 .flex_1(),
             )
     }
@@ -257,20 +350,34 @@ impl DsctApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let lines = self
+        let len = self
             .session
             .borrow()
             .as_ref()
             .and_then(|s| s.selected_raw_bytes())
-            .map_or(0, |data| format::hex_line_count(data.len()));
-        let border = self.pane_border(Pane::Bytes, window, cx);
-        let focused = self.hex_focus.contains_focused(window, cx);
-        let title = self.pane_title("Bytes", focused, cx);
+            .map_or(0, <[u8]>::len);
+        let lines = format::hex_line_count(len);
+        let focused = self.pane_focused(Pane::Bytes, window, cx);
+        let mut detail = vec!["·".to_string(), format!("{len} bytes")];
+        if let Some(range) = self.selected_byte_range() {
+            detail.push("·".to_string());
+            detail.push(format!(
+                "0x{:04x}–0x{:04x} · {} bytes",
+                range.start,
+                range.end.saturating_sub(1),
+                range.len()
+            ));
+        }
+        let header = self.pane_header("Bytes", focused, detail);
         let mono = cx.theme().mono_font_family.clone();
         v_flex()
             .size_full()
             .border_1()
-            .border_color(border)
+            .border_color(if focused {
+                theme::accent()
+            } else {
+                transparent_black()
+            })
             .track_focus(&self.hex_focus)
             .key_context(HEX_CONTEXT)
             .on_mouse_down(
@@ -285,15 +392,12 @@ impl DsctApp {
             }))
             .on_action(cx.listener(|this, _: &Expand, _, cx| this.move_hex_cursor(1, cx)))
             .on_action(cx.listener(|this, _: &Collapse, _, cx| this.move_hex_cursor(-1, cx)))
-            .child(title)
+            .child(header)
             .child(
                 uniform_list(
                     "hex-dump",
                     lines,
                     cx.processor(|this, range: Range<usize>, _, cx| {
-                        let selection = selection_color(cx);
-                        let related = cx.theme().selection;
-                        let muted = cx.theme().muted_foreground;
                         let highlight = this.selected_byte_range();
                         let cursor = this.tree.hex_cursor;
                         let guard = this.session.borrow();
@@ -306,43 +410,63 @@ impl DsctApp {
                                 let line =
                                     format::hex_line(data, line_ix, highlight.as_ref(), cursor);
                                 let base = line_ix * HEX_BYTES_PER_LINE;
-                                let cell_bg = move |c: &format::HexCell| {
-                                    if c.cursor {
-                                        Some(selection)
-                                    } else if c.highlighted {
-                                        Some(related)
-                                    } else {
-                                        None
-                                    }
-                                };
+                                let hex_cells = line.cells.iter().enumerate().map(|(i, c)| {
+                                    let byte = base + i;
+                                    let zero = data.get(byte) == Some(&0);
+                                    div()
+                                        .id(("hex", byte))
+                                        .px(px(3.))
+                                        .rounded(px(3.))
+                                        .when(i == 7, |d| d.mr(px(10.)))
+                                        .when(c.highlighted, |d| {
+                                            d.bg(theme::selection())
+                                                .text_color(theme::text_bright())
+                                        })
+                                        .when(c.cursor, |d| {
+                                            d.border_1().border_color(theme::accent())
+                                        })
+                                        .when(!c.highlighted && zero, |d| {
+                                            d.text_color(theme::text_faint())
+                                        })
+                                        .child(c.hex.clone())
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.tree.hex_cursor = Some(byte);
+                                            this.move_hex_cursor(0, cx);
+                                        }))
+                                });
+                                let ascii_cells = line.cells.iter().map(|c| {
+                                    div()
+                                        .w(px(8.))
+                                        .when(c.highlighted, |d| {
+                                            d.bg(theme::selection())
+                                                .text_color(theme::text_bright())
+                                        })
+                                        .when(!c.highlighted && c.ascii == '.', |d| {
+                                            d.text_color(theme::text_faint())
+                                        })
+                                        .child(c.ascii.to_string())
+                                });
                                 h_flex()
-                                    .px_2()
-                                    .gap_3()
-                                    .child(div().text_color(muted).child(line.offset))
-                                    .child(h_flex().gap_1().children(
-                                        line.cells.iter().enumerate().map(|(i, c)| {
-                                            let byte = base + i;
-                                            div()
-                                                .id(("hex", byte))
-                                                .when_some(cell_bg(c), |d, bg| d.bg(bg))
-                                                .child(c.hex.clone())
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.tree.hex_cursor = Some(byte);
-                                                    this.move_hex_cursor(0, cx);
-                                                }))
-                                        }),
-                                    ))
-                                    .child(h_flex().children(line.cells.iter().map(|c| {
+                                    .h(px(22.))
+                                    .px_3()
+                                    .gap_4()
+                                    .child(
                                         div()
-                                            .when_some(cell_bg(c), |d, bg| d.bg(bg))
-                                            .child(c.ascii.to_string())
-                                    })))
+                                            .w(px(40.))
+                                            .text_right()
+                                            .text_color(theme::text_faint())
+                                            .child(line.offset),
+                                    )
+                                    .child(h_flex().children(hex_cells))
+                                    .child(h_flex().text_color(theme::text()).children(ascii_cells))
                             })
                             .collect::<Vec<_>>()
                     }),
                 )
                 .track_scroll(&self.tree.hex_scroll)
+                .py_1()
                 .font_family(mono)
+                .text_sm()
                 .flex_1(),
             )
     }

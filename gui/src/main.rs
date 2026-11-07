@@ -5,7 +5,11 @@ mod app;
 mod bottom;
 mod format;
 mod packet_table;
+mod palette;
 mod panes;
+mod sidebar;
+mod summary;
+mod theme;
 mod tree_nav;
 
 use std::cell::RefCell;
@@ -13,10 +17,11 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use dsct::session::Session;
-use gpui_kit::component::Theme;
+use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 
 use crate::app::{DsctApp, HEX_CONTEXT, TABLE_CONTEXT, TREE_CONTEXT};
+use crate::palette::{ClosePalette, PaletteDown, PaletteUp};
 
 /// The open capture, shared by the window and the packet table.
 pub type SharedSession = Rc<RefCell<Option<Session>>>;
@@ -26,6 +31,11 @@ actions!(
     [
         Open,
         Quit,
+        OpenPalette,
+        FollowStream,
+        ShowStats,
+        ToggleDock,
+        ToggleSidebar,
         CycleTimeFormat,
         CloseBottom,
         FocusNextPane,
@@ -60,11 +70,34 @@ pub fn shortcut(key: &str) -> String {
     }
 }
 
+/// How the shortcut `shift + modifier + key` is written for the user.
+pub fn shortcut_shift(key: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("⇧⌘{key}")
+    } else {
+        format!("Ctrl+Shift+{key}")
+    }
+}
+
 /// Bind the application's keys.
 fn bind_keys(cx: &mut App) {
     let mut bindings = vec![
         KeyBinding::new(platform_key("cmd-o", "ctrl-o"), Open, None),
         KeyBinding::new(platform_key("cmd-q", "ctrl-q"), Quit, None),
+        KeyBinding::new(platform_key("cmd-k", "ctrl-k"), OpenPalette, None),
+        KeyBinding::new(
+            platform_key("cmd-shift-p", "ctrl-shift-p"),
+            OpenPalette,
+            None,
+        ),
+        KeyBinding::new(
+            platform_key("cmd-shift-f", "ctrl-shift-f"),
+            FollowStream,
+            None,
+        ),
+        KeyBinding::new(platform_key("cmd-shift-s", "ctrl-shift-s"), ShowStats, None),
+        KeyBinding::new(platform_key("cmd-j", "ctrl-j"), ToggleDock, None),
+        KeyBinding::new(platform_key("cmd-b", "ctrl-b"), ToggleSidebar, None),
         KeyBinding::new(platform_key("cmd-t", "ctrl-t"), CycleTimeFormat, None),
         KeyBinding::new(platform_key("cmd-1", "ctrl-1"), FocusPackets, None),
         KeyBinding::new(platform_key("cmd-2", "ctrl-2"), FocusDetails, None),
@@ -88,6 +121,13 @@ fn bind_keys(cx: &mut App) {
         bindings.push(KeyBinding::new("shift-tab", FocusPrevPane, Some(context)));
         bindings.push(KeyBinding::new("escape", CloseBottom, Some(context)));
     }
+    // In the palette's input, arrows move the selection and Escape closes
+    // it (instead of the input's own handling of those keys).
+    // (`CommandPalette` is `palette::PALETTE_CONTEXT`.)
+    let palette_input = "CommandPalette > Input";
+    bindings.push(KeyBinding::new("up", PaletteUp, Some(palette_input)));
+    bindings.push(KeyBinding::new("down", PaletteDown, Some(palette_input)));
+    bindings.push(KeyBinding::new("escape", ClosePalette, Some(palette_input)));
     cx.bind_keys(bindings);
 }
 
@@ -98,16 +138,12 @@ fn main() {
         .find(|a| !a.to_string_lossy().starts_with("-psn_"))
         .map(PathBuf::from);
 
-    // Register the bundled icons (close, copy, chevrons, …).
+    // Register the icon catalog (filter, clock, chart, chevrons, …).
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            // The selected packet row must stand out from the protocol tints.
-            Theme::update(cx, |theme| {
-                theme.table_active = theme.blue.opacity(panes::SELECTION_ALPHA);
-                theme.table_active_border = theme.blue;
-            });
+            theme::apply(cx);
 
             bind_keys(cx);
             cx.on_action(|_: &Quit, cx| cx.quit());
@@ -122,20 +158,29 @@ fn main() {
                     items: vec![
                         MenuItem::action("Open…", Open),
                         MenuItem::separator(),
+                        MenuItem::action("Command Palette…", OpenPalette),
+                    ],
+                    disabled: false,
+                },
+                Menu {
+                    name: "View".into(),
+                    items: vec![
+                        MenuItem::action("Toggle Sidebar", ToggleSidebar),
+                        MenuItem::action("Toggle Bottom Dock", ToggleDock),
                         MenuItem::action("Change Time Format", CycleTimeFormat),
+                        MenuItem::separator(),
+                        MenuItem::action("Follow Stream", FollowStream),
+                        MenuItem::action("Stats", ShowStats),
                     ],
                     disabled: false,
                 },
             ]);
 
             let bounds = Bounds::centered(None, size(px(1280.), px(860.)), cx);
+            // The window draws its own title bar (TitleBar in the view).
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("dsct".into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
+                ..TitleBar::window_options()
             };
             let opened = gpui_kit::open_window(options, cx, |window, cx| {
                 cx.new(|cx| DsctApp::new(path, window, cx))

@@ -68,41 +68,110 @@ pub fn first_highlighted_line(highlight: &Range<usize>) -> usize {
     highlight.start / HEX_BYTES_PER_LINE
 }
 
-/// Hues (in turns) of the protocols seen most, chosen apart from each other
-/// so the rows of a typical capture are told apart at a glance.
-const COMMON_HUES: &[(&str, f32)] = &[
-    ("TCP", 0.75),
-    ("UDP", 0.58),
-    ("DNS", 0.50),
-    ("HTTP", 0.33),
-    ("HTTP2", 0.28),
-    ("TLS", 0.08),
-    ("QUIC", 0.13),
-    ("ARP", 0.17),
-    ("ICMP", 0.92),
-    ("ICMPv6", 0.95),
+/// A palette color for a protocol (see `theme`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Swatch {
+    Teal,
+    Purple,
+    Green,
+    Orange,
+    Blue,
+    Yellow,
+    Red,
+}
+
+/// Swatches of the protocols seen most, chosen apart from each other so a
+/// typical capture's rows are told apart at a glance.
+const COMMON_SWATCHES: &[(&str, Swatch)] = &[
+    ("TCP", Swatch::Purple),
+    ("UDP", Swatch::Blue),
+    ("DNS", Swatch::Teal),
+    ("HTTP", Swatch::Green),
+    ("HTTP2", Swatch::Green),
+    ("TLS", Swatch::Orange),
+    ("QUIC", Swatch::Orange),
+    ("ARP", Swatch::Yellow),
+    ("IPv4", Swatch::Yellow),
+    ("IPv6", Swatch::Yellow),
+    ("ICMP", Swatch::Red),
+    ("ICMPv6", Swatch::Red),
 ];
 
-/// Number of hues the remaining protocols are spread over.
-const OTHER_HUES: usize = 16;
+/// Swatches the remaining protocols are spread over.
+const OTHER_SWATCHES: [Swatch; 7] = [
+    Swatch::Teal,
+    Swatch::Purple,
+    Swatch::Green,
+    Swatch::Orange,
+    Swatch::Blue,
+    Swatch::Yellow,
+    Swatch::Red,
+];
 
-/// Hue (0.0–1.0) tinting the rows of `protocol`, or `None` for rows without
-/// a protocol yet (placeholders).
+/// The color of `protocol`, or `None` for rows without one yet
+/// (placeholders).
 ///
-/// Common protocols have fixed hues ([`COMMON_HUES`]); any other name is
-/// hashed (FNV-1a) into one of [`OTHER_HUES`] evenly spaced hues, so the same
-/// name always gets the same tint without a table of every protocol.
-pub fn protocol_hue(protocol: &str) -> Option<f32> {
+/// Common protocols have fixed swatches; any other name is hashed (FNV-1a)
+/// into one, so the same name always gets the same color.
+pub fn protocol_swatch(protocol: &str) -> Option<Swatch> {
     if protocol.is_empty() {
         return None;
     }
-    if let Some((_, hue)) = COMMON_HUES.iter().find(|(name, _)| *name == protocol) {
-        return Some(*hue);
+    if let Some((_, swatch)) = COMMON_SWATCHES.iter().find(|(name, _)| *name == protocol) {
+        return Some(*swatch);
     }
     let hash = protocol
         .bytes()
         .fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619));
-    Some((hash as usize % OTHER_HUES) as f32 / OTHER_HUES as f32)
+    Some(OTHER_SWATCHES[hash as usize % OTHER_SWATCHES.len()])
+}
+
+/// What a detail tree value looks like, for coloring it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueKind {
+    Number,
+    Bool,
+    Address,
+    /// A placeholder such as `[...]` for a list.
+    Muted,
+    Text,
+}
+
+/// Split a detail tree label (`"Name: value"`) into its name and value.
+pub fn split_label(label: &str) -> (&str, Option<&str>) {
+    match label.split_once(": ") {
+        Some((name, value)) => (name, Some(value)),
+        None => (label, None),
+    }
+}
+
+/// Classify a formatted value by its text.
+pub fn value_kind(value: &str) -> ValueKind {
+    let v = value.trim();
+    if v.is_empty() || v.starts_with('[') {
+        return ValueKind::Muted;
+    }
+    if v == "true" || v == "false" {
+        return ValueKind::Bool;
+    }
+    let is_number = v
+        .strip_prefix("0x")
+        .map(|hex| !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()))
+        .unwrap_or_else(|| {
+            let digits = v.strip_prefix('-').unwrap_or(v);
+            !digits.is_empty()
+                && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+                && digits.chars().filter(|c| *c == '.').count() <= 1
+        });
+    if is_number {
+        return ValueKind::Number;
+    }
+    let dotted_quad = v.split('.').count() == 4 && v.split('.').all(|p| p.parse::<u8>().is_ok());
+    let colon_hex = v.contains(':') && v.chars().all(|c| c.is_ascii_hexdigit() || c == ':');
+    if dotted_quad || colon_hex {
+        return ValueKind::Address;
+    }
+    ValueKind::Text
 }
 
 /// Move the hex dump cursor by `delta` bytes within `len` bytes, starting
@@ -255,20 +324,42 @@ mod tests {
     }
 
     #[test]
-    fn protocol_hue_is_stable_and_in_range() {
-        let common = ["TCP", "UDP", "DNS", "HTTP", "TLS", "QUIC", "ARP", "ICMP"];
-        let hues: Vec<f32> = common.iter().map(|n| protocol_hue(n).unwrap()).collect();
-        for (i, a) in hues.iter().enumerate() {
-            for b in &hues[i + 1..] {
-                assert_ne!(a, b, "common protocols share a tint");
+    fn common_protocols_get_distinct_swatches() {
+        let common = ["TCP", "UDP", "DNS", "HTTP", "TLS", "ARP", "ICMP"];
+        let swatches: Vec<Swatch> = common.iter().map(|n| protocol_swatch(n).unwrap()).collect();
+        for (i, a) in swatches.iter().enumerate() {
+            for b in &swatches[i + 1..] {
+                assert_ne!(a, b, "common protocols share a color");
             }
         }
-        for name in common.iter().chain(&["SIP", "GTPv2-C", "NGAP", "x"]) {
-            let hue = protocol_hue(name).unwrap();
-            assert!((0.0..1.0).contains(&hue), "{name}: {hue}");
-            assert_eq!(protocol_hue(name), Some(hue));
-        }
-        assert_eq!(protocol_hue(""), None);
+        assert_eq!(protocol_swatch("SIP"), protocol_swatch("SIP"));
+        assert!(protocol_swatch("GTPv2-C").is_some());
+        assert_eq!(protocol_swatch(""), None);
+    }
+
+    #[test]
+    fn labels_split_at_the_first_colon() {
+        assert_eq!(
+            split_label("Source: 02:00:00:00:00:01"),
+            ("Source", Some("02:00:00:00:00:01"))
+        );
+        assert_eq!(split_label("Ethernet"), ("Ethernet", None));
+    }
+
+    #[test]
+    fn value_kinds() {
+        assert_eq!(value_kind("64"), ValueKind::Number);
+        assert_eq!(value_kind("0x0800"), ValueKind::Number);
+        assert_eq!(value_kind("1.5"), ValueKind::Number);
+        assert_eq!(value_kind("true"), ValueKind::Bool);
+        assert_eq!(value_kind("10.0.0.1"), ValueKind::Address);
+        assert_eq!(value_kind("02:00:00:00:00:01"), ValueKind::Address);
+        assert_eq!(value_kind("fe80::1"), ValueKind::Address);
+        assert_eq!(value_kind("[...]"), ValueKind::Muted);
+        assert_eq!(value_kind("GET"), ValueKind::Text);
+        assert_eq!(value_kind("/index.html"), ValueKind::Text);
+        assert_eq!(value_kind("HTTP/1.1"), ValueKind::Text);
+        assert_eq!(value_kind("1.2.3"), ValueKind::Text);
     }
 
     #[test]

@@ -1,17 +1,20 @@
-//! The main window: toolbar, packet table, detail tree, hex dump, the
-//! Follow Stream / Stats panel, and a status bar.
+//! The main window: title bar, sidebar, packet table, detail tree, hex
+//! dump, the Follow Stream / Stats dock, a status bar, and the command
+//! palette over them.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use dsct::session::tree::visible_nodes;
 use dsct::session::{FilterOutcome, Session, Tick};
+use dsct::stats::StatsOutput;
+use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::table::{DataTable, TableEvent, TableState};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, h_flex, h_resizable, resizable_panel, v_flex,
-    v_resizable,
+    Disableable as _, Icon, IconName, Sizable as _, TitleBar, h_flex, h_resizable, resizable_panel,
+    v_flex, v_resizable,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -19,14 +22,21 @@ use gpui_kit::*;
 use crate::bottom::{BottomPanel, StreamView};
 use crate::format::{self, TimeFormat};
 use crate::packet_table::PacketTable;
+use crate::palette::{Command, PaletteState};
 use crate::{
     CloseBottom, CycleTimeFormat, FocusBytes, FocusDetails, FocusNextPane, FocusPackets,
-    FocusPrevPane, Open, SharedSession,
+    FocusPrevPane, FollowStream, Open, OpenPalette, SharedSession, ShowStats, ToggleDock,
+    ToggleSidebar, theme,
 };
 
 /// How often background work (indexing, the in-order pass, filter scans)
 /// is driven while there is any; nothing runs while the session is idle.
 const TICK_INTERVAL: Duration = Duration::from_millis(16);
+
+/// Captures up to this many packets get their overview (sidebar protocols
+/// and conversations) computed on open; larger ones on request, since it
+/// dissects every packet.
+const AUTO_OVERVIEW_LIMIT: usize = 200_000;
 
 /// Key context of the packet table (set by gpui-component).
 pub const TABLE_CONTEXT: &str = "DataTable";
@@ -64,6 +74,8 @@ pub struct TreeView {
     pub selected: Option<usize>,
     /// Tree nodes shown (not inside a collapsed node), by index.
     pub visible: Vec<usize>,
+    /// Summary beside each protocol layer, in layer order.
+    pub summaries: Vec<Option<String>>,
     /// Byte under the hex dump's keyboard cursor.
     pub hex_cursor: Option<usize>,
     pub tree_scroll: UniformListScrollHandle,
@@ -77,6 +89,11 @@ impl TreeView {
         self.hex_cursor = None;
         self.tree_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.hex_scroll.scroll_to_item(0, ScrollStrategy::Top);
+        self.summaries = session
+            .selected
+            .as_ref()
+            .map(|sel| crate::summary::layer_summaries(&sel.packet))
+            .unwrap_or_default();
         self.refresh(session);
     }
 
@@ -90,17 +107,32 @@ impl TreeView {
     }
 }
 
+/// The sidebar's overview of the whole capture.
+#[derive(Default)]
+pub struct Overview {
+    pub stats: Option<StatsOutput>,
+    /// The running stats job computes the overview.
+    pub job: bool,
+    /// The running overview job's result also goes to the Stats tab.
+    pub show_when_done: bool,
+}
+
 /// The application window's root view.
 pub struct DsctApp {
     pub(crate) session: SharedSession,
-    table: Entity<TableState<PacketTable>>,
-    filter: Entity<InputState>,
+    pub(crate) table: Entity<TableState<PacketTable>>,
+    pub(crate) filter: Entity<InputState>,
+    /// Holds focus when no pane does, so shortcuts reach the window.
+    root_focus: FocusHandle,
     pub(crate) tree_focus: FocusHandle,
     pub(crate) hex_focus: FocusHandle,
     /// Displayed row of the selected packet.
     selected_row: Option<usize>,
     pub(crate) tree: TreeView,
     pub(crate) bottom: BottomPanel,
+    pub(crate) overview: Overview,
+    pub(crate) palette: Option<PaletteState>,
+    sidebar_open: bool,
     time_format: TimeFormat,
     /// Last error or notice, shown in the status bar.
     message: Option<(String, bool)>,
@@ -119,10 +151,8 @@ impl DsctApp {
     pub fn new(path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let session: SharedSession = Default::default();
         let table = cx.new(|cx| TableState::new(PacketTable::new(session.clone()), window, cx));
-        let filter = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Filter, e.g. tcp.dst_port == 443 or dns (Enter to apply)")
-        });
+        let filter =
+            cx.new(|cx| InputState::new(window, cx).placeholder("tcp.dst_port == 443 or dns"));
         let subscriptions = vec![
             cx.subscribe_in(&table, window, |this, _, event: &TableEvent, _, cx| {
                 if let TableEvent::SelectRow(row) = event {
@@ -146,21 +176,28 @@ impl DsctApp {
             }),
         ];
 
+        let root_focus = cx.focus_handle();
+        window.focus(&root_focus, cx);
         let mut app = Self {
             session,
             table,
             filter,
+            root_focus,
             tree_focus: cx.focus_handle(),
             hex_focus: cx.focus_handle(),
             selected_row: None,
             tree: TreeView {
                 selected: None,
                 visible: Vec::new(),
+                summaries: Vec::new(),
                 hex_cursor: None,
                 tree_scroll: UniformListScrollHandle::new(),
                 hex_scroll: UniformListScrollHandle::new(),
             },
             bottom: BottomPanel::default(),
+            overview: Overview::default(),
+            palette: None,
+            sidebar_open: true,
             time_format: TimeFormat::default(),
             message: None,
             filter_error: None,
@@ -197,22 +234,36 @@ impl DsctApp {
         match Session::open(&path, Vec::new()) {
             Ok(session) => {
                 *self.session.borrow_mut() = Some(session);
-                self.selected_row = None;
-                self.tree.selected = None;
-                self.tree.hex_cursor = None;
-                self.tree.visible.clear();
-                self.bottom = BottomPanel::default();
-                self.message = None;
-                self.filter_error = None;
-                self.table.update(cx, |table, cx| {
-                    table.clear_selection(cx);
-                    table.refresh(cx);
-                });
+                self.reset_views(cx);
                 self.ensure_ticking(cx);
             }
             Err(e) => self.message = Some((format!("Cannot open {}: {e}", path.display()), true)),
         }
         cx.notify();
+    }
+
+    /// Close the capture, back to the empty window.
+    fn close_capture(&mut self, cx: &mut Context<Self>) {
+        *self.session.borrow_mut() = None;
+        self.reset_views(cx);
+        cx.notify();
+    }
+
+    fn reset_views(&mut self, cx: &mut Context<Self>) {
+        self.selected_row = None;
+        self.tree.selected = None;
+        self.tree.hex_cursor = None;
+        self.tree.visible.clear();
+        self.tree.summaries.clear();
+        self.bottom = BottomPanel::default();
+        self.overview = Overview::default();
+        self.message = None;
+        self.filter_error = None;
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().selected = None;
+            table.clear_selection(cx);
+            table.refresh(cx);
+        });
     }
 
     /// Run [`Self::tick`] every [`TICK_INTERVAL`] until the session has no
@@ -233,6 +284,21 @@ impl DsctApp {
             }
         })
         .detach();
+    }
+
+    /// Start computing the sidebar overview when it is due: once the capture
+    /// is indexed, with no filter or other stats running.
+    fn maybe_start_overview(session: &mut Session, overview: &mut Overview, force: bool) {
+        let due = overview.stats.is_none()
+            && !overview.job
+            && !session.is_indexing()
+            && session.applied_filter.is_empty()
+            && !session.filter_running()
+            && !session.stats_running()
+            && (force || session.total_count() <= AUTO_OVERVIEW_LIMIT);
+        if due && session.start_stats().is_ok() {
+            overview.job = true;
+        }
     }
 
     /// Drive the session's background work and refresh what changed.
@@ -303,11 +369,21 @@ impl DsctApp {
             Tick::Idle => {}
             Tick::Running => changed = true,
             Tick::Done(output) => {
-                self.bottom.show_stats(output);
+                if self.overview.job {
+                    self.overview.job = false;
+                    if std::mem::take(&mut self.overview.show_when_done) {
+                        self.bottom.show_stats(output.clone());
+                        panel_opened = true;
+                    }
+                    self.overview.stats = Some(output);
+                } else {
+                    self.bottom.show_stats(output);
+                    panel_opened = true;
+                }
                 changed = true;
-                panel_opened = true;
             }
         }
+        Self::maybe_start_overview(session, &mut self.overview, false);
 
         if reload {
             session.load_packet(self.selected_row.unwrap_or(0));
@@ -324,17 +400,7 @@ impl DsctApp {
         drop(guard);
 
         if rows_changed || reload {
-            let selected = self.selected_row;
-            self.table.update(cx, |table, cx| {
-                table.refresh(cx);
-                match selected {
-                    Some(row) if table.selected_row() != Some(row) => {
-                        table.set_selected_row(row, cx)
-                    }
-                    None => table.clear_selection(cx),
-                    _ => {}
-                }
-            });
+            self.sync_table_selection(cx);
         }
         if panel_opened && let Some(row) = self.selected_row {
             // Keep the selected packet in view above the panel.
@@ -347,12 +413,28 @@ impl DsctApp {
         busy
     }
 
+    /// Refresh the table's rows and show `selected_row` as selected.
+    fn sync_table_selection(&mut self, cx: &mut Context<Self>) {
+        let selected = self.selected_row;
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().selected = selected;
+            table.refresh(cx);
+            match selected {
+                Some(row) if table.selected_row() != Some(row) => table.set_selected_row(row, cx),
+                None => table.clear_selection(cx),
+                _ => {}
+            }
+        });
+    }
+
     /// Show the packet at displayed `row`.
     fn select_row(&mut self, row: usize, cx: &mut Context<Self>) {
         if self.selected_row == Some(row) {
             return;
         }
         self.selected_row = Some(row);
+        self.table
+            .update(cx, |table, _| table.delegate_mut().selected = Some(row));
         let mut guard = self.session.borrow_mut();
         if let Some(session) = guard.as_mut() {
             session.load_packet(row);
@@ -364,11 +446,37 @@ impl DsctApp {
         cx.notify();
     }
 
-    fn apply_filter(&mut self, text: &str, cx: &mut Context<Self>) {
+    /// Select packet `number` (1-based) if it is displayed.
+    fn go_to_packet(&mut self, number: u64, cx: &mut Context<Self>) {
+        let row = self.session.borrow().as_ref().and_then(|s| {
+            let pkt_idx = usize::try_from(number).ok()?.checked_sub(1)?;
+            s.filtered
+                .contains(pkt_idx)
+                .then(|| s.filtered.rank(pkt_idx))
+        });
+        match row {
+            Some(row) => {
+                self.select_row(row, cx);
+                self.sync_table_selection(cx);
+                self.table
+                    .update(cx, |table, cx| table.scroll_to_row(row, cx));
+            }
+            None => self.message = Some((format!("Packet {number} is not displayed"), true)),
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn apply_filter(&mut self, text: &str, cx: &mut Context<Self>) {
         let mut guard = self.session.borrow_mut();
         let Some(session) = guard.as_mut() else {
             return;
         };
+        // The overview covers the whole capture; a filter would change what
+        // the running job counts.
+        if self.overview.job {
+            session.cancel_stats();
+            self.overview.job = false;
+        }
         self.filter_error = None;
         match session.apply_filter(text) {
             Err(msg) => self.filter_error = Some(msg),
@@ -384,17 +492,19 @@ impl DsctApp {
                 session.load_packet(0);
                 self.tree.reset(session);
                 drop(guard);
-                let selected = self.selected_row;
-                self.table.update(cx, |table, cx| {
-                    table.refresh(cx);
-                    match selected {
-                        Some(row) => table.set_selected_row(row, cx),
-                        None => table.clear_selection(cx),
-                    }
-                });
+                self.sync_table_selection(cx);
+                self.ensure_ticking(cx);
             }
         }
         cx.notify();
+    }
+
+    /// Put `text` in the filter input and apply it.
+    pub(crate) fn set_filter(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let value = text.to_string();
+        self.filter
+            .update(cx, |state, cx| state.set_value(value, window, cx));
+        self.apply_filter(text, cx);
     }
 
     fn follow_stream(&mut self, cx: &mut Context<Self>) {
@@ -407,8 +517,22 @@ impl DsctApp {
     }
 
     fn stats(&mut self, cx: &mut Context<Self>) {
+        if self.overview.job {
+            // Already counting every packet: show that result.
+            self.overview.show_when_done = true;
+            return;
+        }
         let started = self.session.borrow_mut().as_mut().map(Session::start_stats);
         self.start_job(started, cx);
+    }
+
+    /// Compute the overview of a capture too large to do it on open.
+    pub(crate) fn compute_overview(&mut self, cx: &mut Context<Self>) {
+        if let Some(session) = self.session.borrow_mut().as_mut() {
+            Self::maybe_start_overview(session, &mut self.overview, true);
+        }
+        self.ensure_ticking(cx);
+        cx.notify();
     }
 
     /// Report a job that failed to start, or drive the one that did.
@@ -422,6 +546,9 @@ impl DsctApp {
     }
 
     fn cycle_time_format(&mut self, cx: &mut Context<Self>) {
+        if self.session.borrow().is_none() {
+            return;
+        }
         self.time_format = self.time_format.next();
         let time_format = self.time_format;
         self.table.update(cx, |table, cx| {
@@ -429,6 +556,30 @@ impl DsctApp {
             table.refresh(cx);
         });
         cx.notify();
+    }
+
+    fn toggle_dock(&mut self, cx: &mut Context<Self>) {
+        self.bottom.open = !self.bottom.open;
+        cx.notify();
+    }
+
+    /// Run a command from the palette, a menu, or a shortcut.
+    pub(crate) fn run_command(
+        &mut self,
+        command: Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match command {
+            Command::Open => self.prompt_open(cx),
+            Command::FollowStream => self.follow_stream(cx),
+            Command::Stats => self.stats(cx),
+            Command::CycleTime => self.cycle_time_format(cx),
+            Command::ToggleDock => self.toggle_dock(cx),
+            Command::Focus(pane) => self.focus_pane(pane, window, cx),
+            Command::GoTo(number) => self.go_to_packet(number, cx),
+            Command::Filter(text) => self.set_filter(&text, window, cx),
+        }
     }
 
     // -- Focus ----------------------------------------------------------------
@@ -467,113 +618,232 @@ impl DsctApp {
         self.focus_pane(pane, window, cx);
     }
 
-    /// Border of a pane: the focus ring color while it holds focus.
-    pub(crate) fn pane_border(&self, pane: Pane, window: &Window, cx: &App) -> Hsla {
-        if self.focused_pane(window, cx) == Some(pane) {
-            cx.theme().blue
-        } else {
-            transparent_black()
-        }
+    /// Whether `pane` holds keyboard focus.
+    pub(crate) fn pane_focused(&self, pane: Pane, window: &Window, cx: &App) -> bool {
+        self.focused_pane(window, cx) == Some(pane)
     }
 
     // -- Rendering ------------------------------------------------------------
 
-    fn render_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let (has_session, has_packet, applied) = match self.session.borrow().as_ref() {
-            Some(s) => (true, s.selected.is_some(), s.applied_filter.clone()),
-            None => (false, false, String::new()),
+    fn icon_button(id: &'static str, icon: IconName, tooltip: &'static str) -> Button {
+        Button::new(id).icon(icon).small().ghost().tooltip(tooltip)
+    }
+
+    fn render_title_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let file = self.session.borrow().as_ref().map(|s| s.file_name.clone());
+        TitleBar::new()
+            .child(
+                h_flex()
+                    .gap_1p5()
+                    .text_sm()
+                    .text_color(theme::text_muted())
+                    .child(
+                        div()
+                            .text_color(theme::text_bright())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("dsct"),
+                    )
+                    .children(file.map(|f| {
+                        h_flex()
+                            .gap_1p5()
+                            .child("/")
+                            .child(div().text_color(theme::text()).child(f))
+                    })),
+            )
+            .child(
+                h_flex().flex_1().justify_center().child(
+                    Button::new("palette")
+                        .small()
+                        .outline()
+                        .w(px(420.))
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .gap_2()
+                                .text_color(theme::text_muted())
+                                .child(Icon::new(IconName::Search).small())
+                                .child(div().flex_1().child("Search actions, packets and filters…"))
+                                .child(div().text_xs().child(crate::shortcut("K"))),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| this.open_palette(window, cx))),
+                ),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .pr_2()
+                    .child(
+                        Self::icon_button("toggle-sidebar", IconName::PanelLeft, "Toggle sidebar")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.sidebar_open = !this.sidebar_open;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Self::icon_button(
+                            "toggle-dock",
+                            IconName::PanelBottom,
+                            "Toggle bottom dock",
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_dock(cx))),
+                    ),
+            )
+    }
+
+    fn render_tab_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let file = self
+            .session
+            .borrow()
+            .as_ref()
+            .map(|s| s.file_name.clone())
+            .unwrap_or_default();
+        h_flex()
+            .h(px(34.))
+            .flex_shrink_0()
+            .bg(theme::panel())
+            .border_b_1()
+            .border_color(theme::border())
+            .child(
+                h_flex()
+                    .h_full()
+                    .gap_2()
+                    .pl_3()
+                    .pr_1()
+                    .bg(theme::surface())
+                    .border_r_1()
+                    .border_color(theme::border())
+                    .text_color(theme::text_bright())
+                    .child(div().size(px(6.)).rounded_full().bg(theme::accent()))
+                    .child(file)
+                    .child(
+                        Button::new("close-capture")
+                            .icon(IconName::Close)
+                            .xsmall()
+                            .ghost()
+                            .tooltip("Close capture")
+                            .on_click(cx.listener(|this, _, _, cx| this.close_capture(cx))),
+                    ),
+            )
+    }
+
+    fn render_filter_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let (has_packet, applied, displayed, total) = match self.session.borrow().as_ref() {
+            Some(s) => (
+                s.selected.is_some(),
+                s.applied_filter.clone(),
+                s.displayed_count(),
+                s.total_count(),
+            ),
+            None => (false, String::new(), 0, 0),
         };
         // The text in the input is not the filter in effect until Enter.
-        let edited = has_session && *self.filter.read(cx).value() != *applied;
-        let theme = cx.theme();
-        let (error, error_border, muted, border) = (
-            theme.red,
-            theme.danger,
-            theme.muted_foreground,
-            theme.border,
-        );
-        let filter = h_flex()
-            .flex_1()
-            .gap_2()
+        let edited = *self.filter.read(cx).value() != *applied;
+        let count = if applied.is_empty() {
+            format!("{total} packets")
+        } else {
+            format!("{displayed} of {total}")
+        };
+        let bar = h_flex()
+            .flex_wrap()
+            .gap_2p5()
+            .px_3()
+            .py_2()
+            .child(
+                h_flex()
+                    .gap_1p5()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(Icon::new(AssetIcon::Funnel).xsmall())
+                    .child("Filter"),
+            )
             .child(
                 div()
                     .flex_1()
+                    .min_w(px(240.))
                     .rounded(px(6.))
-                    .when(self.filter_error.is_some(), |d| {
-                        d.border_1().border_color(error_border)
+                    .border_1()
+                    .border_color(if self.filter_error.is_some() {
+                        theme::red()
+                    } else {
+                        gpui_kit::transparent_black()
                     })
                     .child(Input::new(&self.filter).small()),
             )
-            .when(edited && self.filter_error.is_none(), |d| {
-                d.child(div().text_xs().text_color(muted).child("Enter to apply"))
-            });
-        let toolbar = h_flex()
-            .gap_2()
-            .p_2()
-            .child(
-                Button::new("open")
-                    .label("Open…")
-                    .small()
-                    .on_click(cx.listener(|this, _, _, cx| this.prompt_open(cx))),
-            )
-            .child(filter)
+            .child(div().text_xs().text_color(theme::text_muted()).child(
+                if edited && self.filter_error.is_none() {
+                    "Enter to apply".to_string()
+                } else {
+                    count
+                },
+            ))
+            .child(div().w(px(1.)).h(px(18.)).bg(theme::border()))
             .child(
                 Button::new("time-format")
+                    .icon(Icon::new(AssetIcon::Clock))
                     .label(format!("Time: {}", self.time_format.label()))
                     .small()
-                    .ghost()
+                    .outline()
                     .tooltip(format!("Change the time format ({})", crate::shortcut("T")))
-                    .disabled(!has_session)
                     .on_click(cx.listener(|this, _, _, cx| this.cycle_time_format(cx))),
             )
-            .child(div().w(px(1.)).h(px(20.)).bg(border))
             .child(
                 Button::new("follow")
+                    .icon(Icon::new(AssetIcon::ArrowLeftRight))
                     .label("Follow Stream")
                     .small()
-                    .tooltip("Payload of the selected packet's TCP/UDP/SCTP stream")
+                    .outline()
+                    .tooltip(format!(
+                        "Payload of the selected packet's TCP/UDP/SCTP stream ({})",
+                        crate::shortcut_shift("F")
+                    ))
                     .disabled(!has_packet)
                     .on_click(cx.listener(|this, _, _, cx| this.follow_stream(cx))),
             )
             .child(
                 Button::new("stats")
+                    .icon(Icon::new(AssetIcon::ChartColumn))
                     .label("Stats")
                     .small()
-                    .tooltip("Statistics of the displayed packets")
-                    .disabled(!has_session)
+                    .outline()
+                    .tooltip(format!(
+                        "Statistics of the displayed packets ({})",
+                        crate::shortcut_shift("S")
+                    ))
                     .on_click(cx.listener(|this, _, _, cx| this.stats(cx))),
             );
         v_flex()
+            .flex_shrink_0()
             .border_b_1()
-            .border_color(border)
-            .child(toolbar)
+            .border_color(theme::border())
+            .child(bar)
             .children(self.filter_error.as_ref().map(|msg| {
                 div()
-                    .px_2()
+                    .px_3()
                     .pb_2()
                     .text_sm()
-                    .text_color(error)
+                    .text_color(theme::red())
                     .child(format!("Filter error: {msg}"))
             }))
     }
 
     /// Shown instead of the panes until a capture is open.
     fn render_empty(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let theme = cx.theme();
         v_flex()
             .size_full()
             .items_center()
             .justify_center()
             .gap_3()
+            .bg(theme::surface())
             .child(
                 div()
                     .text_xl()
                     .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::text_bright())
                     .child("Open a capture file"),
             )
             .child(
                 div()
-                    .text_color(theme.muted_foreground)
+                    .text_color(theme::text_muted())
                     .child("pcap or pcapng — or drop a file anywhere in this window"),
             )
             .child(
@@ -585,110 +855,170 @@ impl DsctApp {
             .child(
                 div()
                     .text_sm()
-                    .text_color(theme.muted_foreground)
-                    .child(crate::shortcut("O")),
+                    .text_color(theme::text_muted())
+                    .child(format!(
+                        "{} to open · {} for every action",
+                        crate::shortcut("O"),
+                        crate::shortcut("K")
+                    )),
             )
     }
 
-    fn render_status(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let mut parts: Vec<String> = Vec::new();
+    fn render_status(&mut self, _cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let mut left: Vec<String> = Vec::new();
+        let mut right: Vec<String> = Vec::new();
+        let mut working = false;
         if let Some(session) = self.session.borrow().as_ref() {
-            parts.push(session.file_name.clone());
-            parts.push(if session.applied_filter.is_empty() {
-                format!("{} packets", session.total_count())
-            } else {
-                format!(
-                    "{} / {} packets",
-                    session.displayed_count(),
-                    session.total_count()
-                )
-            });
             if let Some(bg) = &session.bg_indexer {
-                parts.push(format!("Indexing {}%", format::percent(bg.fraction())));
+                left.push(format!("Indexing {}%", format::percent(bg.fraction())));
+                working = true;
+            } else if let Some(fraction) = session.filter_fraction() {
+                left.push(format!("Filtering {}%", format::percent(fraction)));
+                working = true;
+            } else if session.stream_running() {
+                left.push("Following stream…".to_string());
+                working = true;
+            } else if session.stats_running() {
+                left.push(if self.overview.job {
+                    "Building overview…".to_string()
+                } else {
+                    "Collecting stats…".to_string()
+                });
+                working = true;
+            } else {
+                left.push("Ready".to_string());
             }
-            if let Some(fraction) = session.filter_fraction() {
-                parts.push(format!("Filtering {}%", format::percent(fraction)));
-            }
-            if session.stream_running() {
-                parts.push("Following stream…".to_string());
-            }
-            if session.stats_running() {
-                parts.push("Collecting stats…".to_string());
-            }
+            left.push(format!("{} packets", session.total_count()));
             if session.ordered_needs_tick() {
-                parts.push("Dissecting in capture order…".to_string());
+                left.push("Dissecting in capture order…".to_string());
             }
+            if let (Some(row), Some(sel)) = (self.selected_row, session.selected.as_ref()) {
+                let number = session.filtered.select(row).map_or(0, |i| i + 1);
+                let byte = self.tree.hex_cursor.or_else(|| {
+                    let idx = self.tree.selected?;
+                    sel.tree_nodes.get(idx).map(|n| n.byte_range.start)
+                });
+                right.push(match byte {
+                    Some(b) => format!("Packet {number} · Byte 0x{b:04x}"),
+                    None => format!("Packet {number}"),
+                });
+            }
+            right.push(format!("Time: {}", self.time_format.label()));
         }
-        let theme = cx.theme();
+        let dot = if working {
+            theme::accent()
+        } else {
+            theme::green()
+        };
+        let has_session = !left.is_empty();
         h_flex()
-            .px_2()
-            .py_1()
+            .h(px(26.))
+            .flex_shrink_0()
+            .px_3()
             .gap_4()
+            .bg(theme::chrome())
             .border_t_1()
-            .border_color(theme.border)
-            .text_color(theme.muted_foreground)
-            .text_sm()
-            .children(parts)
+            .border_color(theme::border())
+            .text_xs()
+            .text_color(theme::text_muted())
+            .when(has_session, |d| {
+                d.child(div().size(px(7.)).rounded_full().bg(dot))
+            })
+            .children(left)
             .children(self.message.as_ref().map(|(msg, error)| {
                 div()
-                    .when(*error, |d| d.text_color(theme.red))
+                    .when(*error, |d| d.text_color(theme::red()))
                     .child(if *error {
                         format!("⚠ {msg}")
                     } else {
                         msg.clone()
                     })
             }))
+            .child(div().flex_1())
+            .children(right)
     }
 }
 
 impl Render for DsctApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let has_session = self.session.borrow().is_some();
-        let toolbar = self.render_toolbar(cx);
+        let title_bar = self.render_title_bar(cx);
         let status = self.render_status(cx);
+        let palette = self.render_palette(cx);
 
         let body = if has_session {
-            let table_border = self.pane_border(Pane::Packets, window, cx);
+            let sidebar = self.sidebar_open.then(|| self.render_sidebar(cx));
+            let tab_bar = self.render_tab_bar(cx);
+            let filter_bar = self.render_filter_bar(cx);
+            let table_border = if self.pane_focused(Pane::Packets, window, cx) {
+                theme::accent()
+            } else {
+                transparent_black()
+            };
             let tree = self.render_tree(window, cx);
             let hex = self.render_hex(window, cx);
             let bottom = self.render_bottom(cx);
-            let mut main = v_resizable("main")
+            let mut panes = v_resizable("main")
                 .child(
-                    resizable_panel().size(px(320.)).child(
+                    resizable_panel().size(px(360.)).child(
                         div()
                             .size_full()
                             .border_1()
                             .border_color(table_border)
-                            .child(DataTable::new(&self.table)),
+                            .child(DataTable::new(&self.table).small()),
                     ),
                 )
                 .child(
                     resizable_panel().child(
                         h_resizable("details")
-                            .child(resizable_panel().size(px(560.)).child(tree))
+                            .child(resizable_panel().size(px(420.)).child(tree))
                             .child(resizable_panel().child(hex)),
                     ),
                 );
             if let Some(bottom) = bottom {
-                main = main.child(resizable_panel().size(px(320.)).child(bottom));
+                panes = panes.child(resizable_panel().size(px(300.)).child(bottom));
             }
-            div().size_full().child(main).into_any_element()
+            h_flex()
+                .size_full()
+                .children(sidebar)
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .bg(theme::surface())
+                        .child(tab_bar)
+                        .child(filter_bar)
+                        .child(div().flex_1().min_h_0().child(panes)),
+                )
+                .into_any_element()
         } else {
             self.render_empty(cx).into_any_element()
         };
 
-        let theme = cx.theme();
         v_flex()
             .id("dsct")
             .key_context("DsctApp")
+            .track_focus(&self.root_focus)
+            .relative()
             .size_full()
-            .bg(theme.background)
-            .text_color(theme.foreground)
+            .bg(theme::chrome())
+            .text_color(theme::text())
             .on_action(cx.listener(|this, _: &Open, _, cx| this.prompt_open(cx)))
-            .on_action(cx.listener(|this, _: &CycleTimeFormat, _, cx| {
+            .on_action(
+                cx.listener(|this, _: &OpenPalette, window, cx| this.open_palette(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &CycleTimeFormat, _, cx| this.cycle_time_format(cx)))
+            .on_action(cx.listener(|this, _: &FollowStream, _, cx| this.follow_stream(cx)))
+            .on_action(cx.listener(|this, _: &ShowStats, _, cx| {
                 if this.session.borrow().is_some() {
-                    this.cycle_time_format(cx);
+                    this.stats(cx);
                 }
+            }))
+            .on_action(cx.listener(|this, _: &ToggleDock, _, cx| this.toggle_dock(cx)))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
+                this.sidebar_open = !this.sidebar_open;
+                cx.notify();
             }))
             .on_action(
                 cx.listener(|this, _: &FocusNextPane, window, cx| this.step_pane(true, window, cx)),
@@ -711,14 +1041,15 @@ impl Render for DsctApp {
                 this.bottom.open = false;
                 cx.notify();
             }))
-            .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().drop_target))
+            .drag_over::<ExternalPaths>(|style, _, _, _| style.bg(theme::drop_target()))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 if let Some(path) = paths.paths().first() {
                     this.open(path.clone(), cx);
                 }
             }))
-            .child(toolbar)
+            .child(title_bar)
             .child(div().flex_1().min_h_0().child(body))
             .child(status)
+            .children(palette)
     }
 }

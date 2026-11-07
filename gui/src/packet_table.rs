@@ -6,27 +6,25 @@ use gpui_kit::component::table::{Column, TableDelegate, TableState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::SharedSession;
-use crate::format;
-
-/// Opacity of a row's protocol tint, low enough to keep the text readable
-/// and the selected row distinct.
-const TINT_ALPHA: f32 = 0.14;
+use crate::{SharedSession, format, theme};
 
 /// Columns of numbers and times: right-aligned (numbers) in a monospace font
-/// so their digits line up.
+/// so their digits line up, and muted next to the row's content.
 const NO_COL: usize = 0;
 const TIME_COL: usize = 1;
+const SRC_COL: usize = 2;
+const DST_COL: usize = 3;
+const PROTO_COL: usize = 4;
 const LEN_COL: usize = 5;
 
 /// Column keys and titles, in display order.
 const COLUMNS: [(&str, &str, f32); 7] = [
-    ("no", "No.", 80.),
+    ("no", "No.", 72.),
     ("time", "Time", 250.),
-    ("src", "Source", 170.),
-    ("dst", "Destination", 170.),
-    ("proto", "Protocol", 90.),
-    ("len", "Length", 70.),
+    ("src", "Source", 150.),
+    ("dst", "Destination", 150.),
+    ("proto", "Protocol", 104.),
+    ("len", "Length", 72.),
     ("info", "Info", 600.),
 ];
 
@@ -35,6 +33,8 @@ pub struct PacketTable {
     session: SharedSession,
     /// How the Time column shows timestamps.
     pub time_format: format::TimeFormat,
+    /// The selected row, marked with an accent line.
+    pub selected: Option<usize>,
 }
 
 impl PacketTable {
@@ -43,6 +43,7 @@ impl PacketTable {
         Self {
             session,
             time_format: format::TimeFormat::default(),
+            selected: None,
         }
     }
 
@@ -93,9 +94,9 @@ impl PacketTable {
             _ => {
                 let summary = session.get_or_dissect_summary(pkt_idx);
                 match col {
-                    2 => summary.source.clone(),
-                    3 => summary.destination.clone(),
-                    4 => summary.protocol.to_string(),
+                    SRC_COL => summary.source.clone(),
+                    DST_COL => summary.destination.clone(),
+                    PROTO_COL => summary.protocol.to_string(),
                     _ => summary.info.clone(),
                 }
             }
@@ -136,11 +137,16 @@ impl TableDelegate for PacketTable {
         _: &mut Window,
         _: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
-        let tint =
-            format::protocol_hue(self.protocol(row_ix)).map(|h| hsla(h, 0.75, 0.5, TINT_ALPHA));
+        let selected = self.selected == Some(row_ix);
         div()
             .id(("row", row_ix))
-            .when_some(tint, |row, tint| row.bg(tint))
+            .border_l_2()
+            .border_color(if selected {
+                theme::accent()
+            } else {
+                transparent_black()
+            })
+            .when(selected, |row| row.text_color(theme::text_bright()))
     }
 
     fn render_td(
@@ -151,13 +157,31 @@ impl TableDelegate for PacketTable {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let mono = cx.theme().mono_font_family.clone();
-        div()
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .when(matches!(col_ix, NO_COL | TIME_COL | LEN_COL), |d| {
-                d.font_family(mono)
-            })
-            .child(self.cell(row_ix, col_ix))
+        let cell = div().overflow_hidden().whitespace_nowrap();
+        if col_ix == PROTO_COL {
+            // A colored mark and name instead of tinting the whole row.
+            let protocol = self.protocol(row_ix);
+            let color =
+                format::protocol_swatch(protocol).map_or(theme::text_muted(), theme::swatch);
+            return cell
+                .flex()
+                .items_center()
+                .gap_1p5()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(color)
+                .child(div().size(px(7.)).rounded(px(2.)).bg(color))
+                .child(protocol);
+        }
+        let selected = self.selected == Some(row_ix);
+        cell.when(
+            matches!(col_ix, NO_COL | TIME_COL | LEN_COL | SRC_COL | DST_COL),
+            |d| d.font_family(mono),
+        )
+        .when(
+            matches!(col_ix, NO_COL | TIME_COL | LEN_COL) && !selected,
+            |d| d.text_color(theme::text_muted()),
+        )
+        .child(self.cell(row_ix, col_ix))
     }
 
     fn cell_text(&self, row_ix: usize, col_ix: usize, _: &App) -> String {
