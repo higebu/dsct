@@ -13,11 +13,34 @@
 //! (tcp OR udp) AND ipv4.src = '10.0.0.1'      — parentheses
 //! tcp.dst_port > 1024                         — comparison operators
 //! packet_number BETWEEN 1 AND 100             — packet number filter
+//! timestamp >= '2024-01-15T10:30:00Z'         — capture time filter
 //! ```
 
 use packet_dissector_core::packet::Packet;
 
-use crate::filter::{PacketNumberFilter, WhereClause, protocol_names_match};
+use crate::filter::{PacketNumberFilter, TimestampFilter, WhereClause, protocol_names_match};
+
+/// What a filter can test about a packet besides its dissection: its
+/// record in the capture file.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RecordInfo {
+    /// 1-based packet number in the capture.
+    pub number: u64,
+    /// Capture timestamp in microseconds since the Unix epoch.
+    pub timestamp_us: u64,
+}
+
+impl RecordInfo {
+    /// The record of packet `number` captured at `secs`.`usecs`.
+    pub fn new(number: u64, secs: u64, usecs: u32) -> Self {
+        Self {
+            number,
+            timestamp_us: secs
+                .saturating_mul(1_000_000)
+                .saturating_add(u64::from(usecs)),
+        }
+    }
+}
 
 /// A parsed filter expression.
 #[derive(Debug, Clone)]
@@ -34,6 +57,8 @@ pub enum FilterExpr {
     Not(Box<FilterExpr>),
     /// Match packets by 1-based packet number.
     PacketNumber(PacketNumberFilter),
+    /// Match packets by capture timestamp.
+    Timestamp(TimestampFilter),
 }
 
 impl FilterExpr {
@@ -52,15 +77,27 @@ impl FilterExpr {
     /// Test whether a dissected packet matches this expression.
     ///
     /// Shorthand for `matches_with_number(packet, 0)` — usable when no
-    /// packet-number filter is present.
+    /// packet-number or timestamp filter is present.
     #[cfg(test)]
     pub fn matches(&self, packet: &Packet) -> bool {
         self.matches_with_number(packet, 0)
     }
 
-    /// Test whether a dissected packet matches, with a 1-based packet number
-    /// for packet-number filters.
+    /// [`matches_record`](Self::matches_record) with only a packet number.
+    #[cfg(test)]
     pub fn matches_with_number(&self, packet: &Packet, number: u64) -> bool {
+        self.matches_record(
+            packet,
+            RecordInfo {
+                number,
+                timestamp_us: 0,
+            },
+        )
+    }
+
+    /// Test whether a dissected packet, whose record in the capture is
+    /// `record`, matches.
+    pub fn matches_record(&self, packet: &Packet, record: RecordInfo) -> bool {
         match self {
             FilterExpr::Protocol(name) => packet
                 .layers()
@@ -68,24 +105,26 @@ impl FilterExpr {
                 .any(|l| protocol_names_match(l.name, name)),
             FilterExpr::Where(clause) => clause.matches_packet(packet),
             FilterExpr::And(a, b) => {
-                a.matches_with_number(packet, number) && b.matches_with_number(packet, number)
+                a.matches_record(packet, record) && b.matches_record(packet, record)
             }
             FilterExpr::Or(a, b) => {
-                a.matches_with_number(packet, number) || b.matches_with_number(packet, number)
+                a.matches_record(packet, record) || b.matches_record(packet, record)
             }
-            FilterExpr::Not(e) => !e.matches_with_number(packet, number),
-            FilterExpr::PacketNumber(pnf) => pnf.contains(number),
+            FilterExpr::Not(e) => !e.matches_record(packet, record),
+            FilterExpr::PacketNumber(pnf) => pnf.contains(record.number),
+            FilterExpr::Timestamp(tf) => tf.contains(record.timestamp_us),
         }
     }
 
-    /// Returns `true` if this expression contains only `PacketNumber` filters
-    /// (possibly combined with AND/OR/NOT), meaning no dissection is needed.
-    pub fn is_packet_number_only(&self) -> bool {
+    /// Returns `true` if this expression tests only the packet record
+    /// (`PacketNumber` and `Timestamp`, possibly combined with
+    /// AND/OR/NOT), meaning no dissection is needed.
+    pub fn is_metadata_only(&self) -> bool {
         match self {
-            FilterExpr::PacketNumber(_) => true,
-            FilterExpr::Not(e) => e.is_packet_number_only(),
+            FilterExpr::PacketNumber(_) | FilterExpr::Timestamp(_) => true,
+            FilterExpr::Not(e) => e.is_metadata_only(),
             FilterExpr::And(a, b) | FilterExpr::Or(a, b) => {
-                a.is_packet_number_only() && b.is_packet_number_only()
+                a.is_metadata_only() && b.is_metadata_only()
             }
             FilterExpr::Protocol(_) | FilterExpr::Where(_) => false,
         }
@@ -425,19 +464,82 @@ mod tests {
     }
 
     #[test]
-    fn packet_number_only_detection() {
+    fn metadata_only_detection() {
         let pn = FilterExpr::parse("packet_number BETWEEN 1 AND 100")
             .unwrap()
             .unwrap();
-        assert!(pn.is_packet_number_only());
+        assert!(pn.is_metadata_only());
 
         let mixed = FilterExpr::parse("packet_number = 1 AND tcp")
             .unwrap()
             .unwrap();
-        assert!(!mixed.is_packet_number_only());
+        assert!(!mixed.is_metadata_only());
 
         let not_pn = FilterExpr::parse("NOT packet_number = 5").unwrap().unwrap();
-        assert!(not_pn.is_packet_number_only());
+        assert!(not_pn.is_metadata_only());
+    }
+
+    #[test]
+    fn timestamp_comparisons() {
+        let buf = make_tcp_buf();
+        let pkt = make_tcp_packet_ref(&buf);
+        // 2023-11-14T22:13:20Z is 1_700_000_000 s.
+        let at = |us: u64| RecordInfo {
+            number: 1,
+            timestamp_us: us,
+        };
+        let t = 1_700_000_000_000_000;
+        let cases = [
+            ("timestamp = '2023-11-14T22:13:20Z'", t, true),
+            ("timestamp = 1700000000", t + 1, false),
+            ("timestamp >= '2023-11-14T22:13:20.000001Z'", t, false),
+            ("timestamp > 1700000000", t + 1, true),
+            ("timestamp < '2023-11-15T07:13:20+09:00'", t, false),
+            ("timestamp <= '2023-11-15T07:13:20+09:00'", t, true),
+            ("timestamp != 1700000000.5", t + 500_000, false),
+            (
+                "timestamp BETWEEN '2023-11-14T22:13:20Z' AND '2023-11-14T22:13:21Z'",
+                t + 999_999,
+                true,
+            ),
+            ("timestamp NOT BETWEEN 1700000000 AND 1700000001", t, false),
+            ("timestamp IN (1700000000, 1700000002)", t, true),
+            ("tcp AND timestamp >= 1700000000", t, true),
+        ];
+        for (filter, us, expected) in cases {
+            let expr = FilterExpr::parse(filter).unwrap().unwrap();
+            assert_eq!(expr.matches_record(&pkt, at(us)), expected, "{filter}");
+        }
+        let ts = FilterExpr::parse("timestamp > 1").unwrap().unwrap();
+        assert!(ts.is_metadata_only());
+        let mixed = FilterExpr::parse("timestamp > 1 AND tcp").unwrap().unwrap();
+        assert!(!mixed.is_metadata_only());
+    }
+
+    #[test]
+    fn invalid_timestamps_are_rejected() {
+        for filter in [
+            "timestamp > 'yesterday'",
+            "timestamp > '2023-02-29T00:00:00Z'",
+            "timestamp > '2023-11-14T22:13:20'",
+            "timestamp > '2023-11-14T22:13:20.1234567Z'",
+            "timestamp > '1969-12-31T23:59:59Z'",
+            "timestamp < 0",
+        ] {
+            let err = FilterExpr::parse(filter).err();
+            assert!(err.is_some(), "{filter} should be rejected");
+        }
+    }
+
+    #[test]
+    fn record_info_from_a_pcap_timestamp() {
+        assert_eq!(
+            RecordInfo::new(3, 1_700_000_000, 42),
+            RecordInfo {
+                number: 3,
+                timestamp_us: 1_700_000_000_000_042
+            }
+        );
     }
 
     // --- BETWEEN for fields ---

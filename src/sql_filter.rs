@@ -18,11 +18,16 @@ use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::Token;
 
-use crate::filter::{CompareOp, PacketNumberFilter, WhereClause, normalize_protocol_name};
+use crate::filter::{
+    CompareOp, PacketNumberFilter, TimestampFilter, WhereClause, normalize_protocol_name,
+};
 use crate::filter_expr::FilterExpr;
 
 /// Virtual column name for packet-number filtering.
 const PACKET_NUMBER_COL: &str = "packet_number";
+
+/// Virtual column name for capture-time filtering.
+const TIMESTAMP_COL: &str = "timestamp";
 
 /// Parse a SQL expression string into a [`FilterExpr`].
 ///
@@ -153,6 +158,11 @@ fn convert_comparison(
         return convert_packet_number_comparison(compare_op, n);
     }
 
+    if name == TIMESTAMP_COL && field.is_none() {
+        let t = TimestampFilter::parse_value(&value)?;
+        return convert_timestamp_comparison(compare_op, t);
+    }
+
     let field = field.ok_or_else(|| {
         format!("comparison requires protocol.field format on left side, got '{name}'")
     })?;
@@ -190,6 +200,33 @@ fn convert_packet_number_comparison(op: CompareOp, n: u64) -> Result<FilterExpr,
         }
     };
     Ok(FilterExpr::PacketNumber(pnf))
+}
+
+/// Convert a timestamp comparison (`t` in µs since the epoch) into a
+/// [`FilterExpr::Timestamp`].
+fn convert_timestamp_comparison(op: CompareOp, t: u64) -> Result<FilterExpr, String> {
+    let range = match op {
+        CompareOp::Eq => (t, t),
+        CompareOp::Ge => (t, u64::MAX),
+        CompareOp::Gt => (
+            t.checked_add(1).ok_or("timestamp > max is always false")?,
+            u64::MAX,
+        ),
+        CompareOp::Le => (0, t),
+        CompareOp::Lt => (
+            0,
+            t.checked_sub(1)
+                .ok_or("timestamp < the Unix epoch is always false")?,
+        ),
+        CompareOp::Ne => {
+            return Ok(FilterExpr::Not(Box::new(FilterExpr::Timestamp(
+                TimestampFilter::from_ranges(vec![(t, t)]),
+            ))));
+        }
+    };
+    Ok(FilterExpr::Timestamp(TimestampFilter::from_ranges(vec![
+        range,
+    ])))
 }
 
 /// Extract a `(name, field)` pair from the left side of a comparison.
@@ -260,6 +297,13 @@ fn convert_between(
         return Ok(maybe_negate(expr, negated));
     }
 
+    if name == TIMESTAMP_COL && field.is_none() {
+        let lo = TimestampFilter::parse_value(&low_val)?;
+        let hi = TimestampFilter::parse_value(&high_val)?;
+        let expr = FilterExpr::Timestamp(TimestampFilter::from_ranges(vec![(lo, hi)]));
+        return Ok(maybe_negate(expr, negated));
+    }
+
     let field = field.ok_or_else(|| {
         format!("BETWEEN requires protocol.field format on left side, got '{name}'")
     })?;
@@ -288,6 +332,16 @@ fn convert_in_list(inner: &Expr, list: &[Expr], negated: bool) -> Result<FilterE
             ranges.push((n, n));
         }
         let expr = FilterExpr::PacketNumber(PacketNumberFilter::from_ranges(ranges));
+        return Ok(maybe_negate(expr, negated));
+    }
+
+    if name == TIMESTAMP_COL && field.is_none() {
+        let mut ranges = Vec::with_capacity(list.len());
+        for item in list {
+            let t = TimestampFilter::parse_value(&extract_value(item)?)?;
+            ranges.push((t, t));
+        }
+        let expr = FilterExpr::Timestamp(TimestampFilter::from_ranges(ranges));
         return Ok(maybe_negate(expr, negated));
     }
 
@@ -507,10 +561,10 @@ mod tests {
     #[test]
     fn packet_number_only_detection() {
         let pn = parse("packet_number BETWEEN 1 AND 100").unwrap();
-        assert!(pn.is_packet_number_only());
+        assert!(pn.is_metadata_only());
 
         let mixed = parse("packet_number = 1 AND tcp").unwrap();
-        assert!(!mixed.is_packet_number_only());
+        assert!(!mixed.is_metadata_only());
     }
 
     // --- BETWEEN for fields ---

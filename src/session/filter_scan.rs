@@ -9,7 +9,7 @@ use super::filter_bitmap::FilterBitmap;
 use super::parallel_scan::{ParallelFilterScan, ScanPoll};
 use super::state::{CaptureMap, FilterProgress, InOrderScan, PacketIndex};
 use super::{Session, Tick};
-use crate::filter_expr::FilterExpr;
+use crate::filter_expr::{FilterExpr, RecordInfo};
 
 /// How a filter scan ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,7 +106,7 @@ impl Session {
 
         // Conditions required for parallel scanning:
         // 1. Filter is not packet-number-only (those don't need dissection at all).
-        if expr.is_packet_number_only() {
+        if expr.is_metadata_only() {
             return false;
         }
         // 2. Static file mode only (live mode uses a growing file that workers
@@ -332,23 +332,24 @@ fn packet_matches(
     let Some(expr) = expr else {
         return true;
     };
-    let number = (i as u64) + 1; // 1-based packet number
-    // Fast path: packet-number-only filters don't need dissection.
-    if expr.is_packet_number_only() {
+    let index = &indices[i];
+    let record = RecordInfo::new((i as u64) + 1, index.timestamp_secs, index.timestamp_usecs);
+    // Fast path: packet-number and timestamp filters don't need dissection.
+    if expr.is_metadata_only() {
         let buf = dissect_buf.clear_into();
-        return expr.matches_with_number(&Packet::new(buf, &[]), number);
+        return expr.matches_record(&Packet::new(buf, &[]), record);
     }
-    let Some(data) = capture.packet_data(&indices[i]) else {
+    let Some(data) = capture.packet_data(index) else {
         return false;
     };
     let buf = dissect_buf.clear_into();
     if registry
-        .dissect_with_link_type(data, indices[i].link_type as u32, buf)
+        .dissect_with_link_type(data, index.link_type as u32, buf)
         .is_err()
     {
         return false;
     }
-    expr.matches_with_number(&Packet::new(buf, data), number)
+    expr.matches_record(&Packet::new(buf, data), record)
 }
 
 #[cfg(test)]

@@ -262,7 +262,14 @@ impl InOrder<'_> {
             return Ok(ControlFlow::Continue(()));
         }
         if let Some(expr) = self.filter
-            && !expr.matches_with_number(&Packet::new(buf, data), meta.number)
+            && !expr.matches_record(
+                &Packet::new(buf, data),
+                crate::filter_expr::RecordInfo::new(
+                    meta.number,
+                    meta.timestamp_secs,
+                    meta.timestamp_usecs,
+                ),
+            )
         {
             return Ok(ControlFlow::Continue(()));
         }
@@ -720,7 +727,14 @@ fn worker_fn(
             }
             let packet = Packet::new(dbuf, data);
 
-            if !ctx.filter.matches_with_number(&packet, meta.number) {
+            if !ctx.filter.matches_record(
+                &packet,
+                crate::filter_expr::RecordInfo::new(
+                    meta.number,
+                    meta.timestamp_secs,
+                    meta.timestamp_usecs,
+                ),
+            ) {
                 continue;
             }
 

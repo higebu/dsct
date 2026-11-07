@@ -544,7 +544,7 @@ fn read_packets_schema() -> Value {
             },
             "filter": {
                 "type": "string",
-                "description": "SQL-style filter expression (e.g. \"dns\", \"tcp AND ipv4.src = '10.0.0.1'\", \"tcp.dst_port > 1024\", \"(tcp OR udp) AND NOT dns\", \"dns.questions.name = 'example.com'\", \"packet_number BETWEEN 1 AND 100\"). Supports: protocol.field (nested via dots, e.g. dns.questions.name; the leading segment matches the top-level field and any nested container of that name, e.g. bgp.nlri.route_type reaches MP_REACH NLRI), comparison operators (=, !=, <>, <, <=, >, >=), AND/OR/NOT, parentheses, BETWEEN, IN. The _name suffix resolves display names (e.g. gtpv2c.ies.type_name = 'Cause'). Use dsct_list_protocols to discover protocol names and dsct_list_fields to discover field paths (qualified_name)."
+                "description": "SQL-style filter expression (e.g. \"dns\", \"tcp AND ipv4.src = '10.0.0.1'\", \"tcp.dst_port > 1024\", \"(tcp OR udp) AND NOT dns\", \"dns.questions.name = 'example.com'\", \"packet_number BETWEEN 1 AND 100\", \"timestamp >= '2024-01-15T10:30:00Z'\"). Supports: protocol.field (nested via dots, e.g. dns.questions.name; the leading segment matches the top-level field and any nested container of that name, e.g. bgp.nlri.route_type reaches MP_REACH NLRI), comparison operators (=, !=, <>, <, <=, >, >=), AND/OR/NOT, parentheses, BETWEEN, IN. timestamp compares the capture time (RFC 3339 as printed in packet output, or seconds since the Unix epoch). The _name suffix resolves display names (e.g. gtpv2c.ies.type_name = 'Cause'). Use dsct_list_protocols to discover protocol names and dsct_list_fields to discover field paths (qualified_name)."
             },
             "decode_as": {
                 "type": "array",
@@ -928,7 +928,14 @@ fn handle_read_packets_streaming(
 
         // Apply filter expression.
         if let Some(ref expr) = filter_expr
-            && !expr.matches_with_number(&packet, meta.number)
+            && !expr.matches_record(
+                &packet,
+                crate::filter_expr::RecordInfo::new(
+                    meta.number,
+                    meta.timestamp_secs,
+                    meta.timestamp_usecs,
+                ),
+            )
         {
             return Ok(ControlFlow::Continue(()));
         }

@@ -559,6 +559,46 @@ fn read_filter_packet_number_between() {
 }
 
 #[test]
+fn read_filter_timestamp() {
+    // Packet n is captured at n - 1 seconds after the epoch.
+    let tmp = write_pcap(5);
+    assert_eq!(
+        run_filter(
+            &tmp,
+            "timestamp BETWEEN '1970-01-01T00:00:01Z' AND '1970-01-01T00:00:03Z'"
+        ),
+        vec![2, 3, 4]
+    );
+    // With a protocol, the packets are dissected too.
+    assert_eq!(run_filter(&tmp, "udp AND timestamp >= 3"), vec![4, 5]);
+}
+
+#[test]
+fn read_filter_invalid_timestamp_returns_exit_code_2() {
+    let tmp = write_pcap(1);
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args([
+            "read",
+            "-f",
+            "timestamp > 'yesterday'",
+            tmp.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let err: serde_json::Value = serde_json::from_str(stderr.trim()).unwrap();
+    assert_eq!(err["error"]["code"], "invalid_arguments");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("invalid timestamp")),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn read_filter_invalid_sql_returns_exit_code_2() {
     let tmp = write_mixed_pcap();
 

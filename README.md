@@ -161,6 +161,17 @@ Nested fields are addressed with dots (`dns.questions.name`); the leading
 segment matches the top-level field and any nested container of that name, so
 `bgp.nlri.route_type` reaches MP_REACH NLRI.
 
+`packet_number` and `timestamp` select packets by their record in the
+capture, without dissecting them. `timestamp` takes the form `dsct` prints
+(RFC 3339, `Z` or a `±hh:mm` offset, up to microseconds) or seconds since the
+Unix epoch:
+
+```bash
+dsct read capture.pcap -f "packet_number BETWEEN 1 AND 100"
+dsct read capture.pcap -f "timestamp BETWEEN '2024-01-15T10:30:00Z' AND '2024-01-15T10:31:00Z'"
+dsct read capture.pcap -f "dns AND timestamp >= 1705314600.5"
+```
+
 Sample evenly across the capture:
 
 ```bash
@@ -215,7 +226,7 @@ DSCT_THREADS=4 dsct read capture.pcap -f "arp" --no-limit
 
 `--threads` distributes dissection and filter evaluation across N worker
 threads for file input with a `--filter` (except filters on packet numbers
-only, and runs with `--esp-sa`, which stay sequential).  Dissection is
+and timestamps only, and runs with `--esp-sa`, which stay sequential).  Dissection is
 optimistic: a packet whose dissection does not touch state kept across
 packets keeps its parallel result, and a packet whose dissection does — TCP
 stream tracking and reassembly (`tcp.stream_id`, HTTP, TLS, ...), HTTP/2

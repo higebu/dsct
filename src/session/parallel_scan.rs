@@ -23,7 +23,7 @@ use std::sync::mpsc;
 use packet_dissector::registry::DissectorRegistry;
 use packet_dissector_core::packet::{DissectBuffer, Packet};
 
-use crate::filter_expr::FilterExpr;
+use crate::filter_expr::{FilterExpr, RecordInfo};
 
 use super::filter_bitmap::FilterBitmap;
 use super::state::{CaptureMap, PacketIndex};
@@ -320,7 +320,10 @@ fn worker_thread(ctx: WorkerContext) {
                     }
                     if dissected.is_ok() {
                         let packet = Packet::new(buf, data);
-                        if expr.matches_with_number(&packet, number) {
+                        if expr.matches_record(
+                            &packet,
+                            RecordInfo::new(number, index.timestamp_secs, index.timestamp_usecs),
+                        ) {
                             matches.push(i);
                         }
                     }

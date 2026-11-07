@@ -540,7 +540,7 @@ fn cmd_read(opts: ReadOptions) -> Result<()> {
     // Packet-number-only filters are cheap enough sequentially, and workers
     // carry no ESP Security Associations.
     let parallel_filter = filter_expr.as_ref().filter(|e| {
-        !is_stdin && resolved_threads > 1 && !e.is_packet_number_only() && esp_sa_args.is_empty()
+        !is_stdin && resolved_threads > 1 && !e.is_metadata_only() && esp_sa_args.is_empty()
     });
 
     if let Some(filter) = parallel_filter {

@@ -119,6 +119,143 @@ impl PacketNumberFilter {
     }
 }
 
+/// Filter packets by capture timestamp: inclusive ranges of microseconds
+/// since the Unix epoch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimestampFilter {
+    ranges: Vec<(u64, u64)>,
+}
+
+impl TimestampFilter {
+    /// Create a filter from inclusive ranges of microseconds since the epoch.
+    pub fn from_ranges(ranges: Vec<(u64, u64)>) -> Self {
+        Self { ranges }
+    }
+
+    /// Returns `true` if `timestamp_us` falls within any of the ranges.
+    pub fn contains(&self, timestamp_us: u64) -> bool {
+        self.ranges
+            .iter()
+            .any(|&(lo, hi)| timestamp_us >= lo && timestamp_us <= hi)
+    }
+
+    /// Parse a timestamp value into microseconds since the Unix epoch.
+    ///
+    /// Accepts the form `dsct` prints (RFC 3339 with a `Z` or `±hh:mm`
+    /// offset, e.g. `2024-01-15T10:30:00.123456Z`) or seconds since the
+    /// epoch (`1705314600.123456`), each with at most six fractional digits.
+    pub fn parse_value(s: &str) -> std::result::Result<u64, String> {
+        let s = s.trim();
+        let invalid = || {
+            format!(
+                "invalid timestamp '{s}': expected RFC 3339 (e.g. 2024-01-15T10:30:00.123456Z) \
+                 or seconds since the Unix epoch"
+            )
+        };
+        if s.bytes().next().is_some_and(|b| b.is_ascii_digit()) && !s.contains('-') {
+            let (secs, frac) = s.split_once('.').unwrap_or((s, ""));
+            let secs: u64 = secs.parse().map_err(|_| invalid())?;
+            let usecs = parse_fraction(frac).ok_or_else(invalid)?;
+            return secs
+                .checked_mul(1_000_000)
+                .and_then(|t| t.checked_add(usecs))
+                .ok_or_else(invalid);
+        }
+        parse_rfc3339(s).ok_or_else(invalid)
+    }
+}
+
+/// Parse up to six fractional-second digits into microseconds (`""` = 0).
+fn parse_fraction(frac: &str) -> Option<u64> {
+    if frac.len() > 6 || !frac.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let mut padded = frac.to_string();
+    while padded.len() < 6 {
+        padded.push('0');
+    }
+    padded.parse().ok()
+}
+
+/// Days from 1970-01-01 to the given proleptic Gregorian date (H. Hinnant's
+/// `days_from_civil`).
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let m = i64::from(month);
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Parse `YYYY-MM-DDThh:mm:ss[.ffffff](Z|±hh:mm)` into microseconds since the
+/// Unix epoch; `None` when malformed or before the epoch.
+fn parse_rfc3339(s: &str) -> Option<u64> {
+    let b = s.as_bytes();
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || !matches!(b[10], b'T' | b't') {
+        return None;
+    }
+    if b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| -> Option<u32> {
+        let part = s.get(r)?;
+        part.bytes()
+            .all(|c| c.is_ascii_digit())
+            .then(|| part.parse().ok())?
+    };
+    let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hour, minute, second) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if day == 0 || day > days_in_month || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    let rest = &s[19..];
+    let (frac, zone) = match rest.strip_prefix('.') {
+        Some(r) => {
+            let end = r.find(|c: char| !c.is_ascii_digit()).unwrap_or(r.len());
+            (&r[..end], &r[end..])
+        }
+        None => ("", rest),
+    };
+    if rest.starts_with('.') && frac.is_empty() {
+        return None;
+    }
+    let usecs = parse_fraction(frac)?;
+    let offset_secs: i64 = match zone {
+        "Z" | "z" => 0,
+        _ => {
+            let zb = zone.as_bytes();
+            if zb.len() != 6 || zb[3] != b':' {
+                return None;
+            }
+            let sign = match zb[0] {
+                b'+' => 1,
+                b'-' => -1,
+                _ => return None,
+            };
+            let zh: i64 = zone.get(1..3)?.parse().ok()?;
+            let zm: i64 = zone.get(4..6)?.parse().ok()?;
+            if zh > 23 || zm > 59 {
+                return None;
+            }
+            sign * (zh * 3600 + zm * 60)
+        }
+    };
+    let days = days_from_civil(i64::from(year), month, day);
+    let secs = days * 86_400 + i64::from(hour) * 3600 + i64::from(minute) * 60 + i64::from(second)
+        - offset_secs;
+    let secs = u64::try_from(secs).ok()?;
+    secs.checked_mul(1_000_000)?.checked_add(usecs)
+}
+
 /// Comparison operator for where-clause conditions.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum CompareOp {
