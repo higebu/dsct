@@ -39,7 +39,7 @@ xattr -dr com.apple.quarantine /Applications/dsct.app
 ### Build it yourself
 
 Requirements: macOS 12 or later, the Xcode Command Line Tools
-(`xcode-select --install`), and Rust stable.
+(`xcode-select --install`), and Rust 1.95 or later (`rustup update stable`).
 
 ```bash
 gui/scripts/bundle-macos.sh

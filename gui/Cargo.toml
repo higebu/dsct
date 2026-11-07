@@ -2,6 +2,8 @@
 name = "dsct-gui"
 version = "0.1.0"
 edition = "2024"
+# GPUI calls std::hint::cold_path, stable since Rust 1.95.
+rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 description = "Desktop GUI for dsct built on GPUI"
 publish = false
