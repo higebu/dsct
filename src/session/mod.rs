@@ -19,6 +19,7 @@ pub mod filter_bitmap;
 mod filter_scan;
 pub mod live;
 pub mod loader;
+pub mod merge;
 pub mod ordered_pass;
 pub mod owned_packet;
 mod packet_codec;
