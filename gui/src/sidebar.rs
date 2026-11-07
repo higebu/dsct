@@ -1,5 +1,5 @@
 //! The fields sidebar: the values the displayed packets' fields take,
-//! counted over a sample, with pinned and frequent fields first and every
+//! counted over a sample, with pinned and key fields first and every
 //! field by stack position and protocol. Each value filters for or out,
 //! and each field can become a column or split the chart.
 
@@ -27,7 +27,7 @@ const WIDTH: f32 = 280.;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     Pinned,
-    Frequent,
+    Key,
     ByLayer,
 }
 
@@ -38,6 +38,9 @@ pub struct FieldsPanel {
     /// The counts no longer match the displayed packets or the sample size.
     pub stale: bool,
     pub sample: SampleSize,
+    /// Count over packets spread across the displayed ones rather than the
+    /// first ones.
+    pub spread: bool,
     /// Pinned field paths, in the order they were pinned.
     pub pinned: Vec<String>,
     pub expanded: Option<(Section, String)>,
@@ -53,6 +56,7 @@ impl FieldsPanel {
             stats: None,
             stale: true,
             sample: SampleSize::default(),
+            spread: true,
             pinned: Vec::new(),
             expanded: None,
             toggled_layers: HashSet::new(),
@@ -139,11 +143,12 @@ impl DsctApp {
         cx.notify();
     }
 
-    fn set_sample(&mut self, sample: SampleSize, cx: &mut Context<Self>) {
-        if self.fields.sample == sample {
+    fn set_sample(&mut self, sample: SampleSize, spread: bool, cx: &mut Context<Self>) {
+        if self.fields.sample == sample && self.fields.spread == spread {
             return;
         }
         self.fields.sample = sample;
+        self.fields.spread = spread;
         if let Some(session) = self.session.borrow_mut().as_mut() {
             session.cancel_field_stats();
         }
@@ -568,6 +573,7 @@ impl DsctApp {
 
         let weak = cx.entity().downgrade();
         let current = self.fields.sample;
+        let spread = self.fields.spread;
         let has_pins = !self.fields.pinned.is_empty();
         let customize = Button::new("customize-fields")
             .icon(Icon::new(AssetIcon::SlidersHorizontal))
@@ -582,7 +588,24 @@ impl DsctApp {
                         PopupMenuItem::new(sample.label())
                             .checked(sample == current)
                             .on_click(move |_, _, cx| {
-                                let _ = weak.update(cx, |app, cx| app.set_sample(sample, cx));
+                                let _ =
+                                    weak.update(cx, |app, cx| app.set_sample(sample, spread, cx));
+                            }),
+                    );
+                }
+                menu = menu.separator().item(PopupMenuItem::label("TAKEN FROM"));
+                for (label, choice) in [
+                    ("Across the displayed packets", true),
+                    ("The first displayed packets", false),
+                ] {
+                    let weak = weak.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(label)
+                            .checked(choice == spread && current != SampleSize::All)
+                            .disabled(current == SampleSize::All)
+                            .on_click(move |_, _, cx| {
+                                let _ =
+                                    weak.update(cx, |app, cx| app.set_sample(current, choice, cx));
                             }),
                     );
                 }
@@ -654,17 +677,11 @@ impl DsctApp {
                     list.push(self.field_row(Section::Pinned, field, stats.sampled, &columns, cx));
                 }
 
-                let frequent = fields_view::frequent(stats, &self.fields.pinned, &query);
-                if !frequent.is_empty() {
-                    list.push(section("FREQUENT", None).into_any_element());
-                    for field in frequent {
-                        list.push(self.field_row(
-                            Section::Frequent,
-                            field,
-                            stats.sampled,
-                            &columns,
-                            cx,
-                        ));
+                let key = fields_view::key_fields(stats, &self.fields.pinned, &query);
+                if !key.is_empty() {
+                    list.push(section("KEY FIELDS", None).into_any_element());
+                    for field in key {
+                        list.push(self.field_row(Section::Key, field, stats.sampled, &columns, cx));
                     }
                 }
 

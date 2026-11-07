@@ -298,7 +298,9 @@ impl DsctApp {
         let mut error = None;
         if fields.stale && !session.field_stats_running() {
             fields.stale = false;
-            error = session.start_field_stats(fields.sample.limit()).err();
+            error = session
+                .start_field_stats(fields.sample.sample(fields.spread))
+                .err();
         }
         if timeline.stale && !session.histogram_running() {
             timeline.stale = false;

@@ -8,12 +8,13 @@ dissected in the background, so large files open at once.
 - A dark, editor-style window: title bar with a command palette (⌘K), a
   fields sidebar, and a status bar
 - A fields sidebar: the values each field takes in the displayed packets
-  (counted over the first 5,000 by default), with pinned and frequent
-  fields first and every field by stack position (Application, Transport,
-  Network, Link) and protocol. A value filters for or out, and a field can
+  (counted over 5,000 of them spread across the capture by default), with
+  pinned and key fields (those dsct shows by default) first and every field
+  by stack position (Application, Transport, Network, Link) and protocol. A value filters for or out, and a field can
   become a column or split the chart
 - A chart of the displayed packets over time above the packet list, split
-  by top protocol, by the protocol at one layer, or by a field
+  by top protocol, by the protocol at one layer, or by a field; drag across
+  it to filter to a time range
 - Packet table (virtual scrolling) with a colored mark per protocol,
   filtered with dsct's filter syntax
 - Protocol detail tree and hex dump, linked both ways and operable from the
@@ -74,13 +75,16 @@ feature), so Xcode's Metal toolchain is not needed to build.
 2. ⌘K opens the command palette: type to narrow the actions (↑/↓, Enter,
    Esc), a packet number to jump to it, or any text to apply it as a
    filter.
-3. In the sidebar, click a field (`ipv4.dst` under Frequent) for its top
+3. In the sidebar, click a field (`ipv4.dst` under Key fields) for its top
    values: the magnifier with + narrows the filter to a value, the one
    with − excludes it. **Add as
    column** shows the field in the packet list; **Split chart by** colors
    the chart by its values (or pick a split from the menu beside "split
    by"). Pin a field to keep it at the top; the sliders menu at the top
-   of the sidebar sets how many packets are counted. Click a bar of the chart to go to its first packet.
+   of the sidebar sets how many packets are counted, and whether they are
+   spread across the displayed packets or the first ones. Click a bar of
+   the chart to go to its first packet, or drag across bars and click
+   **Filter to this range**.
    Type a filter yourself: "Enter to apply" shows until you press Enter,
    and an invalid one outlines the input in red with the error under it.
 4. Each row's protocol has its own color (TCP, UDP, DNS, HTTP, …), and the
@@ -99,9 +103,9 @@ feature), so Xcode's Metal toolchain is not needed to build.
 7. Once a capture is loaded and nothing runs, the app stays idle (no CPU
    use in Activity Monitor).
 
-The sidebar counts values over a sample (the first 5,000 displayed packets
-unless set otherwise), so it is quick on any capture; the chart dissects
-every displayed packet in the background.
+The sidebar counts values over a sample (5,000 displayed packets unless set
+otherwise), so it is quick on any capture; the chart dissects every
+displayed packet in the background.
 
 ## Linux
 

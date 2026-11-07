@@ -1,12 +1,12 @@
 //! What the fields sidebar lists, worked out from the sampled field stats:
-//! the pinned fields, the frequent ones, and every field grouped by
+//! the pinned fields, the key ones, and every field grouped by
 //! protocol and by the protocol's stack position.
 
-use dsct::session::fields::{FieldKind, FieldStats, FieldSummary, ValueCount, shown_value};
+use dsct::session::fields::{FieldKind, FieldStats, FieldSummary, Sample, ValueCount, shown_value};
 use packet_dissector_core::dissector::ProtocolLayer;
 
-/// Fields listed under "Frequent" at most.
-pub const FREQUENT: usize = 5;
+/// Fields listed under "Key fields" at most.
+pub const KEY_FIELDS: usize = 8;
 
 /// Top values shown for an expanded field at most.
 pub const TOP_VALUES: usize = 5;
@@ -120,33 +120,36 @@ pub fn by_layer<'a>(stats: &'a FieldStats, query: &str) -> Vec<LayerGroup<'a>> {
     groups
 }
 
-/// The fields worth a look first: not pinned, matching `query`, with at
-/// least two values that mostly repeat (neither constant nor nearly
-/// unique per packet, like a checksum), present in the most packets; among
-/// those, the ones with fewer values first.
-pub fn frequent<'a>(
+/// The fields worth a look first: those dsct shows by default
+/// ([`FieldSummary::key`]), not pinned, matching `query`, and not nearly
+/// unique per packet (sequence numbers, IDs). Fields with several values
+/// come first, then the constant ones; each group runs from the
+/// application layer down, in the order the fields appeared.
+pub fn key_fields<'a>(
     stats: &'a FieldStats,
     pinned: &[String],
     query: &str,
 ) -> Vec<&'a FieldSummary> {
+    let layer_of = |protocol: &str| {
+        stats
+            .protocols
+            .iter()
+            .find(|p| p.name == protocol)
+            .and_then(|p| p.layer)
+    };
     let mut fields: Vec<&FieldSummary> = stats
         .fields
         .iter()
         .filter(|f| {
-            f.distinct >= 2
-                && f.top.first().is_some_and(|v| v.packets >= 2)
-                && f.distinct as u64 * 2 <= f.packets
+            f.key
+                && f.distinct as u64 * 2 <= f.packets.max(2)
                 && !pinned.contains(&f.path)
                 && matches(&f.path, query)
         })
         .collect();
     // Stable: equal fields keep the order they appeared in.
-    fields.sort_by(|a, b| {
-        b.packets
-            .cmp(&a.packets)
-            .then_with(|| a.distinct.cmp(&b.distinct))
-    });
-    fields.truncate(FREQUENT);
+    fields.sort_by_key(|f| (f.distinct < 2, layer_rank(layer_of(f.protocol))));
+    fields.truncate(KEY_FIELDS);
     fields
 }
 
@@ -208,28 +211,38 @@ pub fn percent_text(count: u64, total: u64) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SampleSize {
     #[default]
-    First5k,
-    First50k,
+    Small,
+    Large,
     All,
 }
 
 impl SampleSize {
-    pub const ALL: [SampleSize; 3] = [SampleSize::First5k, SampleSize::First50k, SampleSize::All];
+    pub const ALL: [SampleSize; 3] = [SampleSize::Small, SampleSize::Large, SampleSize::All];
 
     /// Packets to sample at most (`None` = every displayed packet).
     pub fn limit(self) -> Option<usize> {
         match self {
-            SampleSize::First5k => Some(5_000),
-            SampleSize::First50k => Some(50_000),
+            SampleSize::Small => Some(5_000),
+            SampleSize::Large => Some(50_000),
             SampleSize::All => None,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            SampleSize::First5k => "First 5,000 displayed packets",
-            SampleSize::First50k => "First 50,000 displayed packets",
+            SampleSize::Small => "5,000 packets",
+            SampleSize::Large => "50,000 packets",
             SampleSize::All => "All displayed packets",
+        }
+    }
+
+    /// The sample to count over: `spread` takes packets from the whole
+    /// range instead of the first ones.
+    pub fn sample(self, spread: bool) -> Sample {
+        match (self.limit(), spread) {
+            (None, _) => Sample::All,
+            (Some(n), true) => Sample::Spread(n),
+            (Some(n), false) => Sample::First(n),
         }
     }
 }
@@ -237,8 +250,12 @@ impl SampleSize {
 /// The note under the search box: what the counts cover.
 pub fn sample_note(stats: &FieldStats) -> String {
     if stats.sampled < stats.displayed {
+        let how = match stats.sample {
+            Sample::Spread(_) => "spread across",
+            _ => "from the start of",
+        };
         format!(
-            "Counted over the first {} of {} displayed packets",
+            "Counted over {} packets {how} the {} displayed",
             grouped(stats.sampled),
             grouped(stats.displayed)
         )
@@ -262,8 +279,17 @@ mod tests {
         packets: u64,
         values: &[(&str, u64)],
     ) -> FieldSummary {
+        const KEYS: [&str; 6] = [
+            "ethernet.src",
+            "ipv4.ttl",
+            "ipv4.dst",
+            "udp.dst_port",
+            "dns.qname",
+            "tcp.flags",
+        ];
         FieldSummary {
             path: path.to_string(),
+            key: KEYS.contains(&path),
             protocol,
             kind: FieldKind::Number,
             packets,
@@ -287,6 +313,7 @@ mod tests {
             packets,
         };
         FieldStats {
+            sample: Sample::First(10),
             sampled: 10,
             displayed: 40,
             protocols: vec![
@@ -369,18 +396,46 @@ mod tests {
     }
 
     #[test]
-    fn frequent_fields_vary_and_repeat() {
+    fn key_fields_vary_first_and_run_down_the_stack() {
         let stats = stats();
-        let paths: Vec<&str> = frequent(&stats, &[], "")
+        let paths = |pinned: &[String], query: &str| -> Vec<String> {
+            key_fields(&stats, pinned, query)
+                .iter()
+                .map(|f| f.path.clone())
+                .collect()
+        };
+        // Fields with several values, application first; then the constant
+        // ones. ipv4.id and ipv4.checksum are not key fields.
+        assert_eq!(
+            paths(&[], ""),
+            [
+                "dns.qname",
+                "tcp.flags",
+                "ipv4.dst",
+                "udp.dst_port",
+                "ipv4.ttl",
+                "ethernet.src"
+            ]
+        );
+        assert_eq!(paths(&["dns.qname".to_string()], "")[0], "tcp.flags");
+        assert_eq!(paths(&[], "flags"), ["tcp.flags"]);
+
+        // A key field with a new value in nearly every packet is left out.
+        let mut unique = stats.clone();
+        let i = unique
+            .fields
             .iter()
-            .map(|f| f.path.as_str())
+            .position(|f| f.path == "dns.qname")
+            .unwrap();
+        unique.fields[i].top = (0..6)
+            .map(|i| ValueCount {
+                value: i.to_string(),
+                label: None,
+                packets: 1,
+            })
             .collect();
-        // Constant (ttl, port, mac) and mostly unique (id, checksum) fields
-        // are left out.
-        assert_eq!(paths, ["ipv4.dst", "dns.qname", "tcp.flags"]);
-        let pinned = vec!["ipv4.dst".to_string()];
-        assert_eq!(frequent(&stats, &pinned, "")[0].path, "dns.qname");
-        assert_eq!(frequent(&stats, &[], "flags").len(), 1);
+        unique.fields[i].distinct = 6;
+        assert!(key_fields(&unique, &[], "qname").is_empty());
     }
 
     #[test]
@@ -407,8 +462,22 @@ mod tests {
         assert_eq!(share(1, 0), 0.);
         assert_eq!(
             sample_note(&stats),
-            "Counted over the first 10 of 40 displayed packets"
+            "Counted over 10 packets from the start of the 40 displayed"
         );
+        let spread = FieldStats {
+            sample: Sample::Spread(10),
+            ..stats.clone()
+        };
+        assert_eq!(
+            sample_note(&spread),
+            "Counted over 10 packets spread across the 40 displayed"
+        );
+        let all = FieldStats {
+            sample: Sample::All,
+            sampled: 40,
+            ..stats
+        };
+        assert_eq!(sample_note(&all), "Counted over all 40 displayed packets");
     }
 
     #[test]
@@ -421,7 +490,8 @@ mod tests {
         assert!(!layer_open_by_default(Some(ProtocolLayer::Link)));
         assert_eq!(kind_badge(FieldKind::Address), "addr");
         assert!(matches("ipv4.src", "V4.S"));
-        assert_eq!(SampleSize::First5k.limit(), Some(5_000));
-        assert_eq!(SampleSize::All.limit(), None);
+        assert_eq!(SampleSize::Small.sample(true), Sample::Spread(5_000));
+        assert_eq!(SampleSize::Large.sample(false), Sample::First(50_000));
+        assert_eq!(SampleSize::All.sample(true), Sample::All);
     }
 }
