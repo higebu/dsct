@@ -62,30 +62,12 @@ feature), so Xcode's Metal toolchain is not needed to build.
 
 ### What to check
 
-1. Without a file, the window shows "Open a capture file" with an
-   **Open…** button. Open a capture (or drop one on the window): the status
-   bar shows indexing progress, then the first packet is selected, the
-   sidebar lists the fields, and the chart above the packets fills in.
-2. ⌘K opens the command palette: type to narrow the actions (↑/↓, Enter,
-   Esc), a packet number to jump to it, or any text to apply it as a
-   filter.
-3. Filter from a value in the sidebar, the detail tree or the chart. Type
-   a filter yourself: "Enter to apply" shows until you press Enter, and an
-   invalid one outlines the input in red with the error under it.
-4. Each row's protocol has its own color (TCP, UDP, DNS, HTTP, …), and the
-   selected row is marked in blue. **Time** (⌘T) switches between seconds
-   since the first packet, since the previous one, and the date and time.
-5. Keyboard only: ↑/↓ in the table, then Tab to **Details** (blue outline):
-   ↑/↓ move, → expands, ← collapses or goes to the parent, Enter toggles.
-   Layers show a one-line summary (`10.0.0.1 → 93.184.216.34`) and values
-   are colored by type. Tab again to **Bytes**: arrows move a cursor, and
-   the field under it is selected in the tree. ⌘1/⌘2/⌘3 jump to each pane.
-6. **Follow Stream** (⇧⌘F) and **Stats** (⇧⌘S) open tabs in the bottom dock
-   (⌘J). Stream lines are marked → (client to server, orange) and ←
-   (server to client, blue); Stats shows tables. The copy button copies the
-   tab as text; × or Esc closes it.
-7. Once a capture is loaded and nothing runs, the app stays idle (no CPU
-   use in Activity Monitor).
+1. Open a capture (**Open…**, or drop it on the window): packets, the
+   fields sidebar and the chart fill in.
+2. Filter from the filter bar, the command palette (⌘K), a value in the
+   sidebar or detail tree, or a range of the chart.
+3. Follow Stream (⇧⌘F) and Stats (⇧⌘S) open in the bottom dock.
+4. Once nothing runs, the app stays idle (no CPU use).
 
 ## Linux
 
