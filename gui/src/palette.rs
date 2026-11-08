@@ -31,6 +31,8 @@ pub enum Command {
     DecodeAs,
     Sequence,
     Mark,
+    ToggleBytes,
+    DetailsSide,
     ExportDisplayed,
     ExportMarked,
 }
@@ -85,6 +87,18 @@ fn commands(has_session: bool) -> Vec<(Command, &'static str, &'static str, Opti
                 Command::ExportMarked,
                 "File",
                 "Export marked packets…",
+                None,
+            ),
+            (
+                Command::ToggleBytes,
+                "View",
+                "Show or hide the Bytes pane",
+                None,
+            ),
+            (
+                Command::DetailsSide,
+                "View",
+                "Put the details to the right of the packets, or below",
                 None,
             ),
             (

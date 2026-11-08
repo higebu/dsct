@@ -11,8 +11,8 @@ dissected in the background, so large files open at once.
 - Chart of the displayed packets over time
 - Packet table (virtual scrolling) with a colored mark per protocol,
   filtered with dsct's filter syntax
-- Protocol detail tree and hex dump, linked both ways and operable from the
-  keyboard
+- Protocol detail tree and hex dump (opened when needed), linked both ways
+  and operable from the keyboard, below the packet list or to its right
 - Follow Stream (TCP/UDP/SCTP), and Stats for the displayed packets:
   requests and their results, and conversations
 - Selecting a packet dims the packets outside its call, stream or host pair

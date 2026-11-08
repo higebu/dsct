@@ -9,7 +9,9 @@ use dsct::session::state::TreeNode;
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -297,7 +299,39 @@ impl DsctApp {
     ) -> impl IntoElement + use<> {
         let count = self.tree.visible.len();
         let focused = self.pane_focused(Pane::Details, window, cx);
-        let header = self.pane_header("Details", focused, self.selection_path());
+        let (bytes_open, right) = (self.layout.bytes_open, self.layout.details_right);
+        let header = self
+            .pane_header("Details", focused, self.selection_path())
+            .child(div().flex_1())
+            .child(
+                Button::new("toggle-bytes")
+                    .icon(Icon::new(AssetIcon::Binary))
+                    .xsmall()
+                    .ghost()
+                    .selected(bytes_open)
+                    .tooltip(if bytes_open {
+                        "Hide the bytes"
+                    } else {
+                        "Show the bytes"
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_bytes(cx))),
+            )
+            .child(
+                Button::new("details-side")
+                    .icon(Icon::new(if right {
+                        AssetIcon::PanelBottom
+                    } else {
+                        AssetIcon::PanelRight
+                    }))
+                    .xsmall()
+                    .ghost()
+                    .tooltip(if right {
+                        "Put the details below the packets"
+                    } else {
+                        "Put the details to the right of the packets"
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_details_side(cx))),
+            );
         v_flex()
             .size_full()
             .border_1()
@@ -540,7 +574,17 @@ impl DsctApp {
                 range.len()
             ));
         }
-        let header = self.pane_header("Bytes", focused, detail);
+        let header = self
+            .pane_header("Bytes", focused, detail)
+            .child(div().flex_1())
+            .child(
+                Button::new("close-bytes")
+                    .icon(IconName::Close)
+                    .xsmall()
+                    .ghost()
+                    .tooltip("Hide the bytes")
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_bytes(cx))),
+            );
         let mono = cx.theme().mono_font_family.clone();
         v_flex()
             .size_full()

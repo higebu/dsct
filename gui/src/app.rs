@@ -12,8 +12,8 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::table::TableState;
 use gpui_kit::component::{
-    Disableable as _, Icon, IconName, Sizable as _, TitleBar, h_flex, h_resizable, resizable_panel,
-    v_flex, v_resizable,
+    Disableable as _, Icon, IconName, ResizableState, Sizable as _, TitleBar, h_flex, h_resizable,
+    resizable_panel, v_flex, v_resizable,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -21,6 +21,7 @@ use gpui_kit::*;
 use crate::bottom::{BottomPanel, StreamView};
 use crate::decode_as::{DecodeAsPanel, Rule};
 use crate::format::{self, TimeFormat};
+use crate::layout::Layout;
 use crate::marks::ExportSet;
 use crate::packet_table::PacketTable;
 use crate::palette::{Command, PaletteState};
@@ -152,6 +153,10 @@ pub struct DsctApp {
     pub(crate) decode_panel: Option<DecodeAsPanel>,
     /// Highlighting the sequence of the selected packet.
     pub(crate) sequence: SequenceView,
+    /// Where the panes go and their sizes.
+    pub(crate) layout: Layout,
+    /// Bumped on every layout change, so only the last one is saved.
+    pub(crate) layout_generation: u64,
     /// Protocols Decode As can choose (registry names), read when the
     /// panel first opens.
     pub(crate) protocols: Vec<String>,
@@ -208,6 +213,8 @@ impl DsctApp {
             decode_rules: Vec::new(),
             decode_panel: None,
             sequence: SequenceView::default(),
+            layout: Layout::load(),
+            layout_generation: 0,
             protocols: Vec::new(),
             _subscriptions: subscriptions,
         };
@@ -628,6 +635,8 @@ impl DsctApp {
             Command::Filter(text) => self.set_filter(&text, window, cx),
             Command::DecodeAs => self.open_decode_as(None, window, cx),
             Command::Mark => self.toggle_mark(cx),
+            Command::ToggleBytes => self.toggle_bytes(cx),
+            Command::DetailsSide => self.toggle_details_side(cx),
             Command::ExportDisplayed => self.export_packets(ExportSet::Displayed, window, cx),
             Command::ExportMarked => self.export_packets(ExportSet::Marked, window, cx),
             Command::Sequence => {
@@ -989,18 +998,62 @@ impl Render for DsctApp {
             let hex = self.render_hex(window, cx);
             let bottom = self.render_bottom(cx);
             let tables = self.render_tables(table_border, cx);
-            let mut panes = v_resizable("main")
-                .child(resizable_panel().size(px(360.)).child(tables))
-                .child(
-                    resizable_panel().child(
-                        h_resizable("details")
-                            .child(resizable_panel().size(px(420.)).child(tree))
-                            .child(resizable_panel().child(hex)),
-                    ),
-                );
-            if let Some(bottom) = bottom {
-                panes = panes.child(resizable_panel().size(px(300.)).child(bottom));
-            }
+            let weak = cx.entity().downgrade();
+            // The packet list's height, or the details' width when they are
+            // on the right, as the user drags it.
+            let on_resize = move |panel: usize| {
+                let weak = weak.clone();
+                move |state: &Entity<ResizableState>, _: &mut Window, cx: &mut App| {
+                    let Some(size) = state.read(cx).sizes().get(panel).copied() else {
+                        return;
+                    };
+                    let _ = weak.update(cx, |app, cx| app.layout_resized(f32::from(size), cx));
+                }
+            };
+            let panes = if self.layout.details_right {
+                let mut left = v_resizable("main-left").child(resizable_panel().child(tables));
+                if let Some(bottom) = bottom {
+                    left = left.child(resizable_panel().size(px(300.)).child(bottom));
+                }
+                let details = if self.layout.bytes_open {
+                    v_resizable("details-right")
+                        .child(resizable_panel().child(tree))
+                        .child(resizable_panel().size(px(240.)).child(hex))
+                        .into_any_element()
+                } else {
+                    tree.into_any_element()
+                };
+                h_resizable("main-h")
+                    .on_resize(on_resize(1))
+                    .child(resizable_panel().child(left))
+                    .child(
+                        resizable_panel()
+                            .size(px(self.layout.details_size))
+                            .child(details),
+                    )
+                    .into_any_element()
+            } else {
+                let details = if self.layout.bytes_open {
+                    h_resizable("details")
+                        .child(resizable_panel().size(px(420.)).child(tree))
+                        .child(resizable_panel().child(hex))
+                        .into_any_element()
+                } else {
+                    tree.into_any_element()
+                };
+                let mut panes = v_resizable("main")
+                    .on_resize(on_resize(0))
+                    .child(
+                        resizable_panel()
+                            .size(px(self.layout.list_size))
+                            .child(tables),
+                    )
+                    .child(resizable_panel().child(details));
+                if let Some(bottom) = bottom {
+                    panes = panes.child(resizable_panel().size(px(300.)).child(bottom));
+                }
+                panes.into_any_element()
+            };
             h_flex()
                 .size_full()
                 .children(sidebar)
@@ -1074,6 +1127,9 @@ impl Render for DsctApp {
                 this.focus_pane(Pane::Details, window, cx)
             }))
             .on_action(cx.listener(|this, _: &FocusBytes, window, cx| {
+                if !this.layout.bytes_open {
+                    this.toggle_bytes(cx);
+                }
                 this.focus_pane(Pane::Bytes, window, cx)
             }))
             .on_action(cx.listener(|this, _: &CloseBottom, _, cx| {
