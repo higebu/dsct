@@ -313,10 +313,6 @@ pub struct FieldSummary {
     pub distinct_capped: bool,
     /// The most frequent values, most frequent first.
     pub top: Vec<ValueCount>,
-    /// Sampled packets with several values of the field: a repeated field
-    /// (each header of a message) has them in most packets, whose values
-    /// then do not split packets into groups.
-    pub multi_valued: u64,
 }
 
 /// How many sampled packets had a protocol.
@@ -408,20 +404,6 @@ struct FieldAcc {
     last_packet: u64,
     values: HashMap<String, ValueAcc>,
     capped: bool,
-    multi_valued: u64,
-    /// The last packet counted in `multi_valued`.
-    last_multi: u64,
-}
-
-impl FieldAcc {
-    /// Note a new value of the field in packet `n`; `seen` when the packet
-    /// already had another one.
-    fn note_value(&mut self, seen: bool, n: u64) {
-        if seen && self.last_multi != n {
-            self.last_multi = n;
-            self.multi_valued += 1;
-        }
-    }
 }
 
 /// Counts field values packet by packet.
@@ -495,8 +477,6 @@ impl FieldStatsCollector {
                         last_packet: 0,
                         values: HashMap::new(),
                         capped: false,
-                        multi_valued: 0,
-                        last_multi: 0,
                     });
                     self.field_index
                         .insert(v.path.to_string(), self.fields.len() - 1);
@@ -504,9 +484,7 @@ impl FieldStatsCollector {
                 }
             };
             let field = &mut self.fields[i];
-            // Whether the packet already had a value of the field.
-            let seen = field.last_packet == n;
-            if !seen {
+            if field.last_packet != n {
                 field.last_packet = n;
                 field.packets += 1;
             }
@@ -516,15 +494,10 @@ impl FieldStatsCollector {
                     if acc.last_packet != n {
                         acc.last_packet = n;
                         acc.packets += 1;
-                        field.note_value(seen, n);
                     }
                 }
-                None if full => {
-                    field.capped = true;
-                    field.note_value(seen, n);
-                }
+                None if full => field.capped = true,
                 None => {
-                    field.note_value(seen, n);
                     field.values.insert(
                         v.value,
                         ValueAcc {
@@ -602,7 +575,6 @@ impl FieldStatsCollector {
                     distinct,
                     distinct_capped: acc.capped,
                     top,
-                    multi_valued: acc.multi_valued,
                 }
             })
             .collect();
@@ -1043,25 +1015,6 @@ mod tests {
         assert_eq!(key("ipv4.checksum"), Some(false));
         assert_eq!(key("dns.questions.name"), Some(true));
         assert_eq!(key("udp.length"), Some(false));
-    }
-
-    #[test]
-    fn collector_marks_fields_with_several_values_in_a_packet() {
-        let registry = DissectorRegistry::default();
-        let sip = test_fixtures::sip_options_udp_frame();
-        let mut collector = FieldStatsCollector::new(protocol_layers(&registry));
-        for _ in 0..2 {
-            let buf = dissect(&registry, &sip);
-            collector.add(&Packet::new(&buf, &sip));
-        }
-        let stats = collector.finish(Sample::All, 2);
-        // Each header is one value of `sip.headers.name`.
-        let names = stats.field("sip.headers.name").unwrap();
-        assert_eq!(names.multi_valued, 2);
-        assert_eq!((names.packets, names.top[0].packets), (2, 2));
-        // One method per request, the same in both packets.
-        assert_eq!(stats.field("sip.method").unwrap().multi_valued, 0);
-        assert_eq!(stats.field("ipv4.src").unwrap().multi_valued, 0);
     }
 
     #[test]

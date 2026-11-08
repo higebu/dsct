@@ -167,27 +167,6 @@ pub(crate) fn dns_edns_query_frame() -> Vec<u8> {
     ethernet_ipv4_frame(17, &udp)
 }
 
-/// Ethernet / IPv4 / UDP frame carrying a SIP OPTIONS request (RFC 3261,
-/// Section 7) to UDP port 5060, with several header fields, so the SIP
-/// layer holds repeated `headers` entries.
-pub(crate) fn sip_options_udp_frame() -> Vec<u8> {
-    let sip: &[u8] = b"OPTIONS sip:bob@example.com SIP/2.0\r\n\
-Via: SIP/2.0/UDP 10.0.0.1:5060\r\n\
-From: <sip:alice@example.com>;tag=1\r\n\
-To: <sip:bob@example.com>\r\n\
-Call-ID: fixture-1\r\n\
-CSeq: 1 OPTIONS\r\n\
-Content-Length: 0\r\n\r\n";
-    let mut udp = Vec::new();
-    udp.extend_from_slice(&5060u16.to_be_bytes()); // src port
-    udp.extend_from_slice(&5060u16.to_be_bytes()); // dst port (SIP)
-    udp.extend_from_slice(&(8 + sip.len() as u16).to_be_bytes()); // length
-    udp.extend_from_slice(&0u16.to_be_bytes()); // checksum (unchecked)
-    udp.extend_from_slice(sip);
-
-    ethernet_ipv4_frame(17, &udp)
-}
-
 /// Ethernet + IPv4 frame carrying `payload` as IP protocol `protocol`,
 /// from 10.0.0.1 to 10.0.0.2 with an unchecked (zero) header checksum.
 fn ethernet_ipv4_frame(protocol: u8, payload: &[u8]) -> Vec<u8> {
