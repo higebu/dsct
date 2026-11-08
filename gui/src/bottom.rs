@@ -4,6 +4,7 @@ use std::ops::Range;
 
 use dsct::session::StatsReport;
 use dsct::session::responses::{self, Responses};
+use dsct::session::sequence::SequenceUnit;
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{
@@ -402,7 +403,7 @@ impl DsctApp {
                     .child(num(80., format!("{:.3}", c.duration_secs())))
                     .child(
                         h_flex()
-                            .w(px(90.))
+                            .w(px(110.))
                             .flex_shrink_0()
                             .justify_end()
                             .child(
@@ -413,6 +414,21 @@ impl DsctApp {
                                 )
                                 .on_click(cx.listener(
                                     move |this, _, window, cx| this.set_filter(&filter, window, cx),
+                                )),
+                            )
+                            .child(
+                                icon_button(
+                                    "conv-highlight",
+                                    AssetIcon::Rows3,
+                                    "Highlight this conversation in the packet list",
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.sequence.unit = SequenceUnit::Stream;
+                                        this.sequence.on = true;
+                                        this.go_to_packet(first, cx);
+                                        this.update_sequence(cx);
+                                    },
                                 )),
                             )
                             .child(

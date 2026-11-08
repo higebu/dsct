@@ -23,6 +23,7 @@ use crate::decode_as::{DecodeAsPanel, Rule};
 use crate::format::{self, TimeFormat};
 use crate::packet_table::PacketTable;
 use crate::palette::{Command, PaletteState};
+use crate::sequence::SequenceView;
 use crate::sidebar::FieldsPanel;
 use crate::tabs::Slot;
 use crate::timeline::{BUCKETS, Timeline};
@@ -148,6 +149,8 @@ pub struct DsctApp {
     pub(crate) decode_rules: Vec<Rule>,
     /// The open Decode As panel.
     pub(crate) decode_panel: Option<DecodeAsPanel>,
+    /// Highlighting the sequence of the selected packet.
+    pub(crate) sequence: SequenceView,
     /// Protocols Decode As can choose (registry names), read when the
     /// panel first opens.
     pub(crate) protocols: Vec<String>,
@@ -203,6 +206,7 @@ impl DsctApp {
             merged_file: None,
             decode_rules: Vec::new(),
             decode_panel: None,
+            sequence: SequenceView::default(),
             protocols: Vec::new(),
             _subscriptions: subscriptions,
         };
@@ -396,10 +400,15 @@ impl DsctApp {
             changed = true;
         }
 
+        let mut sequence_changed = false;
+        if !matches!(session.sequence_tick(), Tick::Idle) {
+            sequence_changed = true;
+        }
         if reload {
             session.load_packet(self.selected_row.unwrap_or(0));
             self.tree.reset(session);
         }
+        let displayed = session.displayed_count();
         let busy = session.is_indexing()
             || session.ordered_needs_tick()
             || session.filter_running()
@@ -407,6 +416,7 @@ impl DsctApp {
             || session.stats_running()
             || session.field_stats_running()
             || session.histogram_running()
+            || session.sequence().is_some_and(|s| !s.complete(displayed))
             // Field jobs wait for indexing or a filter scan to end.
             || self.fields.stale
             || self.timeline.stale;
@@ -421,6 +431,12 @@ impl DsctApp {
 
         if rows_changed || reload {
             self.sync_table_selection(cx);
+        }
+        if reload && self.sequence.keys.is_none() {
+            // The selected packet's keys came with the in-order pass.
+            self.update_sequence(cx);
+        } else if sequence_changed {
+            self.refresh_table(cx);
         }
         if panel_opened && let Some(row) = self.selected_row {
             // Keep the selected packet in view above the panel.
@@ -462,6 +478,7 @@ impl DsctApp {
         }
         drop(guard);
         self.update_link(cx);
+        self.update_sequence(cx);
         // A placeholder waits for the in-order pass.
         self.ensure_ticking(cx);
         cx.notify();
@@ -598,6 +615,10 @@ impl DsctApp {
             Command::GoTo(number) => self.go_to_packet(number, cx),
             Command::Filter(text) => self.set_filter(&text, window, cx),
             Command::DecodeAs => self.open_decode_as(None, window, cx),
+            Command::Sequence => {
+                let on = !self.sequence.on;
+                self.set_sequence_on(on, cx);
+            }
         }
     }
 
@@ -811,6 +832,7 @@ impl DsctApp {
                     .text_color(theme::red())
                     .child(format!("Filter error: {msg}"))
             }))
+            .children(self.render_sequence_bar(cx))
     }
 
     /// Shown instead of the panes until a capture is open.

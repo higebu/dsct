@@ -239,8 +239,20 @@ impl TableDelegate for PacketTable {
     ) -> Stateful<Div> {
         let selected = self.selected == Some(row_ix);
         let linked = self.linked == Some(row_ix);
+        // Outside the highlighted sequence (once its row was checked).
+        let dimmed = !selected
+            && self.session.borrow().as_ref().is_some_and(|s| {
+                let Some(scan) = s.sequence() else {
+                    return false;
+                };
+                s.filtered
+                    .select(row_ix)
+                    .and_then(|pkt_idx| scan.contains(row_ix, pkt_idx))
+                    == Some(false)
+            });
         div()
             .id(("row", row_ix))
+            .when(dimmed, |row| row.opacity(0.38))
             .border_l_2()
             .border_color(if selected {
                 theme::accent()

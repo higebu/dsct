@@ -9,6 +9,7 @@ mod format;
 mod packet_table;
 mod palette;
 mod panes;
+mod sequence;
 mod sidebar;
 mod summary;
 mod tabs;

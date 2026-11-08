@@ -29,6 +29,7 @@ pub enum Command {
     GoTo(u64),
     Filter(String),
     DecodeAs,
+    Sequence,
 }
 
 /// One palette row.
@@ -64,6 +65,12 @@ fn commands(has_session: bool) -> Vec<(Command, &'static str, &'static str, Opti
                 "Stats",
                 "Show statistics of the displayed packets",
                 Some(crate::shortcut_shift("S")),
+            ),
+            (
+                Command::Sequence,
+                "View",
+                "Highlight the sequence of the selected packet (on/off)",
+                None,
             ),
             (
                 Command::DecodeAs,
