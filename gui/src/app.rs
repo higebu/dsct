@@ -524,7 +524,7 @@ impl DsctApp {
         self.submit_filter(text, window, cx);
     }
 
-    fn follow_stream(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn follow_stream(&mut self, cx: &mut Context<Self>) {
         let started = self
             .session
             .borrow_mut()

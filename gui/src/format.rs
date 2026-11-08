@@ -244,25 +244,16 @@ pub fn stream_text(lines: &[(String, bool)]) -> String {
     text
 }
 
-/// Protocol counts as `(name, packets, share of total)`, most packets first
-/// (ties by name, so the order is stable).
-pub fn protocol_shares(
-    protocols: &std::collections::HashMap<String, u64>,
-    total: u64,
-) -> Vec<(String, u64, f64)> {
-    let mut rows: Vec<(String, u64, f64)> = protocols
-        .iter()
-        .map(|(name, &count)| {
-            let share = if total == 0 {
-                0.0
-            } else {
-                count as f64 / total as f64
-            };
-            (name.clone(), count, share)
-        })
-        .collect();
-    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    rows
+/// A duration in seconds, in µs, ms or s by size (`"812 µs"`,
+/// `"12.4 ms"`, `"1.001 s"`).
+pub fn duration(secs: f64) -> String {
+    if secs < 1e-3 {
+        format!("{:.0} µs", secs * 1e6)
+    } else if secs < 1.0 {
+        format!("{:.1} ms", secs * 1e3)
+    } else {
+        format!("{secs:.3} s")
+    }
 }
 
 /// Progress as a whole percentage, for the status bar.
@@ -388,17 +379,10 @@ mod tests {
     }
 
     #[test]
-    fn protocol_shares_sort_by_count_then_name() {
-        let protocols = std::collections::HashMap::from([
-            ("UDP".to_string(), 40),
-            ("TCP".to_string(), 6),
-            ("DNS".to_string(), 40),
-        ]);
-        let rows = protocol_shares(&protocols, 46);
-        let names: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
-        assert_eq!(names, ["DNS", "UDP", "TCP"]);
-        assert!((rows[2].2 - 6.0 / 46.0).abs() < 1e-9);
-        assert_eq!(protocol_shares(&protocols, 0)[0].2, 0.0);
+    fn durations_pick_a_unit_by_size() {
+        assert_eq!(duration(0.000_812), "812 µs");
+        assert_eq!(duration(0.012_43), "12.4 ms");
+        assert_eq!(duration(1.001), "1.001 s");
     }
 
     #[test]

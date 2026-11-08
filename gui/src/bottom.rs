@@ -2,17 +2,27 @@
 
 use std::ops::Range;
 
-use dsct::stats::StatsOutput;
+use dsct::session::StatsReport;
+use dsct::session::responses::{self, Responses};
+use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::DsctApp;
-use crate::{format, theme};
+use crate::{fields_view, format, theme};
 
-/// Number of top talkers listed.
-const TOP_TALKERS: usize = 10;
+/// Conversations listed at most.
+const MAX_CONVERSATIONS: usize = 200;
+
+/// Collected stats, with the requests and responses read from them.
+pub struct StatsView {
+    pub report: StatsReport,
+    pub responses: Vec<Responses>,
+}
 
 /// A collected stream: title and lines, `true` for client → server.
 pub struct StreamView {
@@ -34,7 +44,7 @@ pub struct BottomPanel {
     pub open: bool,
     pub tab: BottomTab,
     pub stream: Option<StreamView>,
-    pub stats: Option<StatsOutput>,
+    pub stats: Option<StatsView>,
 }
 
 impl BottomPanel {
@@ -46,8 +56,11 @@ impl BottomPanel {
     }
 
     /// Show newly collected stats.
-    pub fn show_stats(&mut self, stats: StatsOutput) {
-        self.stats = Some(stats);
+    pub fn show_stats(&mut self, report: StatsReport) {
+        self.stats = Some(StatsView {
+            responses: responses::responses(&report.output),
+            report,
+        });
         self.tab = BottomTab::Stats;
         self.open = true;
     }
@@ -66,7 +79,7 @@ impl BottomPanel {
             BottomTab::Stats => self
                 .stats
                 .as_ref()
-                .and_then(|s| serde_json::to_string_pretty(s).ok()),
+                .and_then(|s| serde_json::to_string_pretty(&s.report.output).ok()),
         }
     }
 }
@@ -221,19 +234,23 @@ impl DsctApp {
 
     fn render_stats(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = cx.theme();
-        let (muted, border, bar) = (
-            theme.muted_foreground,
-            theme.border,
-            theme.blue.opacity(0.35),
-        );
+        let (muted, border) = (theme.muted_foreground, theme.border);
         let mono = theme.mono_font_family.clone();
         let Some(stats) = self.bottom.stats.as_ref() else {
             return div().id("stats");
         };
+        let output = &stats.report.output;
+        // Conversation start times count from the capture's first packet.
+        let t0 = self
+            .session
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.packet_time_us(0))
+            .unwrap_or(0);
 
-        let mut summary = vec![format!("{} packets", stats.total_packets)];
-        summary.push(format!("{:.3} s", stats.duration_secs));
-        if let (Some(start), Some(end)) = (&stats.time_start, &stats.time_end) {
+        let mut summary = vec![format!("{} packets", output.total_packets)];
+        summary.push(format!("{:.3} s", output.duration_secs));
+        if let (Some(start), Some(end)) = (&output.time_start, &output.time_end) {
             summary.push(format!("{start} – {end}"));
         }
 
@@ -248,7 +265,8 @@ impl DsctApp {
         let row = move || {
             h_flex()
                 .gap_3()
-                .py(px(3.))
+                .min_h(px(28.))
+                .py(px(2.))
                 .border_b_1()
                 .border_color(border)
         };
@@ -260,41 +278,6 @@ impl DsctApp {
                 .font_family(mono.clone())
                 .child(text)
         };
-
-        let protocols = format::protocol_shares(&stats.protocols, stats.total_packets)
-            .into_iter()
-            .map(|(name, count, share)| {
-                let bar = format::protocol_swatch(&name).map_or(bar, theme::swatch);
-                row()
-                    .child(div().w(px(140.)).flex_shrink_0().child(name))
-                    .child(num(80., count.to_string()))
-                    .child(num(64., format!("{:.1}%", share * 100.)))
-                    .child(
-                        div().w(px(160.)).h(px(8.)).child(
-                            div()
-                                .h_full()
-                                .w(px((share * 160.) as f32))
-                                .rounded(px(2.))
-                                .bg(bar),
-                        ),
-                    )
-            })
-            .collect::<Vec<_>>();
-
-        let talkers = stats
-            .top_talkers
-            .iter()
-            .flatten()
-            .take(TOP_TALKERS)
-            .map(|t| {
-                row()
-                    .child(div().w(px(200.)).flex_shrink_0().child(t.src.clone()))
-                    .child(div().w(px(200.)).flex_shrink_0().child(t.dst.clone()))
-                    .child(num(80., t.packets.to_string()))
-                    .child(num(100., t.bytes.to_string()))
-            })
-            .collect::<Vec<_>>();
-
         let header = |cols: &[(&'static str, f32, bool)]| {
             h_flex()
                 .gap_3()
@@ -309,6 +292,148 @@ impl DsctApp {
                 }))
         };
 
+        let replies = stats
+            .responses
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let swatch = format::protocol_swatch(r.protocol).map_or(muted, theme::swatch);
+                let outcomes = r.outcomes.iter().enumerate().map(|(j, o)| {
+                    let label = format!("{} {}", o.label, fields_view::grouped(o.count));
+                    let button = Button::new(("outcome", i * 1000 + j))
+                        .label(label)
+                        .xsmall()
+                        .when(o.error, |b| b.warning().outline())
+                        .when(!o.error, |b| b.outline());
+                    match o.filter.clone() {
+                        Some(filter) => {
+                            button
+                                .tooltip(format!("Filter: {filter}"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.set_filter(&filter, window, cx)
+                                }))
+                        }
+                        None => button.disabled(true),
+                    }
+                });
+                let time = r.response_time.as_ref().map_or("—".to_string(), |t| {
+                    format!(
+                        "median {} · p95 {}",
+                        format::duration(t.median),
+                        format::duration(t.p95)
+                    )
+                });
+                row()
+                    .child(
+                        h_flex()
+                            .w(px(90.))
+                            .flex_shrink_0()
+                            .gap_2()
+                            .child(div().size(px(7.)).rounded(px(2.)).bg(swatch))
+                            .child(r.protocol),
+                    )
+                    .child(num(70., fields_view::grouped(r.requests)))
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .flex_wrap()
+                            .gap_1()
+                            .children(outcomes),
+                    )
+                    .child(
+                        div()
+                            .w(px(180.))
+                            .flex_shrink_0()
+                            .text_right()
+                            .font_family(mono.clone())
+                            .text_color(if r.response_time.is_some() {
+                                theme::text()
+                            } else {
+                                muted
+                            })
+                            .child(time),
+                    )
+            })
+            .collect::<Vec<_>>();
+
+        let convs = &stats.report.conversations;
+        let conversations = convs
+            .list
+            .iter()
+            .take(MAX_CONVERSATIONS)
+            .enumerate()
+            .map(|(i, c)| {
+                let filter = c.filter();
+                let first = c.first_packet as u64 + 1;
+                let icon_button = |id: &'static str, icon: AssetIcon, tip: &'static str| {
+                    Button::new((id, i))
+                        .icon(Icon::new(icon))
+                        .xsmall()
+                        .ghost()
+                        .tooltip(tip)
+                };
+                row()
+                    .child(
+                        div()
+                            .w(px(44.))
+                            .flex_shrink_0()
+                            .text_color(
+                                format::protocol_swatch(c.transport).map_or(muted, theme::swatch),
+                            )
+                            .child(c.transport),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .font_family(mono.clone())
+                            .child(format!("{} ↔ {}", c.a, c.b)),
+                    )
+                    .child(num(70., fields_view::grouped(c.packets)))
+                    .child(num(90., fields_view::grouped(c.bytes)))
+                    .child(num(
+                        80.,
+                        format!("{:.3}", c.first_us.saturating_sub(t0) as f64 / 1e6),
+                    ))
+                    .child(num(80., format!("{:.3}", c.duration_secs())))
+                    .child(
+                        h_flex()
+                            .w(px(90.))
+                            .flex_shrink_0()
+                            .justify_end()
+                            .child(
+                                icon_button(
+                                    "conv-filter",
+                                    AssetIcon::Funnel,
+                                    "Filter for this conversation",
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| this.set_filter(&filter, window, cx),
+                                )),
+                            )
+                            .child(
+                                icon_button(
+                                    "conv-follow",
+                                    AssetIcon::ArrowLeftRight,
+                                    "Follow this stream",
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.go_to_packet(first, cx);
+                                        this.follow_stream(cx);
+                                    },
+                                )),
+                            ),
+                    )
+            })
+            .collect::<Vec<_>>();
+        let more = convs.list.len().saturating_sub(MAX_CONVERSATIONS);
+        let untracked = convs.untracked_packets;
+
         div()
             .id("stats")
             .size_full()
@@ -322,22 +447,45 @@ impl DsctApp {
                     .text_color(muted)
                     .child(format!("Displayed packets · {}", summary.join(" · "))),
             )
-            .child(heading("Protocols"))
-            .child(header(&[
-                ("Protocol", 140., false),
-                ("Packets", 80., true),
-                ("Share", 64., true),
-            ]))
-            .children(protocols)
-            .when(!talkers.is_empty(), |d| {
-                d.child(heading("Top talkers"))
+            .when(!replies.is_empty(), |d| {
+                d.child(heading("Requests and responses"))
                     .child(header(&[
-                        ("Source", 200., false),
-                        ("Destination", 200., false),
-                        ("Packets", 80., true),
-                        ("Bytes", 100., true),
+                        ("Protocol", 90., false),
+                        ("Requests", 70., true),
+                        ("Results", 200., false),
                     ]))
-                    .children(talkers)
+                    .children(replies)
+            })
+            .child(heading("Conversations"))
+            .child(header(&[("", 44., false), ("Endpoints", 320., false)]))
+            .children(conversations)
+            .when(more > 0 || untracked > 0, |d| {
+                let mut notes = Vec::new();
+                if more > 0 {
+                    notes.push(format!("{more} more conversations"));
+                }
+                if untracked > 0 {
+                    notes.push(format!(
+                        "{} packets in flows not tracked",
+                        fields_view::grouped(untracked)
+                    ));
+                }
+                d.child(
+                    div()
+                        .pt_2()
+                        .text_sm()
+                        .text_color(muted)
+                        .child(notes.join(" · ")),
+                )
+            })
+            .when(convs.list.is_empty(), |d| {
+                d.child(
+                    div()
+                        .pt_2()
+                        .text_sm()
+                        .text_color(muted)
+                        .child("No TCP, UDP or SCTP flows."),
+                )
             })
     }
 }
