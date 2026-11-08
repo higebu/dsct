@@ -25,6 +25,7 @@ pub mod ordered_pass;
 pub mod owned_packet;
 mod packet_codec;
 pub mod parallel_scan;
+pub mod problems;
 pub mod responses;
 pub mod sequence;
 pub mod state;
@@ -165,6 +166,8 @@ pub struct Session {
     layer_of: HashMap<&'static str, ProtocolLayer>,
     /// The sequence highlighted among the displayed packets.
     sequence: Option<sequence::SequenceScan>,
+    /// The problems found among the displayed packets.
+    problems: Option<problems::ProblemScan>,
 }
 
 impl Session {
@@ -284,6 +287,7 @@ impl Session {
             pending_rows: HashSet::new(),
             layer_of,
             sequence: None,
+            problems: None,
         }
     }
 
@@ -392,6 +396,9 @@ impl Session {
         // Keys can change with the dissectors: scan the sequence again.
         if let Some(key) = self.sequence.take().map(|s| s.key) {
             self.start_sequence(key);
+        }
+        if self.problems.is_some() {
+            self.start_problems();
         }
         self.cancel_filter();
         let filter = self.applied_filter.clone();

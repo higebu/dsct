@@ -290,6 +290,9 @@ impl Session {
         if let Some(key) = self.sequence().map(|s| s.key.clone()) {
             self.start_sequence(key);
         }
+        if self.problems().is_some() {
+            self.start_problems();
+        }
     }
 
     /// Returns the current filter scan fraction (0.0–1.0), or `None` if idle.

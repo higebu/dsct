@@ -188,6 +188,28 @@ Content-Length: 0\r\n\r\n";
     ethernet_ipv4_frame(17, &udp)
 }
 
+/// Ethernet / IPv4 / UDP frame carrying a SIP response (RFC 3261, Section
+/// 7.2) with status `code` and `reason`, from UDP port 5060.
+pub(crate) fn sip_response_udp_frame(code: u16, reason: &str) -> Vec<u8> {
+    let sip = format!(
+        "SIP/2.0 {code} {reason}\r\n\
+Via: SIP/2.0/UDP 10.0.0.1:5060\r\n\
+From: <sip:alice@example.com>;tag=1\r\n\
+To: <sip:bob@example.com>;tag=2\r\n\
+Call-ID: fixture-1\r\n\
+CSeq: 1 OPTIONS\r\n\
+Content-Length: 0\r\n\r\n"
+    );
+    let mut udp = Vec::new();
+    udp.extend_from_slice(&5060u16.to_be_bytes()); // src port (SIP)
+    udp.extend_from_slice(&5060u16.to_be_bytes()); // dst port
+    udp.extend_from_slice(&(8 + sip.len() as u16).to_be_bytes()); // length
+    udp.extend_from_slice(&0u16.to_be_bytes()); // checksum (unchecked)
+    udp.extend_from_slice(sip.as_bytes());
+
+    ethernet_ipv4_frame(17, &udp)
+}
+
 /// Ethernet / IPv4 / UDP / GTP-U frame (3GPP TS 29.281, G-PDU on UDP port
 /// 2152) tunnelling an IPv4 ICMP echo request from 192.168.0.1 to
 /// 192.168.0.2: the tunnel's UDP flow is not the inner packet's own.

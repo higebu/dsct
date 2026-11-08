@@ -344,20 +344,21 @@ pub(super) fn first_field_value(
 }
 
 /// Pass the dissected packet `pkt_idx` (its in-order result when it has
-/// one) to `f`, or `None` while it waits for the in-order pass.
+/// one) and whether it was dissected to the end to `f`, or `None` while it
+/// waits for the in-order pass.
 pub(super) fn with_packet<R>(
     registry: &DissectorRegistry,
     pass: Option<&OrderedPass>,
     pkt_idx: usize,
     data: &[u8],
     link_type: u32,
-    f: impl FnOnce(Option<Packet<'_, '_>>) -> R,
+    f: impl FnOnce(Option<(Packet<'_, '_>, bool)>) -> R,
 ) -> R {
     resolve(registry, pass, pkt_idx, data, link_type, |d| match d {
-        Display::Dissected(buf, _) => f(Some(Packet::new(buf, data))),
+        Display::Dissected(buf, ok) => f(Some((Packet::new(buf, data), ok))),
         Display::Stored(stored) => {
             let buf = stored.packet.to_dissect_buf();
-            f(Some(Packet::new(&buf, &stored.packet.data)))
+            f(Some((Packet::new(&buf, &stored.packet.data), stored.ok)))
         }
         Display::Pending => f(None),
     })

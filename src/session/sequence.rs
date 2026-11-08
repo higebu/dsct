@@ -266,7 +266,7 @@ impl Session {
             pkt_idx,
             data,
             u32::from(index.link_type),
-            |packet| packet.map(|p| keys_of(&p)),
+            |packet| packet.map(|(p, _)| keys_of(&p)),
         )
     }
 
