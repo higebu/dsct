@@ -304,9 +304,6 @@ pub struct FieldSummary {
     pub kind: FieldKind,
     /// Sampled packets that have the field.
     pub packets: u64,
-    /// Whether dsct shows the field by default (it is listed in its
-    /// default field configuration), a hint that it matters for analysis.
-    pub key: bool,
     /// Distinct values counted.
     pub distinct: usize,
     /// Whether the field had more distinct values than were counted.
@@ -513,24 +510,6 @@ impl FieldStatsCollector {
 
     pub(crate) fn finish(self, sample: Sample, displayed: u64) -> FieldStats {
         let layer_of = &self.layer_of;
-        let config = crate::field_config::FieldConfig::default_config().ok();
-        let is_key = |protocol: &str, path: &str| {
-            let Some(config) = &config else {
-                return false;
-            };
-            if !config.lists_protocol(protocol) {
-                return false;
-            }
-            // The path after the protocol: `questions.name`.
-            let mut parts = path.split('.').skip(1);
-            let Some(top) = parts.next() else {
-                return false;
-            };
-            config.should_include(protocol, top)
-                && parts
-                    .next()
-                    .is_none_or(|child| config.should_include_nested(protocol, top, child))
-        };
         let protocols = self
             .protocols
             .into_iter()
@@ -567,7 +546,6 @@ impl FieldStatsCollector {
                 });
                 top.truncate(TOP_VALUES);
                 FieldSummary {
-                    key: is_key(acc.protocol, &path),
                     path,
                     protocol: acc.protocol,
                     kind: acc.kind,
@@ -1008,13 +986,6 @@ mod tests {
         assert_eq!(qname.packets, 2);
         assert_eq!(qname.top[0].value, "example.com");
         assert_eq!(stats.fields[0].protocol, "Ethernet");
-
-        // Listed in default_fields.toml or not.
-        let key = |path: &str| stats.field(path).map(|f| f.key);
-        assert_eq!(key("ipv4.src"), Some(true));
-        assert_eq!(key("ipv4.checksum"), Some(false));
-        assert_eq!(key("dns.questions.name"), Some(true));
-        assert_eq!(key("udp.length"), Some(false));
     }
 
     #[test]

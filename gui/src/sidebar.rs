@@ -1,6 +1,6 @@
 //! The fields sidebar: the values the displayed packets' fields take,
-//! counted over a sample, with pinned and key fields first and every
-//! field by stack position and protocol. Each value filters for or out,
+//! counted over a sample, with pinned fields first and every field by
+//! stack position and protocol. Each value filters for or out,
 //! and each field can become a column or split the chart.
 
 use std::collections::HashSet;
@@ -27,7 +27,6 @@ const WIDTH: f32 = 280.;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     Pinned,
-    Key,
     ByLayer,
 }
 
@@ -675,14 +674,6 @@ impl DsctApp {
                 }
                 for field in pinned {
                     list.push(self.field_row(Section::Pinned, field, stats.sampled, &columns, cx));
-                }
-
-                let key = fields_view::key_fields(stats, &self.fields.pinned, &query);
-                if !key.is_empty() {
-                    list.push(section("KEY FIELDS", None).into_any_element());
-                    for field in key {
-                        list.push(self.field_row(Section::Key, field, stats.sampled, &columns, cx));
-                    }
                 }
 
                 list.push(section("BY LAYER", None).into_any_element());
