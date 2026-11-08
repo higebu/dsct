@@ -37,6 +37,7 @@ pub enum BottomTab {
     #[default]
     Stream,
     Stats,
+    Problems,
 }
 
 /// The last Follow Stream and Stats results, and whether they are shown.
@@ -70,6 +71,7 @@ impl BottomPanel {
         match tab {
             BottomTab::Stream => self.stream.is_some(),
             BottomTab::Stats => self.stats.is_some(),
+            BottomTab::Problems => true,
         }
     }
 
@@ -81,6 +83,7 @@ impl BottomPanel {
                 .stats
                 .as_ref()
                 .and_then(|s| serde_json::to_string_pretty(&s.report.output).ok()),
+            BottomTab::Problems => None,
         }
     }
 }
@@ -100,26 +103,30 @@ impl DsctApp {
             theme::accent(),
         );
 
-        let tabs = [(BottomTab::Stream, "Stream"), (BottomTab::Stats, "Stats")]
-            .into_iter()
-            .filter(|(tab, _)| self.bottom.has(*tab))
-            .map(|(tab, label)| {
-                let active = self.bottom.tab == tab;
-                div()
-                    .id(label)
-                    .px_3()
-                    .py_1()
-                    .border_b_2()
-                    .border_color(if active { accent } else { transparent_black() })
-                    .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
-                    .when(!active, |d| d.text_color(muted))
-                    .child(label)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.bottom.tab = tab;
-                        cx.notify();
-                    }))
-            })
-            .collect::<Vec<_>>();
+        let tabs = [
+            (BottomTab::Stream, "Stream"),
+            (BottomTab::Stats, "Stats"),
+            (BottomTab::Problems, "Problems"),
+        ]
+        .into_iter()
+        .filter(|(tab, _)| self.bottom.has(*tab))
+        .map(|(tab, label)| {
+            let active = self.bottom.tab == tab;
+            div()
+                .id(label)
+                .px_3()
+                .py_1()
+                .border_b_2()
+                .border_color(if active { accent } else { transparent_black() })
+                .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
+                .when(!active, |d| d.text_color(muted))
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.bottom.tab = tab;
+                    cx.notify();
+                }))
+        })
+        .collect::<Vec<_>>();
 
         let legend = (self.bottom.tab == BottomTab::Stream).then(|| {
             h_flex()
@@ -170,6 +177,7 @@ impl DsctApp {
         let body = match self.bottom.tab {
             BottomTab::Stream => self.render_stream(cx).into_any_element(),
             BottomTab::Stats => self.render_stats(cx).into_any_element(),
+            BottomTab::Problems => self.render_problems(cx).into_any_element(),
         };
         Some(
             v_flex()

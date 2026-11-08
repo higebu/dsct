@@ -404,6 +404,14 @@ impl DsctApp {
         if !matches!(session.sequence_tick(), Tick::Idle) {
             sequence_changed = true;
         }
+        if session.problems().is_none() {
+            session.start_problems();
+        }
+        if !matches!(session.problems_tick(), Tick::Idle) {
+            // New marks in the packet list.
+            sequence_changed = true;
+            changed = true;
+        }
         if reload {
             session.load_packet(self.selected_row.unwrap_or(0));
             self.tree.reset(session);
@@ -417,6 +425,7 @@ impl DsctApp {
             || session.field_stats_running()
             || session.histogram_running()
             || session.sequence().is_some_and(|s| !s.complete(displayed))
+            || session.problems().is_some_and(|s| !s.complete(displayed))
             // Field jobs wait for indexing or a filter scan to end.
             || self.fields.stale
             || self.timeline.stale;
@@ -432,8 +441,9 @@ impl DsctApp {
         if rows_changed || reload {
             self.sync_table_selection(cx);
         }
-        if reload && self.sequence.keys.is_none() {
-            // The selected packet's keys came with the in-order pass.
+        if rows_changed || (reload && self.sequence.keys.is_none()) {
+            // Another packet is selected after a filter, or the selected
+            // packet's keys came with the in-order pass.
             self.update_sequence(cx);
         } else if sequence_changed {
             self.refresh_table(cx);
@@ -527,6 +537,7 @@ impl DsctApp {
                 self.tree.reset(session);
                 drop(guard);
                 self.sync_table_selection(cx);
+                self.update_sequence(cx);
                 self.ensure_ticking(cx);
             }
         }
@@ -763,7 +774,7 @@ impl DsctApp {
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(240.))
+                    .min_w(px(200.))
                     .rounded(px(6.))
                     .border_1()
                     .border_color(if self.filter_error.is_some() {
@@ -787,7 +798,7 @@ impl DsctApp {
             .child(
                 Button::new("time-format")
                     .icon(Icon::new(AssetIcon::Clock))
-                    .label(format!("Time: {}", self.time_format.label()))
+                    .label(self.time_format.label())
                     .small()
                     .outline()
                     .tooltip(format!("Change the time format ({})", crate::shortcut("T")))
@@ -818,6 +829,7 @@ impl DsctApp {
                     ))
                     .on_click(cx.listener(|this, _, _, cx| this.stats(cx))),
             )
+            .child(self.render_problems_button(cx))
             .child(self.render_decode_as_button(cx));
         v_flex()
             .flex_shrink_0()

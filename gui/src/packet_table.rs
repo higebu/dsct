@@ -329,6 +329,29 @@ impl TableDelegate for PacketTable {
                 );
         }
         let selected = self.selected == Some(row_ix);
+        if col_ix == NO_COL {
+            // A colored dot before the number marks a packet's most serious
+            // problem.
+            let mark = self.session.borrow().as_ref().and_then(|s| {
+                let pkt_idx = s.filtered.select(row_ix)?;
+                s.problems()?.of_packet(pkt_idx).map(|p| p.kind)
+            });
+            return cell
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap_1p5()
+                .font_family(mono)
+                .when(!selected, |d| d.text_color(theme::text_muted()))
+                .children(mark.map(|kind| {
+                    div()
+                        .size(px(7.))
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .bg(crate::problems::color(kind))
+                }))
+                .child(self.fixed_cell(row_ix, col_ix));
+        }
         cell.when(
             matches!(col_ix, NO_COL | TIME_COL | LEN_COL | SRC_COL | DST_COL),
             |d| d.font_family(mono),
