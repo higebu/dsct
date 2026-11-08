@@ -21,6 +21,7 @@ use gpui_kit::*;
 use crate::bottom::{BottomPanel, StreamView};
 use crate::decode_as::{DecodeAsPanel, Rule};
 use crate::format::{self, TimeFormat};
+use crate::marks::ExportSet;
 use crate::packet_table::PacketTable;
 use crate::palette::{Command, PaletteState};
 use crate::sequence::SequenceView;
@@ -28,9 +29,9 @@ use crate::sidebar::FieldsPanel;
 use crate::tabs::Slot;
 use crate::timeline::{BUCKETS, Timeline};
 use crate::{
-    CloseBottom, CloseTab, CycleTimeFormat, FocusBytes, FocusDetails, FocusNextPane, FocusPackets,
-    FocusPrevPane, FollowStream, NextTab, Open, OpenPalette, PrevTab, SharedSession, ShowStats,
-    ToggleDock, ToggleSidebar, theme,
+    CloseBottom, CloseTab, CycleTimeFormat, ExportDisplayed, ExportMarked, FocusBytes,
+    FocusDetails, FocusNextPane, FocusPackets, FocusPrevPane, FollowStream, NextTab, Open,
+    OpenPalette, PrevTab, SharedSession, ShowStats, ToggleDock, ToggleMark, ToggleSidebar, theme,
 };
 
 /// How often background work (indexing, the in-order pass, filter scans)
@@ -626,6 +627,9 @@ impl DsctApp {
             Command::GoTo(number) => self.go_to_packet(number, cx),
             Command::Filter(text) => self.set_filter(&text, window, cx),
             Command::DecodeAs => self.open_decode_as(None, window, cx),
+            Command::Mark => self.toggle_mark(cx),
+            Command::ExportDisplayed => self.export_packets(ExportSet::Displayed, window, cx),
+            Command::ExportMarked => self.export_packets(ExportSet::Marked, window, cx),
             Command::Sequence => {
                 let on = !self.sequence.on;
                 self.set_sequence_on(on, cx);
@@ -909,6 +913,10 @@ impl DsctApp {
                 left.push("Ready".to_string());
             }
             left.push(format!("{} packets", session.total_count()));
+            let marked = session.marked().count();
+            if marked > 0 {
+                left.push(format!("{marked} marked"));
+            }
             if session.ordered_needs_tick() {
                 left.push("Dissecting in capture order…".to_string());
             }
@@ -1034,6 +1042,13 @@ impl Render for DsctApp {
             )
             .on_action(cx.listener(|this, _: &CycleTimeFormat, _, cx| this.cycle_time_format(cx)))
             .on_action(cx.listener(|this, _: &FollowStream, _, cx| this.follow_stream(cx)))
+            .on_action(cx.listener(|this, _: &ToggleMark, _, cx| this.toggle_mark(cx)))
+            .on_action(cx.listener(|this, _: &ExportDisplayed, window, cx| {
+                this.export_packets(ExportSet::Displayed, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExportMarked, window, cx| {
+                this.export_packets(ExportSet::Marked, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ShowStats, _, cx| {
                 if this.session.borrow().is_some() {
                     this.stats(cx);

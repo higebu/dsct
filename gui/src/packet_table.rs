@@ -250,9 +250,17 @@ impl TableDelegate for PacketTable {
                     .and_then(|pkt_idx| scan.contains(row_ix, pkt_idx))
                     == Some(false)
             });
+        let marked = self.session.borrow().as_ref().is_some_and(|s| {
+            s.filtered
+                .select(row_ix)
+                .is_some_and(|pkt_idx| s.is_marked(pkt_idx))
+        });
         div()
             .id(("row", row_ix))
             .when(dimmed, |row| row.opacity(0.38))
+            .when(marked && !selected, |row| {
+                row.bg(theme::accent().opacity(0.16))
+            })
             .border_l_2()
             .border_color(if selected {
                 theme::accent()

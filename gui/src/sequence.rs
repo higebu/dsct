@@ -193,11 +193,14 @@ impl DsctApp {
                 )
                 .child(div().text_color(theme::text_muted()).child("Sequence"))
                 .child(units)
-                .child(
-                    div()
-                        .text_color(theme::text_muted())
-                        .child(format!("{count}{more} packets")),
-                )
+                .child(div().text_color(theme::text_muted()).child(format!(
+                    "{count}{more} {}",
+                    if count == 1 && more.is_empty() {
+                        "packet"
+                    } else {
+                        "packets"
+                    }
+                )))
                 .child(div().flex_1())
                 .child(
                     icon_button(

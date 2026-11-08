@@ -30,6 +30,9 @@ pub enum Command {
     Filter(String),
     DecodeAs,
     Sequence,
+    Mark,
+    ExportDisplayed,
+    ExportMarked,
 }
 
 /// One palette row.
@@ -65,6 +68,24 @@ fn commands(has_session: bool) -> Vec<(Command, &'static str, &'static str, Opti
                 "Stats",
                 "Show statistics of the displayed packets",
                 Some(crate::shortcut_shift("S")),
+            ),
+            (
+                Command::Mark,
+                "Packet",
+                "Mark or unmark the selected packet",
+                Some(crate::shortcut("M")),
+            ),
+            (
+                Command::ExportDisplayed,
+                "File",
+                "Export displayed packets…",
+                None,
+            ),
+            (
+                Command::ExportMarked,
+                "File",
+                "Export marked packets…",
+                None,
             ),
             (
                 Command::Sequence,

@@ -18,6 +18,7 @@ dissected in the background, so large files open at once.
 - Selecting a packet dims the packets outside its call, stream or host pair
 - Problems: malformed packets, error responses and TCP retransmissions,
   marked in the packet list
+- Mark packets (⌘M) and export the displayed or marked ones as pcapng
 - Decode As: dissect a TCP or UDP port as another protocol, from a port in
   the detail tree or the filter bar
 - Several captures in tabs: filter them all at once, show two side by side

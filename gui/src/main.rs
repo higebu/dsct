@@ -6,6 +6,7 @@ mod bottom;
 mod decode_as;
 mod fields_view;
 mod format;
+mod marks;
 mod packet_table;
 mod palette;
 mod panes;
@@ -58,6 +59,9 @@ actions!(
         CloseTab,
         NextTab,
         PrevTab,
+        ToggleMark,
+        ExportDisplayed,
+        ExportMarked,
     ]
 );
 
@@ -110,6 +114,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(platform_key("cmd-b", "ctrl-b"), ToggleSidebar, None),
         KeyBinding::new(platform_key("cmd-t", "ctrl-t"), CycleTimeFormat, None),
         KeyBinding::new(platform_key("cmd-w", "ctrl-w"), CloseTab, None),
+        KeyBinding::new(platform_key("cmd-m", "ctrl-m"), ToggleMark, None),
         KeyBinding::new("ctrl-tab", NextTab, None),
         KeyBinding::new("ctrl-shift-tab", PrevTab, None),
         KeyBinding::new(platform_key("cmd-shift-]", "ctrl-pagedown"), NextTab, None),
@@ -179,6 +184,9 @@ fn main() {
                     items: vec![
                         MenuItem::action("Open…", Open),
                         MenuItem::action("Close Tab", CloseTab),
+                        MenuItem::separator(),
+                        MenuItem::action("Export Displayed Packets…", ExportDisplayed),
+                        MenuItem::action("Export Marked Packets…", ExportMarked),
                         MenuItem::separator(),
                         MenuItem::action("Command Palette…", OpenPalette),
                     ],
