@@ -8,10 +8,6 @@ use packet_dissector_core::dissector::ProtocolLayer;
 /// Fields listed under "Key fields" at most.
 pub const KEY_FIELDS: usize = 8;
 
-/// Key fields of one protocol at most, so one protocol does not crowd out
-/// the others (the ports, a tunnel's ID).
-const KEY_FIELDS_PER_PROTOCOL: usize = 4;
-
 /// Top values shown for an expanded field at most.
 pub const TOP_VALUES: usize = 5;
 
@@ -124,40 +120,11 @@ pub fn by_layer<'a>(stats: &'a FieldStats, query: &str) -> Vec<LayerGroup<'a>> {
     groups
 }
 
-/// Whether the field at `path` measures or counts its packet rather than
-/// tells what it is: a length, a checksum, or a sequence or acknowledgment
-/// number (which repeat across pure ACKs and retransmissions, so their
-/// values can look grouped).
-pub fn is_measure(path: &str) -> bool {
-    let name = path.rsplit('.').next().unwrap_or(path);
-    name.ends_with("length")
-        || name.ends_with("_len")
-        || name.contains("checksum")
-        || matches!(
-            name,
-            "seq" | "ack" | "sequence_number" | "acknowledgment_number"
-        )
-        || name.ends_with("_seq")
-}
-
-/// Whether the field's values sort packets into a few groups: one value
-/// in most packets (not a repeated field, such as each header of a
-/// message), and its most frequent values cover at least half of the
-/// packets that have it (not IDs, nearly unique per packet).
-fn groups_packets(field: &FieldSummary) -> bool {
-    let covered: u64 = field.top.iter().map(|v| v.packets).sum();
-    field.multi_valued * 2 <= field.packets
-        && covered * 2 >= field.packets
-        && field.distinct as u64 * 2 <= field.packets.max(2)
-}
-
 /// The fields worth a look first: those dsct shows by default
-/// ([`FieldSummary::key`]) that group packets (see [`groups_packets`]),
-/// are not lengths or checksums ([`is_measure`]), not pinned, and match
-/// `query`, at most [`KEY_FIELDS_PER_PROTOCOL`] of a protocol. Fields with
-/// several values come first, then the constant ones; each group runs from
-/// the application layer down, a layer's fields with the most values first
-/// (then in the order they appeared).
+/// ([`FieldSummary::key`]), not pinned, matching `query`, and not nearly
+/// unique per packet (sequence numbers, IDs). Fields with several values
+/// come first, then the constant ones; each group runs from the
+/// application layer down, in the order the fields appeared.
 pub fn key_fields<'a>(
     stats: &'a FieldStats,
     pinned: &[String],
@@ -175,29 +142,13 @@ pub fn key_fields<'a>(
         .iter()
         .filter(|f| {
             f.key
-                && groups_packets(f)
-                && !is_measure(&f.path)
+                && f.distinct as u64 * 2 <= f.packets.max(2)
                 && !pinned.contains(&f.path)
                 && matches(&f.path, query)
         })
         .collect();
     // Stable: equal fields keep the order they appeared in.
-    fields.sort_by_key(|f| {
-        (
-            f.distinct < 2,
-            layer_rank(layer_of(f.protocol)),
-            std::cmp::Reverse(f.distinct),
-        )
-    });
-    let mut per_protocol: Vec<(&str, usize)> = Vec::new();
-    fields.retain(|f| {
-        match per_protocol.iter_mut().find(|(p, _)| *p == f.protocol) {
-            Some((_, n)) if *n >= KEY_FIELDS_PER_PROTOCOL => return false,
-            Some((_, n)) => *n += 1,
-            None => per_protocol.push((f.protocol, 1)),
-        }
-        true
-    });
+    fields.sort_by_key(|f| (f.distinct < 2, layer_rank(layer_of(f.protocol))));
     fields.truncate(KEY_FIELDS);
     fields
 }
@@ -328,17 +279,13 @@ mod tests {
         packets: u64,
         values: &[(&str, u64)],
     ) -> FieldSummary {
-        const KEYS: [&str; 10] = [
+        const KEYS: [&str; 6] = [
             "ethernet.src",
             "ipv4.ttl",
             "ipv4.dst",
             "udp.dst_port",
-            "udp.length",
             "dns.qname",
             "tcp.flags",
-            "tcp.seq",
-            "sip.headers.name",
-            "sip.content_length",
         ];
         FieldSummary {
             path: path.to_string(),
@@ -356,7 +303,6 @@ mod tests {
                     packets: n,
                 })
                 .collect(),
-            multi_valued: 0,
         }
     }
 
@@ -490,121 +436,6 @@ mod tests {
             .collect();
         unique.fields[i].distinct = 6;
         assert!(key_fields(&unique, &[], "qname").is_empty());
-    }
-
-    #[test]
-    fn key_fields_leave_out_what_does_not_group_packets() {
-        let mut stats = stats();
-        stats.protocols.push(ProtocolSummary {
-            name: "SIP",
-            layer: Some(ProtocolLayer::Application),
-            packets: 6,
-        });
-        // Lengths, whatever their values.
-        stats
-            .fields
-            .push(field("udp.length", "UDP", 6, &[("40", 6)]));
-        stats.fields.push(field(
-            "sip.content_length",
-            "SIP",
-            6,
-            &[("0", 3), ("120", 3)],
-        ));
-        // A field repeated in each packet (one value per header).
-        let mut names = field("sip.headers.name", "SIP", 6, &[("Via", 6), ("To", 6)]);
-        names.multi_valued = 6;
-        stats.fields.push(names);
-        // Two messages in one packet now and then still group packets.
-        let mut method = field("sip.method", "SIP", 6, &[("INVITE", 4), ("ACK", 3)]);
-        method.multi_valued = 1;
-        method.key = true;
-        stats.fields.push(method);
-        // Values spread thin: the top five cover 5 of 10 packets... or less.
-        let mut seq = field(
-            "tcp.seq",
-            "TCP",
-            10,
-            &[("1", 1), ("2", 1), ("3", 1), ("4", 1)],
-        );
-        seq.distinct = 5;
-        stats.fields.push(seq);
-
-        let paths: Vec<&str> = key_fields(&stats, &[], "")
-            .iter()
-            .map(|f| f.path.as_str())
-            .collect();
-        assert_eq!(
-            paths,
-            [
-                "dns.qname",
-                "sip.method",
-                "tcp.flags",
-                "ipv4.dst",
-                "udp.dst_port",
-                "ipv4.ttl",
-                "ethernet.src"
-            ]
-        );
-    }
-
-    #[test]
-    fn key_fields_take_a_few_of_each_protocol_most_values_first() {
-        let mut stats = stats();
-        stats.protocols.push(ProtocolSummary {
-            name: "SIP",
-            layer: Some(ProtocolLayer::Application),
-            packets: 6,
-        });
-        let mut sip = |path: &str, values: &[(&str, u64)]| {
-            let packets = values.iter().map(|v| v.1).sum();
-            let mut f = field(path, "SIP", packets, values);
-            f.key = true;
-            stats.fields.push(f);
-        };
-        sip("sip.is_response", &[("1", 6), ("0", 6)]);
-        sip("sip.status_code", &[("200", 3), ("180", 2), ("100", 1)]);
-        sip(
-            "sip.reason_phrase",
-            &[("OK", 3), ("Ringing", 2), ("Trying", 1)],
-        );
-        sip("sip.method", &[("INVITE", 2), ("ACK", 2), ("BYE", 2)]);
-        sip("sip.uri", &[("a", 3), ("b", 2), ("c", 2), ("d", 1)]);
-        let paths: Vec<&str> = key_fields(&stats, &[], "")
-            .iter()
-            .map(|f| f.path.as_str())
-            .collect();
-        assert_eq!(
-            paths[..6],
-            [
-                "sip.uri",
-                "dns.qname",
-                "sip.status_code",
-                "sip.reason_phrase",
-                "sip.method",
-                "tcp.flags",
-            ]
-        );
-        // Four SIP fields already: the fifth, with the fewest values, waits.
-        assert!(!paths.contains(&"sip.is_response"));
-    }
-
-    #[test]
-    fn lengths_checksums_and_sequence_numbers_are_measures() {
-        assert!(is_measure("udp.length"));
-        assert!(is_measure("ipv6.payload_length"));
-        assert!(is_measure("sip.content_length"));
-        assert!(is_measure("ip.header_len"));
-        assert!(is_measure("tcp.checksum"));
-        assert!(is_measure("udp.checksum_status"));
-        assert!(is_measure("tcp.seq"));
-        assert!(is_measure("tcp.ack"));
-        assert!(is_measure("gtpv1u.sequence_number"));
-        assert!(is_measure("esp.sequence_number"));
-        assert!(!is_measure("tcp.flags"));
-        assert!(!is_measure("dns.qr"));
-        assert!(!is_measure("ipv4.dst"));
-        assert!(!is_measure("dns.questions.name"));
-        assert!(!is_measure("tcp.lenient"));
     }
 
     #[test]
