@@ -444,6 +444,78 @@ fn write_frames_pcap(frames: &[Vec<u8>]) -> NamedTempFile {
     tmp
 }
 
+/// Ethernet + IPv4 + ESP (NULL encryption, transport mode, 12-byte ICV)
+/// frame carrying a TCP (PSH, ACK) segment from 10.0.0.1:40000 to
+/// 10.0.0.2:15060 with `payload` at sequence number `seq`.
+fn esp_null_tcp_frame(seq: u32, payload: &[u8]) -> Vec<u8> {
+    let mut tcp = Vec::new();
+    tcp.extend_from_slice(&40000u16.to_be_bytes());
+    tcp.extend_from_slice(&15060u16.to_be_bytes());
+    tcp.extend_from_slice(&seq.to_be_bytes());
+    tcp.extend_from_slice(&0u32.to_be_bytes()); // acknowledgment number
+    tcp.push(0x50); // data offset = 5 (20 bytes)
+    tcp.push(0x18); // flags: PSH, ACK
+    tcp.extend_from_slice(&0x2000u16.to_be_bytes()); // window
+    tcp.extend_from_slice(&0u16.to_be_bytes()); // checksum (unchecked)
+    tcp.extend_from_slice(&0u16.to_be_bytes()); // urgent pointer
+    tcp.extend_from_slice(payload);
+
+    let mut esp = Vec::new();
+    esp.extend_from_slice(&0x1000u32.to_be_bytes()); // SPI
+    esp.extend_from_slice(&seq.to_be_bytes()); // sequence number
+    esp.extend_from_slice(&tcp);
+    // RFC 4303, Section 2.4: padding 1, 2, 3, ... up to a 4-byte boundary.
+    let pad_length = (4 - (tcp.len() + 2) % 4) % 4;
+    esp.extend((1..=pad_length as u8).collect::<Vec<_>>());
+    esp.push(pad_length as u8);
+    esp.push(6); // next header: TCP
+    esp.extend_from_slice(&[0xab; 12]); // ICV
+    eth_ipv4_frame([10, 0, 0, 1], [10, 0, 0, 2], 50, &esp)
+}
+
+/// A SIP message split over two TCP segments inside ESP NULL, on a port
+/// decoded as SIP: the segments are reassembled into one SIP message, and
+/// nothing is reported on stderr.
+#[test]
+fn read_reassembles_tcp_inside_esp_null() {
+    let sip: &[u8] = b"OPTIONS sip:bob@example.com SIP/2.0\r\n\
+Via: SIP/2.0/TCP 10.0.0.1:40000\r\n\
+Content-Length: 0\r\n\r\n";
+    let (head, tail) = sip.split_at(45);
+    let tmp = write_frames_pcap(&[
+        esp_null_tcp_frame(1000, head),
+        esp_null_tcp_frame(1000 + head.len() as u32, tail),
+    ]);
+
+    let output = Command::cargo_bin("dsct")
+        .unwrap()
+        .args([
+            "read",
+            "--decode-as",
+            "tcp.port=15060:sip",
+            tmp.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+
+    let packets: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(packets.len(), 2);
+    assert_eq!(packets[1]["stack"], "Ethernet:IPv4:ESP:TCP:SIP");
+    let sip = packets[1]["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["protocol"] == "SIP")
+        .unwrap();
+    assert_eq!(sip["fields"]["method"], "OPTIONS");
+}
+
 /// The same TCP segment captured twice (at two points of a path, say):
 /// the copy is shown as a TCP retransmission, not dissected again as the
 /// start of a SIP message, and nothing is reported on stderr.
