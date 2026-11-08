@@ -2,9 +2,20 @@
 
 use packet_dissector_core::packet::{DissectBuffer, Packet};
 
+use super::conversations::{ConversationCollector, Conversations};
+use super::fields::timestamp_us;
 use super::state::StatsProgress;
 use super::{Session, Tick};
 use crate::stats::StatsOutput;
+
+/// What [`Session::stats_tick`] reports when the stats are complete.
+#[derive(Debug, Clone)]
+pub struct StatsReport {
+    /// The statistics `dsct stats` prints.
+    pub output: StatsOutput,
+    /// The displayed packets by conversation.
+    pub conversations: Conversations,
+}
 
 impl Session {
     /// Start collecting stats over the displayed packets.
@@ -18,6 +29,7 @@ impl Session {
                 &crate::stats::StatsFlags::all_protocols(true, true),
             ),
             registry,
+            conversations: ConversationCollector::default(),
         });
         Ok(())
     }
@@ -36,7 +48,7 @@ impl Session {
     const STATS_CHUNK_SIZE: usize = 10_000;
 
     /// Process one chunk of the in-progress stats collection.
-    pub fn stats_tick(&mut self) -> Tick<StatsOutput> {
+    pub fn stats_tick(&mut self) -> Tick<StatsReport> {
         let total = self.filtered.count_ones();
         let progress = match &mut self.stats_progress {
             Some(p) => p,
@@ -55,11 +67,18 @@ impl Session {
                 None => continue,
             };
             let buf = dissect_buf.clear_into();
-            if progress
-                .registry
-                .dissect_with_link_type(data, index.link_type as u32, buf)
-                .is_ok()
-            {
+            let dissected =
+                progress
+                    .registry
+                    .dissect_with_link_type(data, index.link_type as u32, buf);
+            // A packet that fails part way still has its addresses.
+            progress.conversations.add(
+                &Packet::new(buf, data),
+                idx,
+                timestamp_us(index.timestamp_secs, index.timestamp_usecs),
+                u64::from(index.original_len),
+            );
+            if dissected.is_ok() {
                 let packet = Packet::new(buf, data);
                 progress
                     .collector
@@ -77,7 +96,10 @@ impl Session {
         if progress.cursor >= total
             && let Some(sp) = std::mem::take(&mut self.stats_progress)
         {
-            return Tick::Done(sp.collector.finalize(10));
+            return Tick::Done(StatsReport {
+                output: sp.collector.finalize(10),
+                conversations: sp.conversations.finish(),
+            });
         }
         Tick::Running
     }
@@ -97,7 +119,7 @@ mod tests {
         let output = loop {
             match session.stats_tick() {
                 Tick::Running => {}
-                Tick::Done(output) => break output,
+                Tick::Done(report) => break report.output,
                 Tick::Idle => panic!("no stats collected"),
             }
         };

@@ -21,8 +21,8 @@ impl App {
         match self.session.stats_tick() {
             Tick::Idle => false,
             Tick::Running => true,
-            Tick::Done(output) => {
-                self.stats_output = Some(output);
+            Tick::Done(report) => {
+                self.stats_output = Some(report.output);
                 false
             }
         }
@@ -50,6 +50,7 @@ mod tests {
             cursor: 0,
             collector: StatsCollector::from_flags(&StatsFlags::all_protocols(true, true)),
             registry: packet_dissector::registry::DissectorRegistry::default(),
+            conversations: Default::default(),
         });
         while app.stats_tick() {}
         let out = app.stats_output.as_ref().expect("stats_output set");

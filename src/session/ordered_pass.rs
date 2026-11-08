@@ -799,7 +799,7 @@ mod tests {
         let output = loop {
             match view.session.stats_tick() {
                 Tick::Running => {}
-                Tick::Done(output) => break output,
+                Tick::Done(report) => break report.output,
                 Tick::Idle => panic!("no stats collected"),
             }
         };

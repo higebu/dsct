@@ -265,6 +265,8 @@ pub struct StatsProgress {
     /// Fresh registry for this scan, so the result does not depend on the
     /// packets displayed before.
     pub registry: packet_dissector::registry::DissectorRegistry,
+    /// The displayed packets by conversation.
+    pub(crate) conversations: super::conversations::ConversationCollector,
 }
 
 impl StatsProgress {

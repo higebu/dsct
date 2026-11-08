@@ -13,6 +13,7 @@
 
 pub mod bg_indexer;
 pub mod completion;
+pub mod conversations;
 mod field_jobs;
 pub mod fields;
 pub mod filter_bitmap;
@@ -24,6 +25,7 @@ pub mod ordered_pass;
 pub mod owned_packet;
 mod packet_codec;
 pub mod parallel_scan;
+pub mod responses;
 pub mod state;
 mod stats_collect;
 mod stream;
@@ -52,6 +54,7 @@ use crate::error::Result;
 
 pub use field_jobs::{FieldStatsJob, HistogramJob};
 pub use filter_scan::FilterOutcome;
+pub use stats_collect::StatsReport;
 pub use stream::FollowedStream;
 
 /// Return the XDG-compliant cache directory for dsct temporary files.

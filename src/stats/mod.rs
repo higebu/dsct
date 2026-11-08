@@ -231,7 +231,7 @@ pub struct CountEntry {
 }
 
 /// Percentile statistics for response times (seconds).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 pub struct ResponseTimeStats {
     pub min: f64,
     pub max: f64,
