@@ -286,6 +286,10 @@ impl Session {
     fn finalize_filter(&mut self, results: FilterBitmap) {
         self.filtered = results;
         self.summary_cache.clear();
+        // The displayed packets changed: look for the sequence among them.
+        if let Some(key) = self.sequence().map(|s| s.key.clone()) {
+            self.start_sequence(key);
+        }
     }
 
     /// Returns the current filter scan fraction (0.0–1.0), or `None` if idle.

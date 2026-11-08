@@ -141,9 +141,13 @@ impl ConversationCollector {
     }
 }
 
-/// The innermost transport layer that follows an IP layer, with its two
-/// endpoints (source first).
-fn innermost_flow(packet: &Packet<'_, '_>) -> Option<(&'static str, Endpoint, Endpoint)> {
+/// The transport layer of the innermost IP layer, with its two endpoints
+/// (source first). A flow that carries another IP layer (a GTP-U or VXLAN
+/// tunnel) is not the packet's own: without a transport layer over the
+/// innermost IP layer, the packet has no flow.
+pub(crate) fn innermost_flow(
+    packet: &Packet<'_, '_>,
+) -> Option<(&'static str, Endpoint, Endpoint)> {
     let mut addrs: Option<(IpAddr, IpAddr)> = None;
     let mut flow = None;
     for layer in packet.layers() {
@@ -155,6 +159,7 @@ fn innermost_flow(packet: &Packet<'_, '_>) -> Option<(&'static str, Endpoint, En
                     _ => None,
                 };
                 addrs = addr("src").zip(addr("dst"));
+                flow = None;
             }
             transport @ ("TCP" | "UDP" | "SCTP") => {
                 let Some((src, dst)) = addrs else {

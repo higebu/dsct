@@ -343,6 +343,26 @@ pub(super) fn first_field_value(
     })
 }
 
+/// Pass the dissected packet `pkt_idx` (its in-order result when it has
+/// one) to `f`, or `None` while it waits for the in-order pass.
+pub(super) fn with_packet<R>(
+    registry: &DissectorRegistry,
+    pass: Option<&OrderedPass>,
+    pkt_idx: usize,
+    data: &[u8],
+    link_type: u32,
+    f: impl FnOnce(Option<Packet<'_, '_>>) -> R,
+) -> R {
+    resolve(registry, pass, pkt_idx, data, link_type, |d| match d {
+        Display::Dissected(buf, _) => f(Some(Packet::new(buf, data))),
+        Display::Stored(stored) => {
+            let buf = stored.packet.to_dissect_buf();
+            f(Some(Packet::new(&buf, &stored.packet.data)))
+        }
+        Display::Pending => f(None),
+    })
+}
+
 /// The packet list row of packet `pkt_idx`, and whether it is a placeholder
 /// waiting for the in-order pass.
 pub(super) fn row_summary(

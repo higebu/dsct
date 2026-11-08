@@ -26,6 +26,7 @@ pub mod owned_packet;
 mod packet_codec;
 pub mod parallel_scan;
 pub mod responses;
+pub mod sequence;
 pub mod state;
 mod stats_collect;
 mod stream;
@@ -162,6 +163,8 @@ pub struct Session {
     pub pending_rows: HashSet<usize>,
     /// Stack position of each protocol `registry` can dissect.
     layer_of: HashMap<&'static str, ProtocolLayer>,
+    /// The sequence highlighted among the displayed packets.
+    sequence: Option<sequence::SequenceScan>,
 }
 
 impl Session {
@@ -280,6 +283,7 @@ impl Session {
             ordered: None,
             pending_rows: HashSet::new(),
             layer_of,
+            sequence: None,
         }
     }
 
@@ -385,6 +389,10 @@ impl Session {
         self.stats_progress = None;
         self.field_stats_progress = None;
         self.histogram_progress = None;
+        // Keys can change with the dissectors: scan the sequence again.
+        if let Some(key) = self.sequence.take().map(|s| s.key) {
+            self.start_sequence(key);
+        }
         self.cancel_filter();
         let filter = self.applied_filter.clone();
         // The filter was valid when applied, so only a failed scan (reported
