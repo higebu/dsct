@@ -168,6 +168,8 @@ pub struct Session {
     sequence: Option<sequence::SequenceScan>,
     /// The problems found among the displayed packets.
     problems: Option<problems::ProblemScan>,
+    /// Packets the user marked, by index.
+    marked: std::collections::BTreeSet<usize>,
 }
 
 impl Session {
@@ -288,6 +290,7 @@ impl Session {
             layer_of,
             sequence: None,
             problems: None,
+            marked: std::collections::BTreeSet::new(),
         }
     }
 
@@ -406,6 +409,34 @@ impl Session {
         // by `filter_tick`) can follow.
         let _ = self.apply_filter(&filter);
         Ok(())
+    }
+
+    // -- Marks -----------------------------------------------------------------
+
+    /// Mark packet `pkt_idx`, or unmark it if it was marked. Returns whether
+    /// it is marked now.
+    pub fn toggle_mark(&mut self, pkt_idx: usize) -> bool {
+        if self.marked.remove(&pkt_idx) {
+            false
+        } else {
+            self.marked.insert(pkt_idx);
+            true
+        }
+    }
+
+    /// Whether packet `pkt_idx` is marked.
+    pub fn is_marked(&self, pkt_idx: usize) -> bool {
+        self.marked.contains(&pkt_idx)
+    }
+
+    /// The marked packets, in capture order.
+    pub fn marked(&self) -> impl Iterator<Item = usize> + '_ {
+        self.marked.iter().copied()
+    }
+
+    /// Unmark every packet.
+    pub fn clear_marks(&mut self) {
+        self.marked.clear();
     }
 
     // -- In-order dissection pass ---------------------------------------------
@@ -818,6 +849,19 @@ mod tests {
             .unwrap();
         assert!(session.ordered.is_some());
         assert!(session.ordered_needs_tick());
+    }
+
+    #[test]
+    fn packets_are_marked_and_unmarked() {
+        let (mut session, _tmp) = test_session(3);
+        assert!(session.toggle_mark(2));
+        assert!(session.toggle_mark(0));
+        assert!(session.is_marked(2));
+        assert_eq!(session.marked().collect::<Vec<_>>(), [0, 2]);
+        assert!(!session.toggle_mark(2));
+        assert!(!session.is_marked(2));
+        session.clear_marks();
+        assert_eq!(session.marked().count(), 0);
     }
 
     #[test]

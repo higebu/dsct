@@ -1,6 +1,6 @@
-//! Several captures seen together: the packet nearest in time to another,
-//! and the displayed packets of several sessions merged by time into one
-//! pcapng file.
+//! Writing pcapng files: chosen packets of a capture, and the displayed
+//! packets of several captures merged by time; and the packet nearest in
+//! time to another.
 
 use std::io::{self, Write};
 
@@ -65,14 +65,6 @@ pub fn write_merged_pcapng(sessions: &[&Session], out: &mut impl Write) -> io::R
             "too many captures to merge",
         ));
     }
-    // Section Header Block: byte-order magic, version 1.0, unknown length.
-    let mut shb = Vec::with_capacity(16);
-    shb.extend_from_slice(&BYTE_ORDER_MAGIC.to_le_bytes());
-    shb.extend_from_slice(&1u16.to_le_bytes());
-    shb.extend_from_slice(&0u16.to_le_bytes());
-    shb.extend_from_slice(&u64::MAX.to_le_bytes());
-    write_block(out, SHB, &shb)?;
-
     // Every packet to write: (time, source, index in its session).
     let mut packets: Vec<(u64, u8, usize)> = Vec::new();
     for (source, session) in sessions.iter().enumerate() {
@@ -84,14 +76,46 @@ pub fn write_merged_pcapng(sessions: &[&Session], out: &mut impl Write) -> io::R
     }
     // Stable: ties keep source, then capture order.
     packets.sort_by_key(|&(t, source, idx)| (t, source, idx));
+    write_packets(sessions, &packets, out)
+}
 
-    // Interface Description Blocks, one per (source, link type) in use,
-    // with the default microsecond resolution.
+impl Session {
+    /// Write the packets at `pkt_indices` (in that order) into `out` as a
+    /// pcapng file, keeping their link types and timestamps.
+    ///
+    /// Returns how many packets were written.
+    pub fn write_pcapng(&self, pkt_indices: &[usize], out: &mut impl Write) -> io::Result<usize> {
+        let packets: Vec<(u64, u8, usize)> = pkt_indices
+            .iter()
+            .filter_map(|&idx| Some((self.packet_time_us(idx)?, 0, idx)))
+            .collect();
+        Ok(write_packets(&[self], &packets, out)?.len())
+    }
+}
+
+/// Write `packets` — (time, source, index in its session) — of `sessions`
+/// into `out` as one pcapng file, in that order, with an interface per
+/// (source, link type) at the default microsecond resolution.
+fn write_packets(
+    sessions: &[&Session],
+    packets: &[(u64, u8, usize)],
+    out: &mut impl Write,
+) -> io::Result<Vec<u8>> {
+    // Section Header Block: byte-order magic, version 1.0, unknown length.
+    let mut shb = Vec::with_capacity(16);
+    shb.extend_from_slice(&BYTE_ORDER_MAGIC.to_le_bytes());
+    shb.extend_from_slice(&1u16.to_le_bytes());
+    shb.extend_from_slice(&0u16.to_le_bytes());
+    shb.extend_from_slice(&u64::MAX.to_le_bytes());
+    write_block(out, SHB, &shb)?;
+
     let mut interfaces: Vec<(u8, u16)> = Vec::new();
     let mut sources = Vec::with_capacity(packets.len());
-    for &(t, source, idx) in &packets {
+    for &(t, source, idx) in packets {
         let session = sessions[usize::from(source)];
-        let index = &session.indices[idx];
+        let Some(index) = session.indices.get(idx) else {
+            continue;
+        };
         let Some(data) = session.capture.packet_data(index) else {
             continue;
         };
@@ -186,6 +210,19 @@ mod tests {
         // The packets are the same bytes.
         let first = &out[indices[0].data_offset as usize..][..indices[0].captured_len as usize];
         assert_eq!(first, a.capture.packet_data(&a.indices[0]).unwrap());
+    }
+
+    #[test]
+    fn chosen_packets_are_written_in_their_order() {
+        let (a, _ta) = session_at(&[1_000, 2_000, 3_000]);
+        let mut out = Vec::new();
+        assert_eq!(a.write_pcapng(&[2, 0, 9], &mut out).unwrap(), 2);
+        let indices = loader::build_index(&out).unwrap();
+        let times: Vec<u64> = indices
+            .iter()
+            .map(|i| timestamp_us(i.timestamp_secs, i.timestamp_usecs))
+            .collect();
+        assert_eq!(times, [3_000, 1_000]);
     }
 
     #[test]
