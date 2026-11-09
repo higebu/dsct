@@ -414,11 +414,9 @@ fn first_tls_handshake_type_name(buf: &DissectBuffer<'_>, layer: &Layer) -> Opti
     buf.resolve_nested_display_name(&first, "type_name")
 }
 
-/// The fields of `layer` outside its containers: a container (an array or
-/// an object, such as an option list) and what it holds are left out. A
-/// container's display name labels its node in the detail tree; it is
-/// resolved from its own children, not from the layer's fields.
-fn top_level_fields<'b, 'pkt>(
+/// The fields directly in `layer`, containers (arrays and objects, such
+/// as an option list) included but not what they hold.
+fn layer_children<'b, 'pkt>(
     buf: &'b DissectBuffer<'pkt>,
     layer: &'b Layer,
 ) -> impl Iterator<Item = &'b Field<'pkt>> {
@@ -426,20 +424,117 @@ fn top_level_fields<'b, 'pkt>(
     let mut i = layer.field_range.start as usize;
     let end = (layer.field_range.end as usize).min(fields.len());
     std::iter::from_fn(move || {
-        while i < end {
-            let f = &fields[i];
-            match &f.value {
-                FieldValue::Array(r) | FieldValue::Object(r) => {
-                    i = (i + 1).max(r.end as usize);
-                }
-                _ => {
-                    i += 1;
-                    return Some(f);
-                }
-            }
+        if i >= end {
+            return None;
         }
-        None
+        let f = &fields[i];
+        i = match &f.value {
+            FieldValue::Array(r) | FieldValue::Object(r) => (i + 1).max(r.end as usize),
+            _ => i + 1,
+        };
+        Some(f)
     })
+}
+
+/// The fields of `layer` outside its containers. A container's display
+/// name labels its node in the detail tree; it is resolved from its own
+/// children, not from the layer's fields.
+fn top_level_fields<'b, 'pkt>(
+    buf: &'b DissectBuffer<'pkt>,
+    layer: &'b Layer,
+) -> impl Iterator<Item = &'b Field<'pkt>> {
+    layer_children(buf, layer)
+        .filter(|f| !matches!(f.value, FieldValue::Array(_) | FieldValue::Object(_)))
+}
+
+/// The names of the elements of `layer`'s lists (an RTCP packet's report
+/// types, an LDP PDU's messages): each element's own display name, or that
+/// of its first named field. Each name once, in order.
+fn element_names<'b>(buf: &'b DissectBuffer<'_>, layer: &'b Layer) -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = Vec::new();
+    for list in layer_children(buf, layer) {
+        let FieldValue::Array(range) = &list.value else {
+            continue;
+        };
+        let elements = buf.nested_fields(range);
+        let mut j = 0;
+        while j < elements.len() {
+            let element = &elements[j];
+            let FieldValue::Object(obj) = &element.value else {
+                j += 1;
+                continue;
+            };
+            let children = buf.nested_fields(obj);
+            let name = element
+                .descriptor
+                .display_fn
+                .and_then(|f| f(&element.value, children))
+                .or_else(|| {
+                    children.iter().find_map(|c| {
+                        let f = c.descriptor.display_fn?;
+                        f(&c.value, children)
+                    })
+                });
+            if let Some(name) = name.filter(|n| !n.is_empty() && *n != "Unknown")
+                && !names.contains(&name)
+            {
+                names.push(name);
+            }
+            // The next element follows this one's children.
+            j += 1 + children.len();
+        }
+    }
+    names
+}
+
+/// Whether the TCP layer of `buf` has the flag field `name` set.
+fn tcp_flag(buf: &DissectBuffer<'_>, name: &str) -> bool {
+    buf.layers()
+        .iter()
+        .rev()
+        .find(|l| l.name == "TCP")
+        .and_then(|l| buf.field_by_name(l, name))
+        .is_some_and(|f| matches!(f.value, FieldValue::U8(1)))
+}
+
+/// A `Str` field of `layer`.
+fn str_field<'a>(buf: &'a DissectBuffer<'_>, layer: &Layer, name: &str) -> Option<&'a str> {
+    buf.field_by_name(layer, name).and_then(|f| match &f.value {
+        FieldValue::Str(s) => Some(*s),
+        _ => None,
+    })
+}
+
+/// The SIP messages of `buf` as Wireshark lists them: `Request: METHOD
+/// URI` or `Status: CODE REASON`, separated by ` | `, the last noting a
+/// session description (SDP) when the packet carries one.
+fn sip_info(buf: &DissectBuffer<'_>) -> Option<String> {
+    let lines: Vec<String> = buf
+        .layers()
+        .iter()
+        .filter(|l| l.name == "SIP")
+        .filter_map(|layer| {
+            if let (Some(m), Some(u)) = (
+                str_field(buf, layer, "method"),
+                str_field(buf, layer, "uri"),
+            ) {
+                return Some(format!("Request: {m} {u}"));
+            }
+            let code = extract_u16_from_buf(buf, layer, "status_code")?;
+            Some(match str_field(buf, layer, "reason_phrase") {
+                Some(r) => format!("Status: {code} {r}"),
+                None => format!("Status: {code}"),
+            })
+        })
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let mut info = lines.join(" | ");
+    if buf.layer_by_name("SDP").is_some() {
+        info.push_str(", with session description");
+    }
+    Some(info)
 }
 
 /// Extract a one-line info string from the packet.
@@ -451,6 +546,15 @@ fn top_level_fields<'b, 'pkt>(
 ///    (e.g., `command_name`, `type_name`, `result_code_name`).
 /// 4. Fallback: first few meaningful fields of the topmost layer.
 fn extract_info(buf: &DissectBuffer<'_>, data: &[u8]) -> String {
+    // --- A segment waiting for the rest of its message (Wireshark's words):
+    // only the reassembly placeholder, no message dissected in this packet ---
+    if let Some(top) = buf.layers().last()
+        && buf.field_by_name(top, "reassembly_in_progress").is_some()
+        && buf.layers().iter().filter(|l| l.name == top.name).count() == 1
+    {
+        return "[TCP segment of a reassembled PDU]".to_string();
+    }
+
     // --- DNS: query/response + query name ---
     if let Some(layer) = buf.layer_by_name("DNS")
         && let Some(qr) = buf.field_by_name(layer, "qr")
@@ -480,7 +584,7 @@ fn extract_info(buf: &DissectBuffer<'_>, data: &[u8]) -> String {
         return direction.to_string();
     }
 
-    // --- HTTP: request → "GET /path", response → "200 OK (text/html)" ---
+    // --- HTTP: request → "GET /path HTTP/1.1", response → "HTTP/1.1 200 OK (text/html)" ---
     if let Some(layer) = buf.layer_by_name("HTTP") {
         let method = buf
             .field_by_name(layer, "method")
@@ -494,8 +598,13 @@ fn extract_info(buf: &DissectBuffer<'_>, data: &[u8]) -> String {
                 FieldValue::Str(s) => Some(*s),
                 _ => None,
             });
+        let version = str_field(buf, layer, "version");
         if let (Some(m), Some(u)) = (method, uri) {
-            return format!("{m} {u}");
+            // The request line, as Wireshark shows it.
+            return match version {
+                Some(v) => format!("{m} {u} {v}"),
+                None => format!("{m} {u}"),
+            };
         }
         if let Some(code) = extract_u16_from_buf(buf, layer, "status_code") {
             let reason = buf
@@ -509,12 +618,21 @@ fn extract_info(buf: &DissectBuffer<'_>, data: &[u8]) -> String {
                 Some(r) => format!("{code} {r}"),
                 None => format!("{code}"),
             };
+            // The status line, as Wireshark shows it.
+            if let Some(v) = version {
+                info = format!("{v} {info}");
+            }
             if let Some(ct) = content_type {
                 let media = ct.split(';').next().unwrap_or(ct).trim();
                 info.push_str(&format!(" ({media})"));
             }
             return info;
         }
+    }
+
+    // --- SIP: "Request: INVITE sip:…" / "Status: 200 OK" ---
+    if let Some(info) = sip_info(buf) {
+        return info;
     }
 
     let top_name = buf.layers().last().map(|l| l.name).unwrap_or("");
@@ -526,9 +644,14 @@ fn extract_info(buf: &DissectBuffer<'_>, data: &[u8]) -> String {
         let sp = extract_u16_from_buf(buf, layer, "src_port").unwrap_or(0);
         let dp = extract_u16_from_buf(buf, layer, "dst_port").unwrap_or(0);
         let flags_name = buf.resolve_display_name(layer, "flags_name");
-        return match flags_name {
+        let info = match flags_name {
             Some(f) => format!("{sp} \u{2192} {dp} [{f}]"),
             None => format!("{sp} \u{2192} {dp}"),
+        };
+        return if tcp_flag(buf, "retransmission") {
+            format!("[TCP Retransmission] {info}")
+        } else {
+            info
         };
     }
 
@@ -631,24 +754,26 @@ fn extract_info(buf: &DissectBuffer<'_>, data: &[u8]) -> String {
         }
     }
 
-    // --- Fallback: first few fields of topmost layer ---
+    // --- The names of the topmost layer's list elements ---
     if let Some(layer) = buf.layers().last() {
-        let parts: Vec<String> = buf
-            .layer_fields(layer)
-            .iter()
+        let names = element_names(buf, layer);
+        if !names.is_empty() {
+            return names.join(", ");
+        }
+    }
+
+    // --- Fallback: the topmost layer's first fields, as the tree names them ---
+    if let Some(layer) = buf.layers().last() {
+        let parts: Vec<String> = top_level_fields(buf, layer)
             .filter(|f| f.descriptor.display_fn.is_none())
-            .take(3)
             .filter_map(|f| {
                 let v = format_field_short(&f.value);
-                if v.is_empty() {
-                    None
-                } else {
-                    Some(format!("{}={}", f.name(), v))
-                }
+                (!v.is_empty()).then(|| format!("{}: {v}", f.descriptor.display_name))
             })
+            .take(3)
             .collect();
         if !parts.is_empty() {
-            return parts.join(" ");
+            return parts.join(", ");
         }
     }
 
@@ -981,14 +1106,17 @@ pub(crate) mod tests {
         buf.begin_layer("HTTP", None, &[], 0..0);
         push_field(&mut buf, "method", FieldValue::Str("GET"));
         push_field(&mut buf, "uri", FieldValue::Str("/index.html"));
+        push_field(&mut buf, "version", FieldValue::Str("HTTP/1.1"));
         buf.end_layer();
-        assert_eq!(extract_info(&buf, &[]), "GET /index.html");
+        // As Wireshark shows it: the request line.
+        assert_eq!(extract_info(&buf, &[]), "GET /index.html HTTP/1.1");
     }
 
     #[test]
     fn extract_info_http_response_with_content_type() {
         let mut buf = DissectBuffer::new();
         buf.begin_layer("HTTP", None, &[], 0..0);
+        push_field(&mut buf, "version", FieldValue::Str("HTTP/1.1"));
         push_field(&mut buf, "status_code", FieldValue::U16(200));
         push_field(&mut buf, "reason_phrase", FieldValue::Str("OK"));
         let h_idx = buf.begin_container(
@@ -1006,7 +1134,123 @@ pub(crate) mod tests {
         buf.end_container(obj_idx);
         buf.end_container(h_idx);
         buf.end_layer();
-        assert_eq!(extract_info(&buf, &[]), "200 OK (text/html)");
+        // As Wireshark shows it: the status line and the media type.
+        assert_eq!(extract_info(&buf, &[]), "HTTP/1.1 200 OK (text/html)");
+    }
+
+    fn dissected_info(frame: &[u8]) -> String {
+        let registry = DissectorRegistry::default();
+        let mut buf = DissectBuffer::new();
+        let _ = registry.dissect(frame, &mut buf);
+        extract_info(&buf, frame)
+    }
+
+    #[test]
+    fn sip_info_is_the_request_or_status_line() {
+        assert_eq!(
+            dissected_info(&crate::test_fixtures::sip_options_udp_frame()),
+            "Request: OPTIONS sip:bob@example.com"
+        );
+        assert_eq!(
+            dissected_info(&crate::test_fixtures::sip_response_udp_frame(
+                486,
+                "Busy Here"
+            )),
+            "Status: 486 Busy Here"
+        );
+    }
+
+    #[test]
+    fn sip_info_tells_of_a_session_description() {
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer("SIP", None, &[], 0..0);
+        push_field(&mut buf, "is_response", FieldValue::U8(0));
+        push_field(&mut buf, "method", FieldValue::Str("INVITE"));
+        push_field(&mut buf, "uri", FieldValue::Str("sip:bob@example.com"));
+        buf.end_layer();
+        buf.begin_layer("SDP", None, &[], 0..0);
+        push_field(&mut buf, "version", FieldValue::U8(0));
+        buf.end_layer();
+        assert_eq!(
+            extract_info(&buf, &[]),
+            "Request: INVITE sip:bob@example.com, with session description"
+        );
+    }
+
+    #[test]
+    fn a_segment_of_a_message_being_reassembled_says_so() {
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer("TCP", None, &[], 0..0);
+        push_field(&mut buf, "src_port", FieldValue::U16(41519));
+        push_field(&mut buf, "dst_port", FieldValue::U16(5060));
+        push_field(&mut buf, "reassembly_in_progress", FieldValue::U8(1));
+        buf.end_layer();
+        buf.begin_layer("SIP", None, &[], 0..0);
+        push_field(&mut buf, "reassembly_in_progress", FieldValue::U8(1));
+        push_field(&mut buf, "segment_count", FieldValue::U32(1));
+        buf.end_layer();
+        assert_eq!(
+            extract_info(&buf, &[]),
+            "[TCP segment of a reassembled PDU]"
+        );
+    }
+
+    #[test]
+    fn a_message_before_the_next_ones_start_is_still_shown() {
+        // A complete response, then the start of the next message.
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer("TCP", None, &[], 0..0);
+        push_field(&mut buf, "reassembly_in_progress", FieldValue::U8(1));
+        buf.end_layer();
+        buf.begin_layer("HTTP", None, &[], 0..0);
+        push_field(&mut buf, "version", FieldValue::Str("HTTP/1.1"));
+        push_field(&mut buf, "status_code", FieldValue::U16(200));
+        push_field(&mut buf, "reason_phrase", FieldValue::Str("OK"));
+        buf.end_layer();
+        buf.begin_layer("HTTP", None, &[], 0..0);
+        push_field(&mut buf, "reassembly_in_progress", FieldValue::U8(1));
+        buf.end_layer();
+        assert_eq!(extract_info(&buf, &[]), "HTTP/1.1 200 OK");
+    }
+
+    #[test]
+    fn a_tcp_retransmission_says_so() {
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer("TCP", None, &[], 0..0);
+        push_field(&mut buf, "src_port", FieldValue::U16(5060));
+        push_field(&mut buf, "dst_port", FieldValue::U16(41519));
+        push_field(&mut buf, "retransmission", FieldValue::U8(1));
+        buf.end_layer();
+        assert_eq!(
+            extract_info(&buf, &[]),
+            "[TCP Retransmission] 5060 \u{2192} 41519"
+        );
+    }
+
+    #[test]
+    fn info_names_the_elements_of_a_list() {
+        // RTCP-like: a list of packets, each naming its type.
+        let mut buf = DissectBuffer::new();
+        buf.begin_layer("Compound", None, &[], 0..0);
+        let list = buf.begin_container(
+            test_desc("packets", "Packets"),
+            FieldValue::Array(0..0),
+            0..0,
+        );
+        for name in ["Sender Report", "Source Description", "Sender Report"] {
+            let obj = buf.begin_container(test_desc("p", "P"), FieldValue::Object(0..0), 0..0);
+            push_field(&mut buf, "version", FieldValue::U8(2));
+            let display: packet_dissector_core::field::DisplayFn = match name {
+                "Sender Report" => |_, _| Some("Sender Report"),
+                _ => |_, _| Some("Source Description"),
+            };
+            push_field_with_display(&mut buf, "packet_type", FieldValue::U8(200), display);
+            buf.end_container(obj);
+        }
+        buf.end_container(list);
+        buf.end_layer();
+        // Each name once, in order.
+        assert_eq!(extract_info(&buf, &[]), "Sender Report, Source Description");
     }
 
     #[test]
@@ -1236,20 +1480,22 @@ pub(crate) mod tests {
         let mut buf = DissectBuffer::new();
         buf.begin_layer("SomeProto", None, &[], 0..0);
         push_field_with_display(&mut buf, "type", FieldValue::U8(0), |_, _| Some("Unknown"));
-        push_field(&mut buf, "version", FieldValue::U8(2));
+        buf.push_field(test_desc("version", "Version"), FieldValue::U8(2), 0..0);
         buf.end_layer();
-        assert_eq!(extract_info(&buf, &[]), "version=2");
+        assert_eq!(extract_info(&buf, &[]), "Version: 2");
     }
 
     #[test]
     fn extract_info_fallback_first_fields() {
         let mut buf = DissectBuffer::new();
         buf.begin_layer("Custom", None, &[], 0..0);
-        push_field(&mut buf, "version", FieldValue::U8(1));
-        push_field(&mut buf, "length", FieldValue::U16(100));
-        push_field(&mut buf, "id", FieldValue::U32(42));
+        buf.push_field(test_desc("version", "Version"), FieldValue::U8(1), 0..0);
+        buf.push_field(test_desc("length", "Length"), FieldValue::U16(100), 0..0);
+        buf.push_field(test_desc("id", "ID"), FieldValue::U32(42), 0..0);
+        buf.push_field(test_desc("extra", "Extra"), FieldValue::U32(7), 0..0);
         buf.end_layer();
-        assert_eq!(extract_info(&buf, &[]), "version=1 length=100 id=42");
+        // The way the detail tree names them, the first three.
+        assert_eq!(extract_info(&buf, &[]), "Version: 1, Length: 100, ID: 42");
     }
 
     #[test]
