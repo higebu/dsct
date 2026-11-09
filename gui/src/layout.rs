@@ -15,8 +15,13 @@ use crate::app::DsctApp;
 const LIST_SIZE: f32 = 360.;
 /// Width of the details (details to the right) by default.
 const DETAILS_SIZE: f32 = 480.;
+/// Height of the time chart by default.
+const TIMELINE_SIZE: f32 = 100.;
 /// Smallest size kept for a pane, so a stored size never hides it.
 const MIN_SIZE: f32 = 120.;
+/// Smallest height kept for the time chart: its header, footer and short
+/// bars.
+pub const MIN_TIMELINE_SIZE: f32 = 80.;
 /// How long after the last resize the layout is saved.
 const SAVE_DELAY: Duration = Duration::from_millis(800);
 
@@ -31,6 +36,8 @@ pub struct Layout {
     pub list_size: f32,
     /// Width of the details, details to the right.
     pub details_size: f32,
+    /// Height of the time chart above the packet list.
+    pub timeline_size: f32,
 }
 
 impl Default for Layout {
@@ -40,6 +47,7 @@ impl Default for Layout {
             bytes_open: false,
             list_size: LIST_SIZE,
             details_size: DETAILS_SIZE,
+            timeline_size: TIMELINE_SIZE,
         }
     }
 }
@@ -75,6 +83,9 @@ impl Layout {
         if let Some(s) = size("details_size") {
             layout.details_size = s;
         }
+        if let Some(s) = v.get("timeline_size").and_then(Value::as_f64) {
+            layout.timeline_size = (s as f32).max(MIN_TIMELINE_SIZE);
+        }
         layout
     }
 
@@ -84,6 +95,7 @@ impl Layout {
             "bytes_open": self.bytes_open,
             "list_size": self.list_size,
             "details_size": self.details_size,
+            "timeline_size": self.timeline_size,
         })
         .to_string()
     }
@@ -140,6 +152,16 @@ impl DsctApp {
         }
     }
 
+    /// The time chart was resized to `size`.
+    pub(crate) fn timeline_resized(&mut self, size: f32, cx: &mut Context<Self>) {
+        let size = size.max(MIN_TIMELINE_SIZE);
+        if (self.layout.timeline_size - size).abs() >= 1. {
+            self.layout.timeline_size = size;
+            self.save_layout_soon(cx);
+            cx.notify();
+        }
+    }
+
     /// Show or hide the Bytes pane.
     pub(crate) fn toggle_bytes(&mut self, cx: &mut Context<Self>) {
         self.layout.bytes_open = !self.layout.bytes_open;
@@ -166,6 +188,7 @@ mod tests {
             bytes_open: true,
             list_size: 300.,
             details_size: 520.,
+            timeline_size: 160.,
         };
         assert_eq!(Layout::from_json(&layout.to_json()), layout);
     }

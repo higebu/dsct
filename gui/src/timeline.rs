@@ -17,7 +17,13 @@ use crate::{format, theme};
 pub const BUCKETS: usize = 60;
 
 /// Height of the tallest bar.
-const BAR_HEIGHT: f32 = 36.;
+/// Height of the chart's header, footer and padding around the bars.
+const CHROME_HEIGHT: f32 = 64.;
+
+/// Height of the bars when the chart is `size` tall.
+pub fn bar_height(size: f32) -> f32 {
+    (size - CHROME_HEIGHT).max(16.)
+}
 
 /// Series in the legend at most.
 const LEGEND: usize = 5;
@@ -272,6 +278,7 @@ impl DsctApp {
             .max()
             .unwrap_or(0);
         let start = histogram.start_us.saturating_sub(first_us);
+        let bar_px = bar_height(self.layout.timeline_size);
 
         let weak = cx.entity().downgrade();
         let pinned = self.fields.pinned.clone();
@@ -349,7 +356,7 @@ impl DsctApp {
         let bars = histogram.buckets.iter().enumerate().map(|(i, bucket)| {
             let in_brush = selecting && brush.is_some_and(|(lo, hi)| (lo..=hi).contains(&i));
             let counts = bucket_counts(histogram, bucket);
-            let heights = segment_heights(&counts, peak, BAR_HEIGHT);
+            let heights = segment_heights(&counts, peak, bar_px);
             let segment_colors: Vec<Hsla> = if histogram.complete {
                 colors.clone()
             } else {
@@ -365,7 +372,7 @@ impl DsctApp {
             v_flex()
                 .id(("bar", i))
                 .flex_1()
-                .h(px(BAR_HEIGHT))
+                .h(px(bar_px))
                 .justify_end()
                 .gap(px(1.))
                 .rounded(px(2.))
@@ -443,13 +450,12 @@ impl DsctApp {
         let end = start + bucket_us * histogram.buckets.len() as u64;
         Some(
             v_flex()
-                .flex_shrink_0()
+                .size_full()
+                .overflow_hidden()
                 .px_3()
                 .pt_2()
                 .pb_1p5()
                 .gap_1p5()
-                .border_b_1()
-                .border_color(theme::border())
                 .text_xs()
                 .text_color(theme::text_muted())
                 .child(

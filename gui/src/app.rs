@@ -1065,8 +1065,33 @@ impl Render for DsctApp {
                         .bg(theme::surface())
                         .child(tab_bar)
                         .child(filter_bar)
-                        .children(timeline)
-                        .child(div().flex_1().min_h_0().child(panes)),
+                        .child(div().flex_1().min_h_0().child(match timeline {
+                            // The chart and the panes share a resizable split.
+                            Some(timeline) => {
+                                let weak = cx.entity().downgrade();
+                                v_resizable("timeline-split")
+                                    .on_resize(move |state: &Entity<ResizableState>, _, cx| {
+                                        let Some(size) = state.read(cx).sizes().first().copied()
+                                        else {
+                                            return;
+                                        };
+                                        let _ = weak.update(cx, |app, cx| {
+                                            app.timeline_resized(f32::from(size), cx)
+                                        });
+                                    })
+                                    .child(
+                                        resizable_panel()
+                                            .size(px(self.layout.timeline_size))
+                                            .size_range(
+                                                px(crate::layout::MIN_TIMELINE_SIZE)..px(400.),
+                                            )
+                                            .child(timeline),
+                                    )
+                                    .child(resizable_panel().child(panes))
+                                    .into_any_element()
+                            }
+                            None => panes,
+                        })),
                 )
                 .into_any_element()
         } else {
