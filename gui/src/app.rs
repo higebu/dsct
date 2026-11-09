@@ -405,6 +405,17 @@ impl DsctApp {
         if !matches!(session.sequence_tick(), Tick::Idle) {
             sequence_changed = true;
         }
+        let flow_running = match session.flow_tick() {
+            Tick::Idle => false,
+            Tick::Running => {
+                changed = true;
+                true
+            }
+            Tick::Done(()) => {
+                changed = true;
+                false
+            }
+        };
         if session.problems().is_none() {
             session.start_problems();
         }
@@ -427,6 +438,7 @@ impl DsctApp {
             || session.histogram_running()
             || session.sequence().is_some_and(|s| !s.complete(displayed))
             || session.problems().is_some_and(|s| !s.complete(displayed))
+            || flow_running
             // Field jobs wait for indexing or a filter scan to end.
             || self.fields.stale
             || self.timeline.stale;
@@ -646,6 +658,7 @@ impl DsctApp {
             Command::DetailsSide => self.toggle_details_side(cx),
             Command::ExportDisplayed => self.export_packets(ExportSet::Displayed, window, cx),
             Command::ExportMarked => self.export_packets(ExportSet::Marked, window, cx),
+            Command::Flow => self.open_flow(cx),
             Command::Sequence => {
                 let on = !self.sequence.on;
                 self.set_sequence_on(on, cx);

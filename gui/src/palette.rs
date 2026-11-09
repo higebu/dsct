@@ -31,6 +31,7 @@ pub enum Command {
     Filter(String),
     DecodeAs,
     Sequence,
+    Flow,
     Mark,
     ToggleBytes,
     DetailsSide,
@@ -112,6 +113,12 @@ fn commands(has_session: bool) -> Vec<(Command, &'static str, &'static str, Opti
                 Command::Sequence,
                 "View",
                 "Highlight the sequence of the selected packet (on/off)",
+                None,
+            ),
+            (
+                Command::Flow,
+                "View",
+                "Draw the sequence of the selected packet as a diagram",
                 None,
             ),
             (

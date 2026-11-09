@@ -5,6 +5,7 @@ mod app;
 mod bottom;
 mod decode_as;
 mod fields_view;
+mod flow_view;
 mod format;
 mod graph;
 mod layout;

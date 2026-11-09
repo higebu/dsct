@@ -18,6 +18,7 @@ mod field_jobs;
 pub mod fields;
 pub mod filter_bitmap;
 mod filter_scan;
+pub mod flow;
 pub mod hosts;
 pub mod live;
 pub mod loader;
@@ -167,6 +168,12 @@ pub struct Session {
     layer_of: HashMap<&'static str, ProtocolLayer>,
     /// The sequence highlighted among the displayed packets.
     sequence: Option<sequence::SequenceScan>,
+    /// Sequence scans started so far.
+    sequence_generation: u64,
+    /// Whether the highlighted sequence is drawn as a diagram.
+    flow_on: bool,
+    /// Its rows.
+    flow: Option<flow::FlowScan>,
     /// The problems found among the displayed packets.
     problems: Option<problems::ProblemScan>,
     /// Packets the user marked, by index.
@@ -290,6 +297,9 @@ impl Session {
             pending_rows: HashSet::new(),
             layer_of,
             sequence: None,
+            sequence_generation: 0,
+            flow_on: false,
+            flow: None,
             problems: None,
             marked: std::collections::BTreeSet::new(),
         }

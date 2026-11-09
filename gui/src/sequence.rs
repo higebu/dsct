@@ -7,6 +7,7 @@ use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{Icon, Sizable as _, h_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::DsctApp;
@@ -143,6 +144,7 @@ impl DsctApp {
         };
         drop(guard);
 
+        let flow_shown = self.bottom.open && self.bottom.tab == crate::bottom::BottomTab::Flow;
         let weak = cx.entity().downgrade();
         let keys = self.sequence.keys.clone().unwrap_or_default();
         let current = key.clone();
@@ -217,6 +219,15 @@ impl DsctApp {
                         "Next packet in the sequence",
                     )
                     .on_click(cx.listener(|this, _, _, cx| this.step_sequence(true, cx))),
+                )
+                .child(
+                    Button::new("sequence-flow")
+                        .label("Flow")
+                        .xsmall()
+                        .when(flow_shown, |b| b.primary())
+                        .when(!flow_shown, |b| b.outline())
+                        .tooltip("Draw the sequence as a diagram")
+                        .on_click(cx.listener(|this, _, _, cx| this.open_flow(cx))),
                 )
                 .child(
                     Button::new("sequence-only")

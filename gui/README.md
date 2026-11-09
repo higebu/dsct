@@ -18,6 +18,7 @@ dissected in the background, so large files open at once.
   conversations
 - Graph of the hosts that talk to each other, by inner or tunnel addresses
 - Selecting a packet dims the packets outside its call, stream or host pair
+- Flow: the highlighted call, stream or host pair as a sequence diagram
 - Problems: malformed packets, error responses and TCP retransmissions,
   marked in the packet list
 - Mark packets (⌘M) and export the displayed or marked ones as pcapng

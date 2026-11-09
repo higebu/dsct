@@ -239,6 +239,9 @@ pub struct SequenceScan {
     pub scanned: usize,
     /// Indices of the packets found so far, in capture order.
     pub members: Vec<usize>,
+    /// Counts the scans started, so that results built from an earlier
+    /// scan can tell they are stale.
+    pub generation: u64,
 }
 
 impl SequenceScan {
@@ -273,10 +276,12 @@ impl Session {
     /// Scan the displayed packets for the sequence `key`, replacing the
     /// one scanned before.
     pub fn start_sequence(&mut self, key: SequenceKey) {
+        self.sequence_generation += 1;
         self.sequence = Some(SequenceScan {
             key,
             scanned: 0,
             members: Vec::new(),
+            generation: self.sequence_generation,
         });
     }
 

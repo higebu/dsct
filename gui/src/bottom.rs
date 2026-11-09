@@ -1,4 +1,4 @@
-//! The bottom panel: Follow Stream, Stats, Graph and Problems, as tabs.
+//! The bottom panel: Follow Stream, Flow, Stats, Graph and Problems, as tabs.
 
 use dsct::session::StatsReport;
 use dsct::session::responses::{self, Responses};
@@ -28,6 +28,7 @@ pub struct StatsView {
 pub enum BottomTab {
     #[default]
     Stream,
+    Flow,
     Stats,
     Graph,
     Problems,
@@ -41,6 +42,9 @@ pub struct BottomPanel {
     pub stream: Option<crate::stream_view::StreamView>,
     pub stats: Option<StatsView>,
     pub graph: crate::graph::GraphState,
+    /// Whether the Flow tab was opened.
+    pub flow_open: bool,
+    pub flow: crate::flow_view::FlowView,
     /// The tab to show when the stats being collected are done.
     pub stats_tab: Option<BottomTab>,
 }
@@ -67,6 +71,7 @@ impl BottomPanel {
     fn has(&self, tab: BottomTab) -> bool {
         match tab {
             BottomTab::Stream => self.stream.is_some(),
+            BottomTab::Flow => self.flow_open,
             BottomTab::Stats | BottomTab::Graph => self.stats.is_some(),
             BottomTab::Problems => true,
         }
@@ -80,7 +85,7 @@ impl BottomPanel {
                 .stats
                 .as_ref()
                 .and_then(|s| serde_json::to_string_pretty(&s.report.output).ok()),
-            BottomTab::Graph | BottomTab::Problems => None,
+            BottomTab::Flow | BottomTab::Graph | BottomTab::Problems => None,
         }
     }
 }
@@ -102,6 +107,7 @@ impl DsctApp {
 
         let tabs = [
             (BottomTab::Stream, "Stream"),
+            (BottomTab::Flow, "Flow"),
             (BottomTab::Stats, "Stats"),
             (BottomTab::Graph, "Graph"),
             (BottomTab::Problems, "Problems"),
@@ -174,6 +180,7 @@ impl DsctApp {
 
         let body = match self.bottom.tab {
             BottomTab::Stream => self.render_stream(cx).into_any_element(),
+            BottomTab::Flow => self.render_flow(cx).into_any_element(),
             BottomTab::Stats => self.render_stats(cx).into_any_element(),
             BottomTab::Graph => self.render_graph(cx).into_any_element(),
             BottomTab::Problems => self.render_problems(cx).into_any_element(),
