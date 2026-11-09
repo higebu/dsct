@@ -18,6 +18,7 @@ mod field_jobs;
 pub mod fields;
 pub mod filter_bitmap;
 mod filter_scan;
+pub mod hosts;
 pub mod live;
 pub mod loader;
 pub mod merge;

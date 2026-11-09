@@ -267,6 +267,8 @@ pub struct StatsProgress {
     pub registry: packet_dissector::registry::DissectorRegistry,
     /// The displayed packets by conversation.
     pub(crate) conversations: super::conversations::ConversationCollector,
+    /// The displayed packets by host.
+    pub(crate) hosts: super::hosts::HostCollector,
 }
 
 impl StatsProgress {

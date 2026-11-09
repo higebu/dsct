@@ -51,6 +51,7 @@ mod tests {
             collector: StatsCollector::from_flags(&StatsFlags::all_protocols(true, true)),
             registry: packet_dissector::registry::DissectorRegistry::default(),
             conversations: Default::default(),
+            hosts: Default::default(),
         });
         while app.stats_tick() {}
         let out = app.stats_output.as_ref().expect("stats_output set");

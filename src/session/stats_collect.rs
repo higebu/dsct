@@ -4,6 +4,7 @@ use packet_dissector_core::packet::{DissectBuffer, Packet};
 
 use super::conversations::{ConversationCollector, Conversations};
 use super::fields::timestamp_us;
+use super::hosts::{HostCollector, HostGraphs};
 use super::state::StatsProgress;
 use super::{Session, Tick};
 use crate::stats::StatsOutput;
@@ -15,6 +16,8 @@ pub struct StatsReport {
     pub output: StatsOutput,
     /// The displayed packets by conversation.
     pub conversations: Conversations,
+    /// The displayed packets by host.
+    pub hosts: HostGraphs,
 }
 
 impl Session {
@@ -30,6 +33,7 @@ impl Session {
             ),
             registry,
             conversations: ConversationCollector::default(),
+            hosts: HostCollector::default(),
         });
         Ok(())
     }
@@ -72,8 +76,12 @@ impl Session {
                     .registry
                     .dissect_with_link_type(data, index.link_type as u32, buf);
             // A packet that fails part way still has its addresses.
+            let packet = Packet::new(buf, data);
+            progress
+                .hosts
+                .add(&packet, idx, u64::from(index.original_len));
             progress.conversations.add(
-                &Packet::new(buf, data),
+                &packet,
                 idx,
                 timestamp_us(index.timestamp_secs, index.timestamp_usecs),
                 u64::from(index.original_len),
@@ -99,6 +107,7 @@ impl Session {
             return Tick::Done(StatsReport {
                 output: sp.collector.finalize(10),
                 conversations: sp.conversations.finish(),
+                hosts: sp.hosts.finish(),
             });
         }
         Tick::Running
