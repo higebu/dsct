@@ -545,7 +545,7 @@ fn sip_info(buf: &DissectBuffer<'_>) -> Option<String> {
 /// 3. Generic: collect `_name` suffixed fields from the topmost layer
 ///    (e.g., `command_name`, `type_name`, `result_code_name`).
 /// 4. Fallback: first few meaningful fields of the topmost layer.
-fn extract_info(buf: &DissectBuffer<'_>, data: &[u8]) -> String {
+pub(crate) fn extract_info(buf: &DissectBuffer<'_>, data: &[u8]) -> String {
     // --- A segment waiting for the rest of its message (Wireshark's words):
     // only the reassembly placeholder, no message dissected in this packet ---
     if let Some(top) = buf.layers().last()

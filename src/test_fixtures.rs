@@ -236,6 +236,34 @@ pub(crate) fn gtpu_udp_frame(from_client: bool, payload: &[u8]) -> Vec<u8> {
     gtpu_frame(&ipv4_packet(17, src.0, dst.0, &udp))
 }
 
+/// Ethernet + IPv4 frame with one TCP segment (RFC 9293, Section 3.1, a
+/// 20-byte header) from `src` to `dst`.
+pub(crate) fn tcp_ipv4_frame(
+    src: ([u8; 4], u16),
+    dst: ([u8; 4], u16),
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut tcp = Vec::new();
+    tcp.extend_from_slice(&src.1.to_be_bytes());
+    tcp.extend_from_slice(&dst.1.to_be_bytes());
+    tcp.extend_from_slice(&seq.to_be_bytes());
+    tcp.extend_from_slice(&ack.to_be_bytes());
+    tcp.push(0x50); // data offset 5
+    tcp.push(flags);
+    tcp.extend_from_slice(&0xffffu16.to_be_bytes()); // window
+    tcp.extend_from_slice(&[0, 0, 0, 0]); // checksum, urgent pointer
+    tcp.extend_from_slice(payload);
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&[0x02, 0, 0, 0, 0, 0x02]); // dst MAC
+    frame.extend_from_slice(&[0x02, 0, 0, 0, 0, 0x01]); // src MAC
+    frame.extend_from_slice(&0x0800u16.to_be_bytes()); // ethertype: IPv4
+    frame.extend_from_slice(&ipv4_packet(6, src.0, dst.0, &tcp));
+    frame
+}
+
 /// An IPv4 packet (no options, unchecked checksum).
 fn ipv4_packet(protocol: u8, src: [u8; 4], dst: [u8; 4], payload: &[u8]) -> Vec<u8> {
     let mut ip = Vec::new();

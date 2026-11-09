@@ -15,6 +15,7 @@ mod panes;
 mod problems;
 mod sequence;
 mod sidebar;
+mod stream_view;
 mod summary;
 mod tabs;
 mod theme;

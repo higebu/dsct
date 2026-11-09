@@ -23,7 +23,7 @@ impl App {
             Tick::Running => true,
             Tick::Done(stream) => {
                 self.stream_view = Some(StreamViewState {
-                    lines: stream.lines,
+                    lines: stream.lines(),
                     scroll_offset: 0,
                     title: stream.title,
                 });

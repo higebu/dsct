@@ -18,7 +18,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::bottom::{BottomPanel, BottomTab, StreamView};
+use crate::bottom::{BottomPanel, BottomTab};
 use crate::decode_as::{DecodeAsPanel, Rule};
 use crate::format::{self, TimeFormat};
 use crate::layout::Layout;
@@ -371,14 +371,7 @@ impl DsctApp {
             Tick::Idle => {}
             Tick::Running => changed = true,
             Tick::Done(stream) => {
-                self.bottom.show_stream(StreamView {
-                    title: stream.title,
-                    lines: stream
-                        .lines
-                        .into_iter()
-                        .map(|l| (l.text, l.is_client))
-                        .collect(),
-                });
+                self.bottom.show_stream(stream);
                 changed = true;
                 panel_opened = true;
             }

@@ -1,17 +1,227 @@
-//! Follow Stream collection.
+//! Follow Stream: the payload of one TCP stream, or UDP or SCTP flow, as
+//! the messages each side sent.
+//!
+//! Consecutive segments from one side make one message, until the
+//! dissectors finish a message in one of them (a SIP request, an HTTP
+//! response) or the other side speaks. Each UDP or SCTP datagram is a
+//! message of its own. TCP retransmissions are kept apart, so that they do
+//! not repeat bytes inside a message.
 
 use packet_dissector_core::packet::{DissectBuffer, Layer, Packet};
 
 use super::conversations::{Endpoint, innermost_transport};
+use super::fields::timestamp_us;
+use super::problems::{ProblemKind, problems_of};
+use super::sequence::{Flow, SequenceKey};
 use super::state::{StreamBuildProgress, StreamKey, StreamLine};
-use super::{Session, Tick};
+use super::{Session, Tick, loader};
+
+/// Payload bytes kept per stream at most; the bytes of later messages are
+/// counted, not kept (see [`FollowedStream::truncated_bytes`]).
+const MAX_STREAM_BYTES: usize = 32 << 20;
+/// Characters of a heading at most.
+const MAX_HEADING: usize = 200;
+
+/// What one side sent at once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamMessage {
+    /// Sent by the client (the sender of the stream's first packet).
+    pub is_client: bool,
+    /// Index of the first packet.
+    pub first_packet: usize,
+    /// Index of the last packet.
+    pub last_packet: usize,
+    /// Packets carrying the message.
+    pub packets: usize,
+    /// Time of the first packet, in microseconds since the Unix epoch.
+    pub time_us: u64,
+    /// Payload bytes, kept or not.
+    pub bytes: u64,
+    /// The payload kept (all of it, unless the stream is too large).
+    pub payload: Vec<u8>,
+    /// The dissected message's first line (`"SIP/2.0 200 OK"`), or its
+    /// Info for a binary protocol; `None` when nothing dissected it.
+    pub heading: Option<String>,
+    /// Whether the message reports a failure (see [`ProblemKind`]).
+    pub error: bool,
+    /// A TCP segment sent again: its bytes were already in the stream.
+    pub retransmission: bool,
+}
+
+impl StreamMessage {
+    /// Whether the payload reads as text: printable ASCII and whitespace,
+    /// with at most one byte in ten otherwise.
+    pub fn is_text(&self) -> bool {
+        let printable = self
+            .payload
+            .iter()
+            .filter(|&&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
+            .count();
+        printable * 10 >= self.payload.len() * 9
+    }
+
+    /// The payload as lines of text, unprintable bytes shown as `.`.
+    pub fn text_lines(&self) -> impl Iterator<Item = String> + '_ {
+        payload_to_ascii(&self.payload)
+            .lines()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+}
 
 /// A collected stream, ready to display.
 pub struct FollowedStream {
-    /// Title string (e.g., "TCP Stream: 10.0.0.1:443 ↔ 10.0.0.2:52014").
+    /// Title string (e.g., "TCP Stream #0: 10.0.0.1:443 ↔ 10.0.0.2:52014").
     pub title: String,
-    /// Payload lines in capture order.
-    pub lines: Vec<StreamLine>,
+    /// The messages in capture order, retransmissions among them.
+    pub messages: Vec<StreamMessage>,
+    /// Payload bytes not kept, past [`MAX_STREAM_BYTES`].
+    pub truncated_bytes: u64,
+    /// A display filter for the stream's packets.
+    pub filter: String,
+}
+
+impl FollowedStream {
+    /// The payload as lines of text with their direction, without
+    /// retransmissions.
+    pub fn lines(&self) -> Vec<StreamLine> {
+        self.messages
+            .iter()
+            .filter(|m| !m.retransmission)
+            .flat_map(|m| {
+                m.text_lines().map(move |text| StreamLine {
+                    text,
+                    is_client: m.is_client,
+                })
+            })
+            .collect()
+    }
+
+    /// Whether most messages are binary, so better shown as hex.
+    pub fn mostly_binary(&self) -> bool {
+        let binary = self.messages.iter().filter(|m| !m.is_text()).count();
+        binary * 2 > self.messages.len()
+    }
+}
+
+/// Groups the payload of a stream's packets into messages.
+#[derive(Default)]
+pub(crate) struct MessageBuilder {
+    messages: Vec<StreamMessage>,
+    /// The message later segments from the same side add to.
+    open: Option<usize>,
+    kept: usize,
+    truncated_bytes: u64,
+}
+
+impl MessageBuilder {
+    /// Add the payload of packet `pkt_idx`.
+    fn add(&mut self, packet: &Packet<'_, '_>, part: Part<'_>) {
+        let open = self
+            .open
+            .filter(|&i| !part.retransmission && self.messages[i].is_client == part.is_client);
+        let i = match open {
+            Some(i) => i,
+            None => {
+                self.messages.push(StreamMessage {
+                    is_client: part.is_client,
+                    first_packet: part.pkt_idx,
+                    last_packet: part.pkt_idx,
+                    packets: 0,
+                    time_us: part.time_us,
+                    bytes: 0,
+                    payload: Vec::new(),
+                    heading: None,
+                    error: false,
+                    retransmission: part.retransmission,
+                });
+                self.messages.len() - 1
+            }
+        };
+        let keep = part.payload.len().min(MAX_STREAM_BYTES - self.kept);
+        self.kept += keep;
+        self.truncated_bytes += (part.payload.len() - keep) as u64;
+        let m = &mut self.messages[i];
+        m.payload.extend_from_slice(&part.payload[..keep]);
+        m.bytes += part.payload.len() as u64;
+        m.packets += 1;
+        m.last_packet = part.pkt_idx;
+        if part.retransmission {
+            return;
+        }
+        let done = part.message_done || !part.stream;
+        if done {
+            m.heading = heading(&m.payload).or_else(|| part.dissected.then(|| info(packet)));
+            m.error = problems_of(packet, true, part.pkt_idx)
+                .iter()
+                .any(|p| p.kind == ProblemKind::ErrorResponse);
+        }
+        self.open = (!done).then_some(i);
+    }
+
+    fn finish(self) -> (Vec<StreamMessage>, u64) {
+        let mut messages = self.messages;
+        // Messages left open (a binary stream, the last of a capture):
+        // their text says what they are, when they are text.
+        for m in &mut messages {
+            if m.heading.is_none() && !m.retransmission {
+                m.heading = heading(&m.payload);
+            }
+        }
+        (messages, self.truncated_bytes)
+    }
+}
+
+/// The payload of one packet of a stream.
+struct Part<'a> {
+    pkt_idx: usize,
+    time_us: u64,
+    is_client: bool,
+    payload: &'a [u8],
+    /// A byte stream (TCP), whose messages may span packets.
+    stream: bool,
+    retransmission: bool,
+    /// A layer over the transport finished a message in this packet.
+    message_done: bool,
+    /// Something dissected the payload.
+    dissected: bool,
+}
+
+/// The first line of `payload` when it is short printable text (a request
+/// or status line).
+fn heading(payload: &[u8]) -> Option<String> {
+    let end = payload
+        .iter()
+        .position(|&b| b == b'\n')
+        .unwrap_or(payload.len());
+    let line = payload[..end]
+        .strip_suffix(b"\r")
+        .unwrap_or(&payload[..end]);
+    let text = std::str::from_utf8(line).ok()?;
+    (!text.trim().is_empty()
+        && text.len() <= MAX_HEADING
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_graphic() || b == b' ' || b == b'\t'))
+    .then(|| text.trim_end().to_string())
+}
+
+/// The Info of a dissected binary message.
+fn info(packet: &Packet<'_, '_>) -> String {
+    loader::extract_info(packet.buf(), packet.data())
+}
+
+/// Whether a layer over the transport `layer` finished a message: one that
+/// is not only a placeholder for a message still being reassembled.
+fn message_done(packet: &Packet<'_, '_>, transport: &Layer) -> bool {
+    let layers = packet.layers();
+    let Some(at) = layers.iter().position(|l| std::ptr::eq(l, transport)) else {
+        return false;
+    };
+    layers[at + 1..]
+        .iter()
+        .any(|l| packet.field_by_name(l, "reassembly_in_progress").is_none())
 }
 
 impl Session {
@@ -37,7 +247,7 @@ impl Session {
         self.stream_build_progress = Some(StreamBuildProgress {
             stream_key: key,
             cursor: 0,
-            lines: Vec::new(),
+            messages: MessageBuilder::default(),
             client: None,
             title,
             registry,
@@ -98,24 +308,46 @@ impl Session {
             // The first packet's sender is the client.
             let is_client = *progress.client.get_or_insert(src) == src;
             let payload = data.get(layer.range.end..).unwrap_or_default();
-            if !payload.is_empty() {
-                let text = payload_to_ascii(payload);
-                for line in text.lines() {
-                    progress.lines.push(StreamLine {
-                        text: line.to_string(),
-                        is_client,
-                    });
-                }
+            if payload.is_empty() {
+                continue;
             }
+            let stream = transport == "TCP";
+            let at = packet
+                .layers()
+                .iter()
+                .position(|l| std::ptr::eq(l, layer))
+                .unwrap_or(0);
+            progress.messages.add(
+                &packet,
+                Part {
+                    pkt_idx: i,
+                    time_us: timestamp_us(index.timestamp_secs, index.timestamp_usecs),
+                    is_client,
+                    payload,
+                    stream,
+                    retransmission: stream && packet.field_u8(layer, "retransmission") == Some(1),
+                    message_done: message_done(&packet, layer),
+                    dissected: packet.layers().len() > at + 1,
+                },
+            );
         }
         progress.cursor = end;
 
         if progress.cursor >= total
             && let Some(p) = std::mem::take(&mut self.stream_build_progress)
         {
+            let (messages, truncated_bytes) = p.messages.finish();
+            let filter = match p.stream_key {
+                StreamKey::TcpStreamId(n) => SequenceKey::TcpStream(n).filter(),
+                StreamKey::Flow { transport, a, b } => {
+                    SequenceKey::Flow(Flow::new(transport, a, b)).filter()
+                }
+            };
             return Tick::Done(FollowedStream {
                 title: p.title,
-                lines: p.lines,
+                filter,
+                messages,
+                truncated_bytes,
             });
         }
         Tick::Running
@@ -213,14 +445,97 @@ mod tests {
             stream.title,
             "UDP Stream: 192.168.0.2:9999 \u{2194} 192.168.0.1:40000"
         );
-        let lines: Vec<_> = stream
-            .lines
+        let lines = stream.lines();
+        let lines: Vec<_> = lines
             .iter()
             .map(|l| (l.text.as_str(), l.is_client))
             .collect();
+        assert!(
+            stream.filter.contains("udp.src_port = 40000"),
+            "{}",
+            stream.filter
+        );
         // The first packet's sender is the client; the ICMP packet, in the
         // same tunnel, is not part of the flow.
         assert_eq!(lines, [("hello", true), ("world", false)]);
+    }
+
+    #[test]
+    fn segments_join_into_messages_and_retransmissions_stay_apart() {
+        use crate::test_fixtures::tcp_ipv4_frame as tcp;
+        const SYN: u8 = 0x02;
+        const SYN_ACK: u8 = 0x12;
+        const PSH_ACK: u8 = 0x18;
+        let (cli, srv) = (([10, 0, 0, 1], 40000), ([10, 0, 0, 2], 80));
+        let req1: &[u8] = b"GET /index.html HTTP/1.1\r\nHo";
+        let req2: &[u8] = b"st: example\r\n\r\n";
+        let resp: &[u8] = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+        let get_a: &[u8] = b"GET /a HTTP/1.1\r\nHost: example\r\n\r\n";
+        let get_b: &[u8] = b"GET /b HTTP/1.1\r\nHost: example\r\n\r\n";
+        let c = 1001 + (req1.len() + req2.len()) as u32;
+        let s = 9001 + resp.len() as u32;
+        let (mut session, _tmp) = session_of(&[
+            tcp(cli, srv, 1000, 0, SYN, &[]),
+            tcp(srv, cli, 9000, 1001, SYN_ACK, &[]),
+            tcp(cli, srv, 1001, 9001, PSH_ACK, req1),
+            tcp(cli, srv, 1001 + req1.len() as u32, 9001, PSH_ACK, req2),
+            tcp(cli, srv, 1001, 9001, PSH_ACK, req1),
+            tcp(srv, cli, 9001, c, PSH_ACK, resp),
+            tcp(cli, srv, c, s, PSH_ACK, get_a),
+            tcp(cli, srv, c + get_a.len() as u32, s, PSH_ACK, get_b),
+        ]);
+        session.load_packet(2);
+        session.start_follow_stream().unwrap();
+        let stream = collect(&mut session);
+        let got: Vec<_> = stream
+            .messages
+            .iter()
+            .map(|m| {
+                (
+                    m.is_client,
+                    m.first_packet,
+                    m.packets,
+                    m.heading.as_deref().unwrap_or(""),
+                    m.error,
+                    m.retransmission,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (true, 2, 2, "GET /index.html HTTP/1.1", false, false),
+                (true, 4, 1, "", false, true),
+                (false, 5, 1, "HTTP/1.1 404 Not Found", true, false),
+                (true, 6, 1, "GET /a HTTP/1.1", false, false),
+                (true, 7, 1, "GET /b HTTP/1.1", false, false),
+            ]
+        );
+        let first = &stream.messages[0];
+        assert_eq!(first.payload, [req1, req2].concat());
+        assert_eq!(first.bytes, (req1.len() + req2.len()) as u64);
+        assert!(first.is_text());
+        assert!(!stream.mostly_binary());
+        // The lines leave the retransmission out.
+        assert_eq!(stream.lines().len(), 3 * 4);
+        assert_eq!(stream.truncated_bytes, 0);
+        assert_eq!(stream.filter, "tcp.stream_id = 0");
+    }
+
+    #[test]
+    fn binary_payload_has_no_heading() {
+        let (mut session, _tmp) = session_of(&[gtpu_udp_frame_binary()]);
+        session.load_packet(0);
+        session.start_follow_stream().unwrap();
+        let stream = collect(&mut session);
+        assert_eq!(stream.messages.len(), 1);
+        assert_eq!(stream.messages[0].heading, None);
+        assert!(!stream.messages[0].is_text());
+        assert!(stream.mostly_binary());
+    }
+
+    fn gtpu_udp_frame_binary() -> Vec<u8> {
+        crate::test_fixtures::gtpu_udp_frame(true, &[0, 1, 2, 3, 0xff, 0xfe, 0x10, 0x80])
     }
 
     #[test]

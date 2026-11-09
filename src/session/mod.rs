@@ -58,7 +58,7 @@ use crate::error::Result;
 pub use field_jobs::{FieldStatsJob, HistogramJob};
 pub use filter_scan::FilterOutcome;
 pub use stats_collect::StatsReport;
-pub use stream::FollowedStream;
+pub use stream::{FollowedStream, StreamMessage};
 
 /// Return the XDG-compliant cache directory for dsct temporary files.
 ///

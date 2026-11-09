@@ -312,8 +312,8 @@ pub struct StreamBuildProgress {
     pub stream_key: StreamKey,
     /// Next packet index to scan.
     pub cursor: usize,
-    /// Accumulated stream lines.
-    pub lines: Vec<StreamLine>,
+    /// The messages so far.
+    pub(crate) messages: super::stream::MessageBuilder,
     /// The client (the first packet's source), for the direction.
     pub client: Option<super::conversations::Endpoint>,
     /// Title for the stream view.

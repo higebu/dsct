@@ -13,8 +13,9 @@ dissected in the background, so large files open at once.
   filtered with dsct's filter syntax
 - Protocol detail tree and hex dump (opened when needed), linked both ways
   and operable from the keyboard, below the packet list or to its right
-- Follow Stream (TCP/UDP/SCTP), and Stats for the displayed packets:
-  requests and their results, and conversations
+- Follow Stream (TCP/UDP/SCTP) as the messages each side sent, as text or
+  hex, and Stats for the displayed packets: requests and their results, and
+  conversations
 - Graph of the hosts that talk to each other, by inner or tunnel addresses
 - Selecting a packet dims the packets outside its call, stream or host pair
 - Problems: malformed packets, error responses and TCP retransmissions,

@@ -42,7 +42,7 @@ pub struct Flow {
 }
 
 impl Flow {
-    fn new(transport: &'static str, src: Endpoint, dst: Endpoint) -> Self {
+    pub(crate) fn new(transport: &'static str, src: Endpoint, dst: Endpoint) -> Self {
         let (a, b) = if src <= dst { (src, dst) } else { (dst, src) };
         Self { transport, a, b }
     }

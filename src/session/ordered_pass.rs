@@ -792,7 +792,7 @@ mod tests {
                 Tick::Idle => panic!("no stream collected"),
             }
         };
-        let text = stream.lines.iter().map(|l| l.text.clone()).collect();
+        let text = stream.lines().iter().map(|l| l.text.clone()).collect();
         (stream.title, text)
     }
 
@@ -810,7 +810,8 @@ mod tests {
         assert_eq!(text, ["hello-b"]);
         let (title, text) = follow(&mut view, 2);
         assert!(title.starts_with("TCP Stream #0"), "{title}");
-        assert_eq!(text, ["GET /index.html HTTP/1.1", "Ho", "st: example", ""]);
+        // The two segments make one message.
+        assert_eq!(text, ["GET /index.html HTTP/1.1", "Host: example", ""]);
         // Following it again gives the same.
         assert_eq!(follow(&mut view, 2).1, text);
     }

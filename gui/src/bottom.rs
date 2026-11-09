@@ -1,7 +1,5 @@
 //! The bottom panel: Follow Stream, Stats, Graph and Problems, as tabs.
 
-use std::ops::Range;
-
 use dsct::session::StatsReport;
 use dsct::session::responses::{self, Responses};
 use dsct::session::sequence::SequenceUnit;
@@ -25,12 +23,6 @@ pub struct StatsView {
     pub responses: Vec<Responses>,
 }
 
-/// A collected stream: title and lines, `true` for client → server.
-pub struct StreamView {
-    pub title: String,
-    pub lines: Vec<(String, bool)>,
-}
-
 /// Which result the panel shows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BottomTab {
@@ -46,7 +38,7 @@ pub enum BottomTab {
 pub struct BottomPanel {
     pub open: bool,
     pub tab: BottomTab,
-    pub stream: Option<StreamView>,
+    pub stream: Option<crate::stream_view::StreamView>,
     pub stats: Option<StatsView>,
     pub graph: crate::graph::GraphState,
     /// The tab to show when the stats being collected are done.
@@ -55,8 +47,8 @@ pub struct BottomPanel {
 
 impl BottomPanel {
     /// Show a newly collected stream.
-    pub fn show_stream(&mut self, stream: StreamView) {
-        self.stream = Some(stream);
+    pub fn show_stream(&mut self, stream: dsct::session::FollowedStream) {
+        self.stream = Some(crate::stream_view::StreamView::new(stream));
         self.tab = BottomTab::Stream;
         self.open = true;
     }
@@ -83,7 +75,7 @@ impl BottomPanel {
     /// The shown result as text, for the clipboard.
     fn copy_text(&self) -> Option<String> {
         match self.tab {
-            BottomTab::Stream => self.stream.as_ref().map(|s| format::stream_text(&s.lines)),
+            BottomTab::Stream => self.stream.as_ref().map(|s| s.copy_text()),
             BottomTab::Stats => self
                 .stats
                 .as_ref()
@@ -193,59 +185,6 @@ impl DsctApp {
                 .child(div().flex_1().min_h_0().child(body))
                 .into_any_element(),
         )
-    }
-
-    fn render_stream(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let theme = cx.theme();
-        let mono = theme.mono_font_family.clone();
-        let (title, count) = self
-            .bottom
-            .stream
-            .as_ref()
-            .map_or((String::new(), 0), |s| (s.title.clone(), s.lines.len()));
-        v_flex()
-            .size_full()
-            .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(title),
-            )
-            .child(
-                uniform_list(
-                    "stream-lines",
-                    count,
-                    cx.processor(|this, range: Range<usize>, _, _| {
-                        let (red, blue) = (theme::orange(), theme::blue());
-                        let Some(stream) = this.bottom.stream.as_ref() else {
-                            return Vec::new();
-                        };
-                        range
-                            .filter_map(|i| {
-                                let (text, client) = stream.lines.get(i)?;
-                                let color = if *client { red } else { blue };
-                                Some(
-                                    h_flex()
-                                        .px_2()
-                                        .gap_2()
-                                        .text_color(color)
-                                        .child(
-                                            div()
-                                                .w(px(16.))
-                                                .flex_shrink_0()
-                                                .child(format::direction_marker(*client)),
-                                        )
-                                        .child(div().whitespace_nowrap().child(text.clone())),
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .font_family(mono)
-                .flex_1(),
-            )
     }
 
     fn render_stats(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
