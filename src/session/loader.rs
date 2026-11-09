@@ -414,14 +414,6 @@ fn first_tls_handshake_type_name(buf: &DissectBuffer<'_>, layer: &Layer) -> Opti
     buf.resolve_nested_display_name(&first, "type_name")
 }
 
-/// Extract a one-line info string from the packet.
-///
-/// Strategy:
-/// 1. Protocol-specific logic for DNS and HTTP.
-/// 2. TCP flags (since ports are now in Source/Destination).
-/// 3. Generic: collect `_name` suffixed fields from the topmost layer
-///    (e.g., `command_name`, `type_name`, `result_code_name`).
-/// 4. Fallback: first few meaningful fields of the topmost layer.
 /// The fields of `layer` outside its containers: a container (an array or
 /// an object, such as an option list) and what it holds are left out. A
 /// container's display name labels its node in the detail tree; it is
@@ -450,6 +442,14 @@ fn top_level_fields<'b, 'pkt>(
     })
 }
 
+/// Extract a one-line info string from the packet.
+///
+/// Strategy:
+/// 1. Protocol-specific logic for DNS and HTTP.
+/// 2. TCP flags (since ports are now in Source/Destination).
+/// 3. Generic: collect `_name` suffixed fields from the topmost layer
+///    (e.g., `command_name`, `type_name`, `result_code_name`).
+/// 4. Fallback: first few meaningful fields of the topmost layer.
 fn extract_info(buf: &DissectBuffer<'_>, data: &[u8]) -> String {
     // --- DNS: query/response + query name ---
     if let Some(layer) = buf.layer_by_name("DNS")
