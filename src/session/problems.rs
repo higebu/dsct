@@ -37,7 +37,9 @@ impl ProblemKind {
     pub fn description(self) -> &'static str {
         match self {
             Self::Malformed => "Packets the dissectors could not read to the end",
-            Self::ErrorResponse => "SIP and HTTP 4xx–6xx, DNS responses with an error code",
+            Self::ErrorResponse => {
+                "Responses that report a failure: error status, result or response codes"
+            }
             Self::Retransmission => "Segments sent again, or captured twice",
         }
     }
@@ -47,7 +49,7 @@ impl ProblemKind {
         match self {
             Self::Malformed => None,
             Self::ErrorResponse => Some(
-                "sip.status_code >= 400 or http.status_code >= 400 or (dns.qr = 1 and dns.rcode != 0)",
+                "http.status_code >= 400 or sip.status_code >= 400 or (dns.qr = 1 and dns.rcode != 0)",
             ),
             Self::Retransmission => Some("tcp.retransmission = 1"),
         }
