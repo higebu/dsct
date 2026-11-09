@@ -13,7 +13,7 @@ use std::path::Path;
 
 use packet_dissector::registry::DissectorRegistry;
 use packet_dissector_core::dissector::ProtocolLayer;
-use packet_dissector_core::field::FieldValue;
+use packet_dissector_core::field::{Field, FieldValue};
 use packet_dissector_core::packet::{DissectBuffer, Layer, Packet};
 
 use crate::field_format::format_field_to_string;
@@ -422,6 +422,34 @@ fn first_tls_handshake_type_name(buf: &DissectBuffer<'_>, layer: &Layer) -> Opti
 /// 3. Generic: collect `_name` suffixed fields from the topmost layer
 ///    (e.g., `command_name`, `type_name`, `result_code_name`).
 /// 4. Fallback: first few meaningful fields of the topmost layer.
+/// The fields of `layer` outside its containers: a container (an array or
+/// an object, such as an option list) and what it holds are left out. A
+/// container's display name labels its node in the detail tree; it is
+/// resolved from its own children, not from the layer's fields.
+fn top_level_fields<'b, 'pkt>(
+    buf: &'b DissectBuffer<'pkt>,
+    layer: &'b Layer,
+) -> impl Iterator<Item = &'b Field<'pkt>> {
+    let fields = buf.fields();
+    let mut i = layer.field_range.start as usize;
+    let end = (layer.field_range.end as usize).min(fields.len());
+    std::iter::from_fn(move || {
+        while i < end {
+            let f = &fields[i];
+            match &f.value {
+                FieldValue::Array(r) | FieldValue::Object(r) => {
+                    i = (i + 1).max(r.end as usize);
+                }
+                _ => {
+                    i += 1;
+                    return Some(f);
+                }
+            }
+        }
+        None
+    })
+}
+
 fn extract_info(buf: &DissectBuffer<'_>, data: &[u8]) -> String {
     // --- DNS: query/response + query name ---
     if let Some(layer) = buf.layer_by_name("DNS")
@@ -584,11 +612,10 @@ fn extract_info(buf: &DissectBuffer<'_>, data: &[u8]) -> String {
         }
     }
 
-    // --- Generic: display names from topmost layer via display_fn ---
+    // --- Generic: display names of the topmost layer's own fields ---
     if let Some(layer) = buf.layers().last() {
         let fields = buf.layer_fields(layer);
-        let name_values: Vec<&str> = fields
-            .iter()
+        let name_values: Vec<&str> = top_level_fields(buf, layer)
             .filter_map(|f| {
                 let display_fn = f.descriptor.display_fn?;
                 let value = display_fn(&f.value, fields)?;
@@ -868,6 +895,43 @@ pub(crate) mod tests {
         buf.end_layer();
         let (src, _) = extract_addresses(&buf);
         assert_eq!(src, "00:11:22:33:44:55");
+    }
+
+    /// Ethernet / IPv6 / ICMPv6 Router Advertisement (RFC 4861, Section
+    /// 4.2) with an MTU option and a Prefix Information option.
+    fn router_advertisement_frame() -> Vec<u8> {
+        let mut icmp = vec![134, 0, 0, 0]; // type, code, checksum (unchecked)
+        icmp.extend_from_slice(&[64, 0]); // cur hop limit, flags
+        icmp.extend_from_slice(&1800u16.to_be_bytes()); // router lifetime
+        icmp.extend_from_slice(&[0; 8]); // reachable time, retrans timer
+        // MTU option (RFC 4861, Section 4.6.4): type 5, length 1.
+        icmp.extend_from_slice(&[5, 1, 0, 0]);
+        icmp.extend_from_slice(&1500u32.to_be_bytes());
+        // Prefix Information (Section 4.6.2): type 3, length 4.
+        icmp.extend_from_slice(&[3, 4, 64, 0xc0]);
+        icmp.extend_from_slice(&86400u32.to_be_bytes());
+        icmp.extend_from_slice(&43200u32.to_be_bytes());
+        icmp.extend_from_slice(&[0; 4]);
+        icmp.extend_from_slice(&[0xfd, 0, 0, 0, 0, 0x99, 0x0e, 0x9d, 0, 0, 0, 0, 0, 0, 0, 0]);
+
+        let mut frame = vec![0x33, 0x33, 0, 0, 0, 1, 0x02, 0, 0, 0, 0, 1, 0x86, 0xdd];
+        frame.extend_from_slice(&[0x60, 0, 0, 0]);
+        frame.extend_from_slice(&(icmp.len() as u16).to_be_bytes());
+        frame.extend_from_slice(&[58, 255]); // next header ICMPv6, hop limit
+        frame.extend_from_slice(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        frame.extend_from_slice(&[0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        frame.extend_from_slice(&icmp);
+        frame
+    }
+
+    #[test]
+    fn info_names_the_message_not_its_options() {
+        let frame = router_advertisement_frame();
+        let registry = packet_dissector::registry::DissectorRegistry::default();
+        let mut buf = DissectBuffer::new();
+        registry.dissect(&frame, &mut buf).unwrap();
+        // The options' names stay in the detail tree.
+        assert_eq!(extract_info(&buf, &frame), "Router Advertisement");
     }
 
     #[test]
