@@ -15,6 +15,7 @@ dissected in the background, so large files open at once.
   and operable from the keyboard, below the packet list or to its right
 - Follow Stream (TCP/UDP/SCTP), and Stats for the displayed packets:
   requests and their results, and conversations
+- Graph of the hosts that talk to each other, by inner or tunnel addresses
 - Selecting a packet dims the packets outside its call, stream or host pair
 - Problems: malformed packets, error responses and TCP retransmissions,
   marked in the packet list

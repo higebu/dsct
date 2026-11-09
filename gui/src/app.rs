@@ -18,7 +18,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::bottom::{BottomPanel, StreamView};
+use crate::bottom::{BottomPanel, BottomTab, StreamView};
 use crate::decode_as::{DecodeAsPanel, Rule};
 use crate::format::{self, TimeFormat};
 use crate::layout::Layout;
@@ -570,8 +570,15 @@ impl DsctApp {
     }
 
     fn stats(&mut self, cx: &mut Context<Self>) {
+        self.bottom.stats_tab = None;
         let started = self.session.borrow_mut().as_mut().map(Session::start_stats);
         self.start_job(started, cx);
+    }
+
+    /// Collect the stats and show the Graph tab when they are done.
+    fn graph(&mut self, cx: &mut Context<Self>) {
+        self.stats(cx);
+        self.bottom.stats_tab = Some(BottomTab::Graph);
     }
 
     /// Report a job that failed to start, or drive the one that did.
@@ -628,6 +635,7 @@ impl DsctApp {
             Command::Open => self.prompt_open(window, cx),
             Command::FollowStream => self.follow_stream(cx),
             Command::Stats => self.stats(cx),
+            Command::Graph => self.graph(cx),
             Command::CycleTime => self.cycle_time_format(cx),
             Command::ToggleDock => self.toggle_dock(cx),
             Command::Focus(pane) => self.focus_pane(pane, window, cx),

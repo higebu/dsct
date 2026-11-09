@@ -23,6 +23,7 @@ pub enum Command {
     Open,
     FollowStream,
     Stats,
+    Graph,
     CycleTime,
     ToggleDock,
     Focus(Pane),
@@ -70,6 +71,12 @@ fn commands(has_session: bool) -> Vec<(Command, &'static str, &'static str, Opti
                 "Stats",
                 "Show statistics of the displayed packets",
                 Some(crate::shortcut_shift("S")),
+            ),
+            (
+                Command::Graph,
+                "Stats",
+                "Show the hosts of the displayed packets as a graph",
+                None,
             ),
             (
                 Command::Mark,

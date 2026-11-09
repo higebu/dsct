@@ -6,6 +6,7 @@ mod bottom;
 mod decode_as;
 mod fields_view;
 mod format;
+mod graph;
 mod layout;
 mod marks;
 mod packet_table;
