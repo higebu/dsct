@@ -584,7 +584,13 @@ impl DsctApp {
     /// Report a job that failed to start, or drive the one that did.
     fn start_job(&mut self, started: Option<Result<(), String>>, cx: &mut Context<Self>) {
         match started {
-            Some(Ok(())) => self.ensure_ticking(cx),
+            Some(Ok(())) => {
+                // An earlier failure no longer applies.
+                if self.message.as_ref().is_some_and(|(_, error)| *error) {
+                    self.message = None;
+                }
+                self.ensure_ticking(cx);
+            }
             Some(Err(msg)) => self.message = Some((msg, true)),
             None => {}
         }

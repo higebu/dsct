@@ -287,18 +287,14 @@ impl StatsProgress {
 pub enum StreamKey {
     /// TCP stream identified by dissector-assigned sequential ID.
     TcpStreamId(u32),
-    /// UDP/SCTP stream identified by canonicalized 4-tuple.
-    Tuple {
-        /// Smaller IP address (as string for simplicity).
-        addr_lo: String,
-        /// Larger IP address.
-        addr_hi: String,
-        /// Port corresponding to addr_lo.
-        port_lo: u16,
-        /// Port corresponding to addr_hi.
-        port_hi: u16,
-        /// Protocol name ("UDP" or "SCTP").
-        protocol: &'static str,
+    /// UDP or SCTP flow, the lower endpoint first.
+    Flow {
+        /// Transport protocol name ("UDP" or "SCTP").
+        transport: &'static str,
+        /// The lower endpoint.
+        a: super::conversations::Endpoint,
+        /// The higher endpoint.
+        b: super::conversations::Endpoint,
     },
 }
 
@@ -318,12 +314,10 @@ pub struct StreamBuildProgress {
     pub cursor: usize,
     /// Accumulated stream lines.
     pub lines: Vec<StreamLine>,
-    /// Client address (first packet's source) for direction detection.
-    pub client_addr: Option<String>,
+    /// The client (the first packet's source), for the direction.
+    pub client: Option<super::conversations::Endpoint>,
     /// Title for the stream view.
     pub title: String,
-    /// Protocol layer name ("TCP", "UDP", "SCTP").
-    pub protocol: &'static str,
     /// Fresh registry for this scan, so TCP stream IDs are assigned in
     /// capture order as in the detail pane.
     pub registry: packet_dissector::registry::DissectorRegistry,

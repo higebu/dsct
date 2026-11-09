@@ -7,7 +7,7 @@ use std::fmt;
 use std::net::IpAddr;
 
 use packet_dissector_core::field::FieldValue;
-use packet_dissector_core::packet::Packet;
+use packet_dissector_core::packet::{Layer, Packet};
 
 /// Conversations tracked at most; packets of further flows are only
 /// counted (see [`Conversations::untracked_packets`]).
@@ -148,6 +148,13 @@ impl ConversationCollector {
 pub(crate) fn innermost_flow(
     packet: &Packet<'_, '_>,
 ) -> Option<(&'static str, Endpoint, Endpoint)> {
+    innermost_transport(packet).map(|(_, transport, src, dst)| (transport, src, dst))
+}
+
+/// [`innermost_flow`], with the transport layer itself.
+pub(crate) fn innermost_transport<'p>(
+    packet: &'p Packet<'_, '_>,
+) -> Option<(&'p Layer, &'static str, Endpoint, Endpoint)> {
     let mut addrs: Option<(IpAddr, IpAddr)> = None;
     let mut flow = None;
     for layer in packet.layers() {
@@ -170,6 +177,7 @@ pub(crate) fn innermost_flow(
                     .zip(packet.field_u16(layer, "dst_port"));
                 if let Some((sport, dport)) = ports {
                     flow = Some((
+                        layer,
                         transport,
                         Endpoint {
                             addr: src,

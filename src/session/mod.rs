@@ -751,6 +751,24 @@ mod tests {
         (session, tmp)
     }
 
+    /// An indexed session over `frames`, like [`test_session`].
+    pub(super) fn session_of(frames: &[Vec<u8>]) -> (Session, tempfile::NamedTempFile) {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&crate::test_fixtures::pcap_of(frames))
+            .unwrap();
+        tmp.flush().unwrap();
+        let capture = loader::open_and_mmap(tmp.path()).unwrap();
+        let indices = loader::build_index(capture.as_bytes()).unwrap();
+        let session = Session::new(
+            capture,
+            indices,
+            DissectorRegistry::default(),
+            tmp.path(),
+            vec![],
+        );
+        (session, tmp)
+    }
+
     /// [`Session::open`] with the cache directory in a temp directory.
     fn open(path: &Path, decode_as_args: Vec<String>) -> Result<Session> {
         let _lock = env_lock();

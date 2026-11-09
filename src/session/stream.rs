@@ -1,9 +1,8 @@
 //! Follow Stream collection.
 
-use packet_dissector_core::packet::DissectBuffer;
+use packet_dissector_core::packet::{DissectBuffer, Layer, Packet};
 
-use super::loader;
-use super::owned_packet::OwnedPacket;
+use super::conversations::{Endpoint, innermost_transport};
 use super::state::{StreamBuildProgress, StreamKey, StreamLine};
 use super::{Session, Tick};
 
@@ -16,110 +15,34 @@ pub struct FollowedStream {
 }
 
 impl Session {
-    /// Start collecting the stream the selected packet belongs to.
+    /// Start collecting the stream the selected packet belongs to: the
+    /// TCP stream, or UDP or SCTP flow, over its innermost IP layer (so a
+    /// tunneled packet follows its own flow, not the tunnel's).
     ///
-    /// Does nothing when the selected packet carries no TCP, UDP, or SCTP
-    /// layer.  Returns `Err` with a message when the stream cannot be
-    /// collected yet or at all.
+    /// Does nothing without a selected packet. Returns `Err` with a message
+    /// when the stream cannot be collected yet or at all.
     pub fn start_follow_stream(&mut self) -> Result<(), String> {
-        if self.selected.as_ref().is_some_and(|sel| sel.pending) {
+        let Some(sel) = self.selected.as_ref() else {
+            return Ok(());
+        };
+        if sel.pending {
             return Err("Wait until the packet is dissected in capture order".to_string());
         }
-        if let Some((key, title, protocol)) = self.extract_stream_key() {
-            let registry = self.scan_registry().map_err(|e| format!("Error: {e}"))?;
-            self.stream_build_progress = Some(StreamBuildProgress {
-                stream_key: key,
-                cursor: 0,
-                lines: Vec::new(),
-                client_addr: None,
-                title,
-                protocol,
-                registry,
-            });
-        }
-        Ok(())
-    }
-
-    /// Extract a stream key from the currently selected packet.
-    fn extract_stream_key(&self) -> Option<(StreamKey, String, &'static str)> {
-        let sel = self.selected.as_ref()?;
-        let packet = &sel.packet;
-
-        // Try TCP first (has stream_id).
-        if let Some(tcp) = packet.layer_by_name("TCP")
-            && let Some(f) = packet.field_by_name(tcp, "stream_id")
-        {
-            let fv = f.value.to_field_value(packet);
-            if let packet_dissector_core::field::FieldValue::U32(id) = fv {
-                let (src, dst) = self.selected_endpoints_owned(packet);
-                let sp = owned_u16(packet, tcp, "src_port").unwrap_or(0);
-                let dp = owned_u16(packet, tcp, "dst_port").unwrap_or(0);
-                let title = format!("TCP Stream #{id}: {src}:{sp} \u{2194} {dst}:{dp}");
-                return Some((StreamKey::TcpStreamId(id), title, "TCP"));
-            }
-        }
-
-        // UDP
-        if let Some(udp) = packet.layer_by_name("UDP") {
-            let sp = owned_u16(packet, udp, "src_port").unwrap_or(0);
-            let dp = owned_u16(packet, udp, "dst_port").unwrap_or(0);
-            let (src, dst) = self.selected_endpoints_owned(packet);
-            let (key, title) = Self::make_tuple_key(&src, &dst, sp, dp, "UDP");
-            return Some((key, title, "UDP"));
-        }
-
-        // SCTP
-        if let Some(sctp) = packet.layer_by_name("SCTP") {
-            let sp = owned_u16(packet, sctp, "src_port").unwrap_or(0);
-            let dp = owned_u16(packet, sctp, "dst_port").unwrap_or(0);
-            let (src, dst) = self.selected_endpoints_owned(packet);
-            let (key, title) = Self::make_tuple_key(&src, &dst, sp, dp, "SCTP");
-            return Some((key, title, "SCTP"));
-        }
-
-        None
-    }
-
-    fn selected_endpoints_owned(&self, packet: &OwnedPacket) -> (String, String) {
-        for name in ["IPv4", "IPv6"] {
-            if let Some(layer) = packet.layer_by_name(name) {
-                let src = packet
-                    .field_by_name(layer, "src")
-                    .map(|f| loader::format_addr_value(&f.value.to_field_value(packet)))
-                    .unwrap_or_default();
-                let dst = packet
-                    .field_by_name(layer, "dst")
-                    .map(|f| loader::format_addr_value(&f.value.to_field_value(packet)))
-                    .unwrap_or_default();
-                return (src, dst);
-            }
-        }
-        (String::new(), String::new())
-    }
-
-    fn make_tuple_key(
-        src: &str,
-        dst: &str,
-        sp: u16,
-        dp: u16,
-        protocol: &'static str,
-    ) -> (StreamKey, String) {
-        let (addr_lo, addr_hi, port_lo, port_hi) = if (src, sp) <= (dst, dp) {
-            (src.to_string(), dst.to_string(), sp, dp)
-        } else {
-            (dst.to_string(), src.to_string(), dp, sp)
+        let buf = sel.packet.to_dissect_buf();
+        let packet = Packet::new(&buf, &sel.packet.data);
+        let Some((key, title)) = stream_key(&packet) else {
+            return Err("The selected packet has no TCP, UDP or SCTP flow".to_string());
         };
-        let title = format!("{protocol} Stream: {src}:{sp} \u{2194} {dst}:{dp}");
-        (
-            StreamKey::Tuple {
-                addr_lo,
-                addr_hi,
-                port_lo,
-                port_hi,
-                protocol,
-            },
+        let registry = self.scan_registry().map_err(|e| format!("Error: {e}"))?;
+        self.stream_build_progress = Some(StreamBuildProgress {
+            stream_key: key,
+            cursor: 0,
+            lines: Vec::new(),
+            client: None,
             title,
-        )
+            registry,
+        });
+        Ok(())
     }
 
     /// Number of packets to scan per stream-build tick.
@@ -152,74 +75,36 @@ impl Session {
                 None => continue,
             };
             let buf = dissect_buf.clear_into();
-            if progress
+            // A packet that fails part way still has its flow and payload.
+            let _ = progress
                 .registry
-                .dissect_with_link_type(data, index.link_type as u32, buf)
-                .is_err()
-            {
-                continue;
-            }
+                .dissect_with_link_type(data, index.link_type as u32, buf);
 
+            let packet = Packet::new(buf, data);
+            let Some((layer, transport, src, dst)) = innermost_transport(&packet) else {
+                continue;
+            };
             let matches = match &progress.stream_key {
-                StreamKey::TcpStreamId(target_id) => {
-                    buf.layer_by_name("TCP").is_some_and(|tcp| {
-                        buf.field_by_name(tcp, "stream_id").is_some_and(|f| {
-                            matches!(f.value, packet_dissector_core::field::FieldValue::U32(id) if id == *target_id)
-                        })
-                    })
+                StreamKey::TcpStreamId(id) => {
+                    transport == "TCP" && packet.field_u32(layer, "stream_id") == Some(*id)
                 }
-                StreamKey::Tuple {
-                    addr_lo,
-                    addr_hi,
-                    port_lo,
-                    port_hi,
-                    protocol,
-                } => {
-                    if let Some(layer) = buf.layer_by_name(protocol) {
-                        let sp =
-                            loader::extract_u16_field(buf, layer, "src_port").unwrap_or(0);
-                        let dp =
-                            loader::extract_u16_field(buf, layer, "dst_port").unwrap_or(0);
-                        let (src, dst) = extract_ip_addrs(buf);
-                        let (a_lo, a_hi, p_lo, p_hi) =
-                            if (&src, sp) <= (&dst, dp) {
-                                (&src, &dst, sp, dp)
-                            } else {
-                                (&dst, &src, dp, sp)
-                            };
-                        a_lo == addr_lo && a_hi == addr_hi && p_lo == *port_lo && p_hi == *port_hi
-                    } else {
-                        false
-                    }
+                StreamKey::Flow { .. } => {
+                    stream_key_of(&packet, layer, transport, src, dst) == progress.stream_key
                 }
             };
-
-            if matches {
-                // Determine direction.
-                let (src_addr, _) = extract_ip_addrs(buf);
-                let is_client = if let Some(ref client) = progress.client_addr {
-                    &src_addr == client
-                } else {
-                    progress.client_addr = Some(src_addr.clone());
-                    true
-                };
-
-                // Extract payload: bytes after the transport layer.
-                let transport_end = buf
-                    .layer_by_name(progress.protocol)
-                    .map(|l| l.range.end)
-                    .unwrap_or(0);
-                if transport_end < data.len() {
-                    let payload = &data[transport_end..];
-                    if !payload.is_empty() {
-                        let text = payload_to_ascii(payload);
-                        for line in text.lines() {
-                            progress.lines.push(StreamLine {
-                                text: line.to_string(),
-                                is_client,
-                            });
-                        }
-                    }
+            if !matches {
+                continue;
+            }
+            // The first packet's sender is the client.
+            let is_client = *progress.client.get_or_insert(src) == src;
+            let payload = data.get(layer.range.end..).unwrap_or_default();
+            if !payload.is_empty() {
+                let text = payload_to_ascii(payload);
+                for line in text.lines() {
+                    progress.lines.push(StreamLine {
+                        text: line.to_string(),
+                        is_client,
+                    });
                 }
             }
         }
@@ -237,35 +122,33 @@ impl Session {
     }
 }
 
-/// Extract IP source and destination addresses from a DissectBuffer.
-fn extract_ip_addrs(buf: &DissectBuffer<'_>) -> (String, String) {
-    for name in ["IPv4", "IPv6"] {
-        if let Some(layer) = buf.layer_by_name(name) {
-            let src = buf
-                .field_by_name(layer, "src")
-                .map(|f| loader::format_addr_value(&f.value))
-                .unwrap_or_default();
-            let dst = buf
-                .field_by_name(layer, "dst")
-                .map(|f| loader::format_addr_value(&f.value))
-                .unwrap_or_default();
-            return (src, dst);
-        }
-    }
-    (String::new(), String::new())
+/// The stream of `packet` and its title.
+fn stream_key(packet: &Packet<'_, '_>) -> Option<(StreamKey, String)> {
+    let (layer, transport, src, dst) = innermost_transport(packet)?;
+    let key = stream_key_of(packet, layer, transport, src, dst);
+    let title = match key {
+        StreamKey::TcpStreamId(id) => format!("TCP Stream #{id}: {src} \u{2194} {dst}"),
+        StreamKey::Flow { .. } => format!("{transport} Stream: {src} \u{2194} {dst}"),
+    };
+    Some((key, title))
 }
 
-/// Extract a u16 from an OwnedPacket field.
-fn owned_u16(
-    packet: &OwnedPacket,
-    layer: &packet_dissector_core::packet::Layer,
-    name: &str,
-) -> Option<u16> {
-    let f = packet.field_by_name(layer, name)?;
-    match f.value.to_field_value(packet) {
-        packet_dissector_core::field::FieldValue::U16(v) => Some(v),
-        _ => None,
+/// The stream of a packet whose innermost transport is `layer`: its TCP
+/// stream number, or else its flow.
+fn stream_key_of(
+    packet: &Packet<'_, '_>,
+    layer: &Layer,
+    transport: &'static str,
+    src: Endpoint,
+    dst: Endpoint,
+) -> StreamKey {
+    if transport == "TCP"
+        && let Some(id) = packet.field_u32(layer, "stream_id")
+    {
+        return StreamKey::TcpStreamId(id);
     }
+    let (a, b) = if src <= dst { (src, dst) } else { (dst, src) };
+    StreamKey::Flow { transport, a, b }
 }
 
 /// Convert raw bytes to ASCII, replacing non-printable characters with `.`.
@@ -284,7 +167,7 @@ fn payload_to_ascii(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::super::Tick;
-    use super::super::tests::test_session;
+    use super::super::tests::{session_of, test_session};
     use super::payload_to_ascii;
 
     #[test]
@@ -302,6 +185,49 @@ mod tests {
             }
         };
         assert!(stream.title.starts_with("UDP Stream"), "{}", stream.title);
+        assert!(!session.stream_running());
+    }
+
+    fn collect(session: &mut super::super::Session) -> super::FollowedStream {
+        loop {
+            match session.stream_tick() {
+                Tick::Running => {}
+                Tick::Done(stream) => break stream,
+                Tick::Idle => panic!("no stream collected"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_tunneled_packet_follows_its_inner_flow() {
+        use crate::test_fixtures::{gtpu_icmp_frame, gtpu_udp_frame};
+        let (mut session, _tmp) = session_of(&[
+            gtpu_udp_frame(true, b"hello\r\n"),
+            gtpu_icmp_frame(),
+            gtpu_udp_frame(false, b"world\r\n"),
+        ]);
+        session.load_packet(2);
+        session.start_follow_stream().unwrap();
+        let stream = collect(&mut session);
+        assert_eq!(
+            stream.title,
+            "UDP Stream: 192.168.0.2:9999 \u{2194} 192.168.0.1:40000"
+        );
+        let lines: Vec<_> = stream
+            .lines
+            .iter()
+            .map(|l| (l.text.as_str(), l.is_client))
+            .collect();
+        // The first packet's sender is the client; the ICMP packet, in the
+        // same tunnel, is not part of the flow.
+        assert_eq!(lines, [("hello", true), ("world", false)]);
+    }
+
+    #[test]
+    fn a_packet_without_an_inner_flow_cannot_be_followed() {
+        let (mut session, _tmp) = session_of(&[crate::test_fixtures::gtpu_icmp_frame()]);
+        session.load_packet(0);
+        assert!(session.start_follow_stream().is_err());
         assert!(!session.stream_running());
     }
 

@@ -210,27 +210,54 @@ Content-Length: 0\r\n\r\n"
     ethernet_ipv4_frame(17, &udp)
 }
 
-/// Ethernet / IPv4 / UDP / GTP-U frame (3GPP TS 29.281, G-PDU on UDP port
-/// 2152) tunnelling an IPv4 ICMP echo request from 192.168.0.1 to
-/// 192.168.0.2: the tunnel's UDP flow is not the inner packet's own.
+/// A GTP-U packet (outer UDP 10.0.0.1 → 10.0.0.2, port 2152) carrying an
+/// ICMP echo request from 192.168.0.1 to 192.168.0.2.
 pub(crate) fn gtpu_icmp_frame() -> Vec<u8> {
     let icmp: [u8; 8] = [8, 0, 0, 0, 0, 1, 0, 1]; // echo request, id 1, seq 1
-    let mut inner = Vec::new();
-    inner.push(0x45); // version = 4, IHL = 5
-    inner.push(0x00);
-    inner.extend_from_slice(&(20 + icmp.len() as u16).to_be_bytes());
-    inner.extend_from_slice(&[0, 0, 0, 0]); // identification, flags
-    inner.push(64); // TTL
-    inner.push(1); // protocol: ICMP
-    inner.extend_from_slice(&[0, 0]); // header checksum (unchecked)
-    inner.extend_from_slice(&[192, 168, 0, 1]);
-    inner.extend_from_slice(&[192, 168, 0, 2]);
-    inner.extend_from_slice(&icmp);
+    gtpu_frame(&ipv4_packet(1, [192, 168, 0, 1], [192, 168, 0, 2], &icmp))
+}
 
+/// A GTP-U packet carrying a UDP datagram with `payload` between
+/// 192.168.0.1:40000 and 192.168.0.2:9999, from the first when
+/// `from_client`.
+pub(crate) fn gtpu_udp_frame(from_client: bool, payload: &[u8]) -> Vec<u8> {
+    let (client, server) = (([192, 168, 0, 1], 40000u16), ([192, 168, 0, 2], 9999u16));
+    let (src, dst) = if from_client {
+        (client, server)
+    } else {
+        (server, client)
+    };
+    let mut udp = Vec::new();
+    udp.extend_from_slice(&src.1.to_be_bytes());
+    udp.extend_from_slice(&dst.1.to_be_bytes());
+    udp.extend_from_slice(&(8 + payload.len() as u16).to_be_bytes());
+    udp.extend_from_slice(&0u16.to_be_bytes()); // checksum (unchecked)
+    udp.extend_from_slice(payload);
+    gtpu_frame(&ipv4_packet(17, src.0, dst.0, &udp))
+}
+
+/// An IPv4 packet (no options, unchecked checksum).
+fn ipv4_packet(protocol: u8, src: [u8; 4], dst: [u8; 4], payload: &[u8]) -> Vec<u8> {
+    let mut ip = Vec::new();
+    ip.push(0x45); // version = 4, IHL = 5
+    ip.push(0x00);
+    ip.extend_from_slice(&(20 + payload.len() as u16).to_be_bytes());
+    ip.extend_from_slice(&[0, 0, 0, 0]); // identification, flags
+    ip.push(64); // TTL
+    ip.push(protocol);
+    ip.extend_from_slice(&[0, 0]); // header checksum (unchecked)
+    ip.extend_from_slice(&src);
+    ip.extend_from_slice(&dst);
+    ip.extend_from_slice(payload);
+    ip
+}
+
+/// Ethernet + IPv4 + UDP (port 2152) + GTP-U G-PDU carrying `inner`.
+fn gtpu_frame(inner: &[u8]) -> Vec<u8> {
     let mut gtp = vec![0x30, 0xff]; // version 1, PT = GTP; message type G-PDU
     gtp.extend_from_slice(&(inner.len() as u16).to_be_bytes());
     gtp.extend_from_slice(&0x0000_0001u32.to_be_bytes()); // TEID
-    gtp.extend_from_slice(&inner);
+    gtp.extend_from_slice(inner);
 
     let mut udp = Vec::new();
     udp.extend_from_slice(&2152u16.to_be_bytes()); // src port
@@ -265,6 +292,21 @@ fn ethernet_ipv4_frame(protocol: u8, payload: &[u8]) -> Vec<u8> {
     frame.extend_from_slice(&[10, 0, 0, 2]); // dst IP
     frame.extend_from_slice(payload);
     frame
+}
+
+/// `frames` as a little-endian, microsecond-resolution pcap file with
+/// Ethernet link type, one second apart.
+pub(crate) fn pcap_of(frames: &[Vec<u8>]) -> Vec<u8> {
+    let mut pcap = single_packet_pcap(&[]);
+    pcap.truncate(24);
+    for (i, frame) in frames.iter().enumerate() {
+        pcap.extend_from_slice(&(i as u32).to_le_bytes()); // ts_sec
+        pcap.extend_from_slice(&0u32.to_le_bytes()); // ts_usec
+        pcap.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        pcap.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        pcap.extend_from_slice(frame);
+    }
+    pcap
 }
 
 /// Wrap `frame` as the sole packet of a little-endian, microsecond-
