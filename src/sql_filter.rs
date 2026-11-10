@@ -13,7 +13,7 @@
 //! packet_number BETWEEN 1 AND 100
 //! ```
 
-use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator, Value};
+use sqlparser::ast::{BinaryOperator, Expr, InTarget, UnaryOperator, Value};
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::Token;
@@ -88,10 +88,11 @@ fn convert_expr(expr: &Expr) -> Result<FilterExpr, String> {
             high,
         } => convert_between(inner, *negated, low, high),
 
-        Expr::InList {
+        Expr::In {
             expr: inner,
-            list,
+            target: InTarget::List(list),
             negated,
+            global: false,
         } => convert_in_list(inner, list, *negated),
 
         Expr::Value(val) => match &val.value {
@@ -543,6 +544,25 @@ mod tests {
         let expr = parse("tcp.dst_port IN (80, 443)").unwrap();
         let buf = make_tcp_ipv4_buf();
         assert!(!expr.matches(&pkt_from(&buf)));
+    }
+
+    #[test]
+    fn field_not_in_list() {
+        let expr = parse("tcp.dst_port NOT IN (80, 443)").unwrap();
+        let buf = make_tcp_ipv4_buf();
+        assert!(expr.matches(&pkt_from(&buf)));
+    }
+
+    #[test]
+    fn in_subquery_rejected() {
+        let err = parse("tcp.dst_port IN (SELECT 80)").unwrap_err();
+        assert!(err.contains("unsupported"), "{err}");
+    }
+
+    #[test]
+    fn in_unnest_rejected() {
+        let err = parse("tcp.dst_port IN UNNEST(x)").unwrap_err();
+        assert!(err.contains("unsupported"), "{err}");
     }
 
     // --- Negative numbers ---
