@@ -15,6 +15,11 @@
       "description": "packet-dissector, packet-dissector-core, packet-dissector-pcap, and packet-dissector-test-alloc are published in lockstep from the same repo; bumping only one alone breaks the build because dsct depends on more than one directly",
       "matchPackageNames": ["/^packet-dissector(-core|-pcap|-test-alloc)?$/"],
       "groupName": "packet-dissector"
+    },
+    {
+      "description": "GitHub Actions updates do not change the built binary; benchmarks.yml skips `renovate/actions-*` branches",
+      "matchManagers": ["github-actions"],
+      "additionalBranchPrefix": "actions-"
     }
   ]
 }
