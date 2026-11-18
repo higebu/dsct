@@ -127,9 +127,10 @@ impl FilterBitmap {
         let block = (word / WORDS_PER_BLOCK).min(self.blocks.len().saturating_sub(1));
         let mut count = self.blocks.get(block).copied().unwrap_or(0) as usize;
         let block_word_start = block * WORDS_PER_BLOCK;
-        for w in block_word_start..word {
-            count += self.words[w].count_ones() as usize;
-        }
+        count += self.words[block_word_start..word]
+            .iter()
+            .map(|w| w.count_ones() as usize)
+            .sum::<usize>();
         if bit > 0 {
             let mask = (1u64 << bit) - 1;
             count += (self.words[word] & mask).count_ones() as usize;
@@ -342,10 +343,11 @@ impl FilterBitmap {
             let prev = self.blocks[b - 1];
             let start = (b - 1) * WORDS_PER_BLOCK;
             let end = start + WORDS_PER_BLOCK;
-            let mut sum = prev;
-            for w in start..end {
-                sum += self.words[w].count_ones() as u64;
-            }
+            let sum = prev
+                + self.words[start..end]
+                    .iter()
+                    .map(|w| w.count_ones() as u64)
+                    .sum::<u64>();
             self.blocks.push(sum);
         }
     }
