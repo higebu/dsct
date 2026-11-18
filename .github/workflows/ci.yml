@@ -19,6 +19,8 @@ jobs:
       - run: cargo test --all-targets --all-features
 
   coverage:
+    # Dependency-only Renovate PRs do not change coverage; `test` already runs the suite.
+    if: github.event_name != 'pull_request' || github.event.pull_request.user.login != 'renovate[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
