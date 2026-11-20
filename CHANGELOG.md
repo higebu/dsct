@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.3.3] - 2026-11-20
+
+### 🐛 Bug Fixes
+
+- Update packet-dissector to 0.6.3
+- *(deps)* Update sqlparser to 0.64.0
+- Satisfy clippy needless_range_loop in filter bitmap
+
+### 💼 Other
+
+- Merge pull request #173 from higebu/renovate/bencherdev-bencher-digest
+- Merge branch 'main' into renovate/dtolnay-rust-toolchain-digest
+- Merge branch 'main' into renovate/taiki-e-install-action-digest
+- Merge pull request #183 from higebu/renovate/taiki-e-install-action-digest
+- Merge pull request #182 from higebu/renovate/bencherdev-bencher-digest
+
+### ⚙️ Miscellaneous Tasks
+
+- Skip coverage job on Renovate PRs
+
+### 📦 Dependencies
+
+- *(deps)* Update bencherdev/bencher digest to 3bff0e0 ([#171](https://github.com/higebu/dsct/issues/171))
+- *(deps)* Update bencherdev/bencher digest to c35a046
+- *(deps)* Update taiki-e/install-action digest to cfdb7ed
+- *(deps)* Lock file maintenance ([#177](https://github.com/higebu/dsct/issues/177))
+- *(deps)* Update bencherdev/bencher digest to 5ee7ef3 ([#176](https://github.com/higebu/dsct/issues/176))
+- *(deps)* Update bencherdev/bencher digest to 15974c3 ([#179](https://github.com/higebu/dsct/issues/179))
+- *(deps)* Update dtolnay/rust-toolchain digest to 3900882
+- *(deps)* Update taiki-e/install-action digest to ab49d3c
+- *(deps)* Update bencherdev/bencher digest to a39a1f4
+- *(deps)* Update rust crate clap to v4.6.8
+- *(deps)* Update taiki-e/install-action digest to 75a7c0f
+- *(deps)* Update rust crate clap to v4.6.9
 ## [0.3.2] - 2026-11-07
 
 ### ⚙️ Miscellaneous Tasks
