@@ -57,7 +57,8 @@ jobs:
               'target/release/dsct stats bench_input.pcap'"
 
   benchmark_pr:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    # Renovate GitHub Actions updates (`renovate/actions-*` branches) do not change the binary.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && !(github.event.pull_request.user.login == 'renovate[bot]' && startsWith(github.head_ref, 'renovate/actions-'))
     name: Track PR benchmarks
     permissions:
       contents: read
@@ -99,7 +100,7 @@ jobs:
               'target/release/dsct stats bench_input.pcap'"
 
   archive_pr:
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && !(github.event.pull_request.user.login == 'renovate[bot]' && startsWith(github.head_ref, 'renovate/actions-'))
     name: Archive closed PR branch
     runs-on: ubuntu-latest
     steps:
